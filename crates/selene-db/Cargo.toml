@@ -7,6 +7,17 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+# `kv-mem` pulls in the embedded in-memory engine (`surrealdb::engine::local::Mem`)
+# used by the spike + fast tests. Production kv backends are separate features.
+surrealdb = { workspace = true, features = ["kv-mem"] }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
