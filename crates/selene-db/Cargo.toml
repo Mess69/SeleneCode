@@ -1,0 +1,9 @@
+[package]
+name = "selene-db"
+description = "Graph store: the GraphStore trait + embedded SurrealDB backend + FTS."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]

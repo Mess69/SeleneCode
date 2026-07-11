@@ -1,0 +1,13 @@
+# Rust build output
+/target
+**/*.rs.bk
+
+# macOS
+.DS_Store
+
+# Per-project index data (mirrors CodeGraph's .codegraph/)
+.selene/
+
+# Editor
+.idea/
+.vscode/

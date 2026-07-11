@@ -1,0 +1,14 @@
+[package]
+name = "selene"
+description = "SeleneCode CLI + MCP server (single static binary)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "selene"
+path = "src/main.rs"
+
+[dependencies]
+selene-core.workspace = true

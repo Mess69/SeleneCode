@@ -1,0 +1,62 @@
+# SeleneCode — local-first code intelligence, in Rust.
+#
+# Workspace root. This scaffold operationalizes the target architecture in
+# docs/specs/2026-07-11-rust-graph-db-migration-design.md (the PRD).
+
+[workspace]
+resolver = "2"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.80"
+license = "MIT OR Apache-2.0"
+authors = ["SeleneCode contributors"]
+repository = "https://github.com/CHANGE-ME/SeleneCode"
+
+[workspace.dependencies]
+# --- Intra-workspace crates (path deps) ---
+selene-core      = { path = "crates/selene-core" }
+selene-db        = { path = "crates/selene-db" }
+selene-extract   = { path = "crates/selene-extract" }
+selene-resolve   = { path = "crates/selene-resolve" }
+selene-graph     = { path = "crates/selene-graph" }
+selene-context   = { path = "crates/selene-context" }
+selene-mcp       = { path = "crates/selene-mcp" }
+selene-sync      = { path = "crates/selene-sync" }
+selene-installer = { path = "crates/selene-installer" }
+selene-cli       = { path = "crates/selene-cli" }
+
+# --- Shared third-party deps ---
+# Declared centrally; each crate opts in with `dep.workspace = true`. Cargo does
+# NOT fetch entries no crate references, so the heavier ones below sit here as
+# documented intent (see PRD §6 mapping) until a crate adopts them.
+# NOTE: versions are indicative — pin/verify when a crate first adopts the dep.
+serde        = { version = "1", features = ["derive"] }
+serde_json   = "1"
+thiserror    = "2"
+anyhow       = "1"
+# Parsing / extraction  (PRD §3: selene-extract)
+tree-sitter  = "0.24"
+rayon        = "1"
+# Storage + search  (PRD §5): SurrealDB embedded behind the GraphStore trait;
+#   Tantivy is the FTS fallback / permissive path.
+surrealdb    = { version = "2", default-features = false, features = ["kv-surrealkv"] }
+tantivy      = "0.22"
+# Surfaces / infra
+clap         = { version = "4", features = ["derive"] }
+rmcp         = "0.2"          # Rust MCP SDK (PRD §6)
+notify       = "6"           # cross-platform file watching (FSEvents/inotify/RDCW)
+toml_edit    = "0.22"
+jsonc-parser = "0.26"
+indicatif    = "0.17"
+crossterm    = "0.28"
+# Dev
+tempfile     = "3"
+insta        = "1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true

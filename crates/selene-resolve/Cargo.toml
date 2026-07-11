@@ -1,0 +1,9 @@
+[package]
+name = "selene-resolve"
+description = "ReferenceResolver, import/name resolution, frameworks, dynamic-dispatch synthesizers."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
