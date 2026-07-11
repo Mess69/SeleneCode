@@ -11,10 +11,16 @@ selene-core = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+indexmap = { workspace = true }
 # `kv-mem` pulls in the embedded in-memory engine (`surrealdb::engine::local::Mem`)
 # used by the spike + fast tests. Production kv backends are separate features.
 surrealdb = { workspace = true, features = ["kv-mem"] }
 
+# `GraphStore` methods are written in desugared `-> impl Future<..> + Send`
+# form (see `src/store.rs` trait docs), so defining the trait needs only
+# `std::future::Future` — no runtime. `tokio` stays a dev-dependency; it only
+# drives `#[tokio::test]` (the spike test today, `SurrealStore` tests from
+# Task 3 on).
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = { workspace = true }

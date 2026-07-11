@@ -3165,6 +3165,7 @@ dependencies = [
 name = "selene-db"
 version = "0.1.0"
 dependencies = [
+ "indexmap",
  "selene-core",
  "serde",
  "serde_json",
