@@ -38,7 +38,7 @@ async fn mem_db() -> Surreal<Db> {
 /// The chained `.use_ns(..).use_db(..)` returns a single awaitable; awaiting it
 /// resolves `Ok(())`. A `CREATE` afterwards proves the scope is actually
 /// selected (without it, an unscoped write errors with "no namespace/database").
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn assertion_1_use_ns_db_selects_scope() {
     let db = Surreal::new::<Mem>(()).await.unwrap();
     db.use_ns("selene").use_db("graph").await.unwrap();
@@ -67,7 +67,7 @@ async fn assertion_1_use_ns_db_selects_scope() {
 /// To address such a record from raw SurrealQL, use `type::record('node', 'k')`
 /// — the brief's `type::thing(...)` was **renamed** in 3.x and is now a parse
 /// error ("Invalid function/constant path, did you maybe mean `type::record`").
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn assertion_2_colon_in_record_key_roundtrips() {
     let db = mem_db().await;
 
@@ -78,11 +78,11 @@ async fn assertion_2_colon_in_record_key_roundtrips() {
         .unwrap();
     let created = created.expect("create returns the new record");
     assert_eq!(created["name"], "calculateTotal");
-    // The colon key is preserved verbatim inside the (backtick-escaped) id.
-    assert!(
-        created["id"].as_str().unwrap().contains("function:abc123"),
-        "colon key must survive in the record id, got {:?}",
-        created["id"]
+    // The colon key is preserved verbatim, and the id serializes exactly as
+    // `node:` + backtick-quoted key (the form the doc comment above claims).
+    assert_eq!(
+        created["id"], "node:`function:abc123`",
+        "id must serialize as node:`function:abc123`"
     );
 
     // Read back through the typed API by the same key.
@@ -106,7 +106,7 @@ async fn assertion_2_colon_in_record_key_roundtrips() {
 /// row in the `calls` edge table carrying the auto `in`/`out` endpoint links
 /// plus our arbitrary fields. The graph idiom `->calls->node` from `a` returns
 /// the set of `node` records reached across `calls` edges.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn assertion_3_relate_and_traverse() {
     let db = mem_db().await;
     let _: Option<Value> = db
@@ -156,7 +156,7 @@ async fn assertion_3_relate_and_traverse() {
 /// error is per-statement and surfaces only when you unwrap it with
 /// `Response::take(idx)`. Production code must inspect each statement, not just
 /// the outer `Result`.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn assertion_4_unique_index_dedupes_edges() {
     let db = mem_db().await;
     let _: Option<Value> = db
@@ -229,7 +229,7 @@ async fn assertion_4_unique_index_dedupes_edges() {
 ///
 /// The companion `{1..3+collect}` assertion proves d is excluded by the *depth
 /// limit*, not because it is unreachable.
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread")]
 async fn assertion_5_depth_limited_recursion() {
     let db = mem_db().await;
     for id in ["a", "b", "c", "d"] {
@@ -296,15 +296,44 @@ async fn assertion_5_depth_limited_recursion() {
 ///
 /// The analyzer uses `snowball(english)` stemming so that `invoice` matches both
 /// `invoice` and `invoices`; BM25 then ranks the doc mentioning the term more
-/// often (f1, ×3) above the one mentioning it once (f2).
-#[tokio::test]
+/// often (f1, ×3) above the one mentioning it once (f2). Both per-field indexes
+/// are exercised: `docstring @0@` for ranking/highlighting, `name @0@` for
+/// symbol-name lookup.
+#[tokio::test(flavor = "multi_thread")]
 async fn assertion_6_fulltext_search_ranks_hits() {
     let db = mem_db().await;
 
     db.query("DEFINE ANALYZER code TOKENIZERS class FILTERS lowercase, snowball(english)")
         .await
         .unwrap();
-    // One FULLTEXT index per field (multi-column FULLTEXT is rejected).
+
+    // Negative proof of the one-column rule: the brief's original two-column
+    // form is rejected. Note WHERE the error surfaces: this is a *parse* error,
+    // so it fails the whole `query().await` (unlike runtime errors such as the
+    // unique-index violation in assertion 4, which resolve Ok and only error at
+    // `take(idx)`). Handle both surfaces so the assertion pins the message, not
+    // the transport.
+    let two_col_err = match db
+        .query(
+            "DEFINE INDEX node_bad_fts ON TABLE node COLUMNS name, docstring \
+             FULLTEXT ANALYZER code BM25 HIGHLIGHTS",
+        )
+        .await
+    {
+        Err(e) => e.to_string(),
+        Ok(mut resp) => {
+            let taken: Result<Vec<Value>, surrealdb::Error> = resp.take(0);
+            taken
+                .expect_err("two-column FULLTEXT index must be rejected")
+                .to_string()
+        }
+    };
+    assert!(
+        two_col_err.contains("Expected one column"),
+        "two-column FULLTEXT must fail with the one-column parse error, got: {two_col_err}"
+    );
+
+    // One FULLTEXT index per field (multi-column FULLTEXT is rejected above).
     db.query("DEFINE INDEX node_name_fts ON TABLE node COLUMNS name FULLTEXT ANALYZER code BM25 HIGHLIGHTS")
         .await
         .unwrap();
@@ -405,4 +434,43 @@ async fn assertion_6_fulltext_search_ranks_hits() {
         "highlight wraps the matched term: {:?}",
         highlighted[0]["hl"]
     );
+
+    // --- the `name` index (node_name_fts) — symbol-name lookup ---
+    // Same `@N@` + `search::score(N)` contract, targeting the other per-field
+    // index. Reference numbers are scoped per statement, so `0` is reused here.
+    let mut resp = db
+        .query(
+            "SELECT name, search::score(0) AS score FROM node \
+             WHERE name @0@ 'calculateTotal' ORDER BY score DESC",
+        )
+        .await
+        .unwrap();
+    let name_hits: Vec<Value> = resp.take(0).unwrap();
+    assert_eq!(
+        name_hits.len(),
+        1,
+        "exactly one symbol named calculateTotal"
+    );
+    assert_eq!(name_hits[0]["name"], "calculateTotal");
+    assert!(
+        score(&name_hits[0]) > 0.0,
+        "name match carries a positive BM25 score"
+    );
+
+    // Tokenizer finding for the future search API: the `class` tokenizer does
+    // NOT split camelCase (upper/lowercase are both the letter class), so
+    // 'total' matches the symbol literally named "total" but not
+    // "calculateTotal". Splitting identifiers needs the `camel` tokenizer in
+    // the analyzer chain — a decision for the production FTS design.
+    let mut resp = db
+        .query("SELECT name FROM node WHERE name @0@ 'total'")
+        .await
+        .unwrap();
+    let total_hits: Vec<Value> = resp.take(0).unwrap();
+    assert_eq!(
+        total_hits.len(),
+        1,
+        "class tokenizer keeps camelCase whole — only the literal 'total' matches: {total_hits:?}"
+    );
+    assert_eq!(total_hits[0]["name"], "total");
 }
