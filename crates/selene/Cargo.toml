@@ -12,3 +12,6 @@ path = "src/main.rs"
 
 [dependencies]
 selene-core.workspace = true
+
+[lints]
+workspace = true

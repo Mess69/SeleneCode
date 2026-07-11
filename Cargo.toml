@@ -1,16 +1,17 @@
 # SeleneCode — local-first code intelligence, in Rust.
 #
 # Workspace root. This scaffold operationalizes the target architecture in
-# docs/specs/2026-07-11-rust-graph-db-migration-design.md (the PRD).
+# docs/specs/2026-07-11-rust-graph-db-migration-design.md (the PRD); build order
+# and locked decisions live in docs/plans/2026-07-12-selenecode-roadmap.md.
 
 [workspace]
-resolver = "2"
+resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
 version = "0.1.0"
-edition = "2021"
-rust-version = "1.80"
+edition = "2024"
+rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 authors = ["SeleneCode contributors"]
 repository = "https://github.com/CHANGE-ME/SeleneCode"
@@ -31,30 +32,48 @@ selene-cli       = { path = "crates/selene-cli" }
 # --- Shared third-party deps ---
 # Declared centrally; each crate opts in with `dep.workspace = true`. Cargo does
 # NOT fetch entries no crate references, so the heavier ones below sit here as
-# documented intent (see PRD §6 mapping) until a crate adopts them.
-# NOTE: versions are indicative — pin/verify when a crate first adopts the dep.
+# documented intent until a crate adopts them. Versions follow
+# docs/reference/rust-ecosystem-2026-07.md (verified 2026-07-12); grammar crates
+# are pinned exact (=x.y.z) in selene-extract when adopted.
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 thiserror    = "2"
 anyhow       = "1"
-# Parsing / extraction  (PRD §3: selene-extract)
-tree-sitter  = "0.24"
+sha2         = "0.10"
+# Async runtime (surrealdb + rmcp are tokio-based); rayon handles data-parallel
+# parsing and must never run on tokio worker threads (bridge via spawn_blocking).
+tokio        = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "io-std", "net", "process", "signal"] }
 rayon        = "1"
-# Storage + search  (PRD §5): SurrealDB embedded behind the GraphStore trait;
-#   Tantivy is the FTS fallback / permissive path.
-surrealdb    = { version = "2", default-features = false, features = ["kv-surrealkv"] }
-tantivy      = "0.22"
+# Parsing / extraction  (PRD §3: selene-extract)
+tree-sitter  = "0.26"
+# Storage + search  (PRD §5): SurrealDB embedded behind the GraphStore trait.
+# Decision 2026-07-12: sole backend, SurrealQL-max, no permissive fallback.
+# kv backends (kv-surrealkv / kv-rocksdb) are selected by selene-db features.
+surrealdb    = { version = "3.2", default-features = false }
 # Surfaces / infra
 clap         = { version = "4", features = ["derive"] }
-rmcp         = "0.2"          # Rust MCP SDK (PRD §6)
-notify       = "6"           # cross-platform file watching (FSEvents/inotify/RDCW)
-toml_edit    = "0.22"
-jsonc-parser = "0.26"
-indicatif    = "0.17"
-crossterm    = "0.28"
+rmcp         = "2.2"          # official Rust MCP SDK
+notify       = "8"            # cross-platform file watching (FSEvents/inotify/RDCW)
+toml_edit    = "0.25"
+jsonc-parser = "0.33"
+indicatif    = "0.18"
+crossterm    = "0.29"
 # Dev
 tempfile     = "3"
 insta        = "1"
+
+# Inherited by every crate via `[lints] workspace = true`. CI denies warnings;
+# tests may locally `#![allow(clippy::unwrap_used, clippy::expect_used)]`.
+[workspace.lints.rust]
+unsafe_code = "warn"
+unused_qualifications = "warn"
+rust-2018-idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+unwrap_used = "warn"
+expect_used = "warn"
+dbg_macro = "warn"
 
 [profile.release]
 lto = "thin"
