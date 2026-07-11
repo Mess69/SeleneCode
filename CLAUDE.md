@@ -40,7 +40,7 @@ files → selene-extract (tree-sitter) → selene-db (nodes/edges/files)
 ```
 
 - `selene-core` — shared types. `NodeKind` (22) / `EdgeKind` (12) are exhaustive enums; their `as_str()` and serde output are the wire contract and must not drift. Also `Provenance`, `Visibility`, `Node`, `Edge`, `Error`.
-- `selene-db` — everything DB is behind a **`GraphStore` trait**. Primary backend: **SurrealDB embedded**; a fully-permissive fallback (**IndraDB/redb + Tantivy**) lives behind the same trait. See PRD §5 and the §5.4 spike.
+- `selene-db` — everything DB is behind a **`GraphStore` trait** (a seam for tests/mocking, not a portability layer). Sole backend: **SurrealDB embedded**. **Decision (2026-07-12):** SurrealQL-max — traversal logic is pushed into SurrealQL (recursive `.{1..n}(->calls->fn)`, shortest-path); the permissive fallback (IndraDB/redb + Tantivy) from PRD §5.2 is **dropped**, and the PRD §5.4 spike is resolved accordingly.
 - `selene-extract`, `selene-resolve`, `selene-graph`, `selene-context`, `selene-mcp`, `selene-sync`, `selene-installer`, `selene-cli` — stubs; each crate's `lib.rs` names its role + PRD section.
 
 Shared third-party deps and their versions are declared once in the root `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
@@ -56,10 +56,21 @@ These are hard-won and carry over verbatim to SeleneCode:
 - **Deterministic extraction.** Derived from the AST, never LLM-summarized.
 - **Single source of tool guidance.** The MCP `server-instructions` are the one place agent-facing guidance lives.
 
-## Open research (before freezing the `GraphStore` API)
+## Roadmap & plans
 
-PRD **§5.4** is a spike: how much traversal logic to push from *code* (`selene-graph`) into the *DB* (SurrealQL). The more you push into SurrealQL, the costlier the permissive fallback (IndraDB/redb have no query language). Decide the code/DB split — portable `GraphStore` primitives vs assumed SurrealQL coupling — **before** freezing the trait, because `selene-graph`, `selene-mcp`, and `selene-cli` depend on it.
+The build order lives in `docs/plans/2026-07-12-selenecode-roadmap.md` (phases 0–9, locked
+decisions, tech pins, contract list). Each phase gets a just-in-time detailed plan in
+`docs/plans/` before implementation. The PRD §5.4 spike is **resolved** (SurrealQL-max, no
+fallback backend); the Phase 1 benchmark gate (PRD §5.3) still applies.
 
 ## Reference
 
-`docs/reference/from-codegraph/` holds the language-agnostic design + benchmark notes ported from the CodeGraph TS implementation (dynamic-dispatch coverage playbook, callback/value-reference edge synthesis, chained-call resolution, adaptive explore sizing, A/B benchmark methodology). Consult these before building the resolver/synthesizer and the explore budget — they encode what was already learned.
+- `docs/reference/from-codegraph/maps/` — **subsystem maps of the TS parity source**
+  (exact contracts, constants, algorithms per subsystem). Consult the relevant map
+  *before* reimplementing anything, instead of re-reading the TS source at large.
+- `docs/reference/rust-ecosystem-2026-07.md` — crate versions/status pins (July 2026).
+- `docs/reference/from-codegraph/design/` + `benchmarks/` — language-agnostic design +
+  benchmark notes ported from CodeGraph TS (dynamic-dispatch coverage playbook,
+  callback/value-reference edge synthesis, chained-call resolution, adaptive explore
+  sizing, A/B methodology). Consult before building the resolver/synthesizer and the
+  explore budget.

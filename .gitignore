@@ -8,6 +8,9 @@
 # Per-project index data (mirrors CodeGraph's .codegraph/)
 .selene/
 
+# Local MCP/tool logs
+logs/
+
 # Editor
 .idea/
 .vscode/
