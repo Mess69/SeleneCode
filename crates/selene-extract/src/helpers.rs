@@ -25,8 +25,11 @@ pub fn get_child_by_field<'t>(node: Node<'t>, field: &str) -> Option<Node<'t>> {
 
 /// Node types that *wrap* a declaration so a leading comment is a sibling of
 /// the wrapper, not of the emitted (inner) declaration node. Before looking
-/// for a preceding comment we climb out through these; each wraps exactly one
-/// declaration, so climbing can't mis-attribute a comment to a sibling. (#780)
+/// for a preceding comment we climb out through these. In the common case a
+/// wrapper holds one declaration; when it holds several (`const a = 1,
+/// b = 2;` puts two `variable_declarator`s under one `lexical_declaration`),
+/// every declarator receives the wrapper's leading comment — TS-parity, and
+/// arguably desirable (the comment documents the whole statement). (#780)
 static DOCSTRING_WRAPPER_TYPES: LazyLock<HashSet<&'static str>> = LazyLock::new(|| {
     HashSet::from([
         "export_statement",     // JS/TS: export class/function/const ...
@@ -58,6 +61,12 @@ const COMMENT_KINDS: [&str; 4] = [
 /// one, so a line comment that merely happens to END with a closing
 /// delimiter is never truncated. Per-line markers are anchored at line
 /// start, so they're safe to apply to any comment.
+///
+/// Known negligible `\s` divergence vs the TS original (complete set
+/// difference): JS `\s` includes U+FEFF (BOM) which Rust's does not, and
+/// Rust `\s` includes U+0085 (NEL) which JS's does not — a marker followed
+/// by one of those exact characters strips differently. No known
+/// real-corpus case on either side.
 pub fn clean_comment_markers(raw: &str) -> String {
     // Paired block delimiters — applied once (anchored), only when the
     // comment opens with the matching style. Order and patterns mirror the
