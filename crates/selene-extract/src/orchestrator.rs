@@ -26,6 +26,16 @@
 //! NOT use bulk mode — dropping and rebuilding the FTS indexes for one file
 //! costs more than inline maintenance.
 //!
+//! **The bracket is exit-safe.** Inside it the four FULLTEXT indexes are
+//! DROPPED and `search_fts` is success-shaped-EMPTY (never `Err` — the
+//! `isError` reservation, PRD §8.2), so a run that returns without calling
+//! `bulk_load_finish` leaves the store *silently* unsearchable until some
+//! later run completes. Two rules keep that impossible rather than merely
+//! handled: the scan runs BEFORE `bulk_load_begin` (it touches no store
+//! state, so its failure never enters the bracket), and every path after
+//! `begin` — store malfunctions included, since they are collected, never
+//! returned — falls through to `bulk_load_finish`.
+//!
 //! ## Recursion/depth guard (Task 5 review, Minor 4)
 //!
 //! The walker's `visit` recurses per AST level; native stack overflow in
@@ -74,7 +84,7 @@
 //! list is threaded internally so the seam exists).
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use rayon::prelude::*;
@@ -195,6 +205,16 @@ pub struct IndexResult {
 /// Progress callback (sync — invoked inline between pipeline steps).
 pub type ProgressFn<'a> = &'a (dyn Fn(&IndexProgress) + Send + Sync);
 
+/// The dedicated parse pool: [`parse_workers`] threads with explicit
+/// [`PARSE_STACK_SIZE`] stacks and named threads (module docs).
+fn build_pool(workers: usize) -> Result<rayon::ThreadPool, rayon::ThreadPoolBuildError> {
+    rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .stack_size(PARSE_STACK_SIZE)
+        .thread_name(|i| format!("selene-parse-{i}"))
+        .build()
+}
+
 /// The indexer: a project root + a store. Generic over [`GraphStore`] — the
 /// brief's concrete-store note is resolved: Phase 1 Task 10 DID lift
 /// `replace_file_extraction` onto the trait, so the orchestrator codes
@@ -202,7 +222,12 @@ pub type ProgressFn<'a> = &'a (dyn Fn(&IndexProgress) + Send + Sync);
 pub struct Indexer<S: GraphStore> {
     root: PathBuf,
     store: S,
-    pool: Arc<rayon::ThreadPool>,
+    /// The parse pool, built once on first use. The `Result` is the point: an
+    /// OS refusal to spawn the pool threads stays a **collected** error
+    /// (errors-collected-never-thrown, the crate's global constraint) instead
+    /// of a construction-time panic. [`Indexer::try_new`] surfaces the same
+    /// failure eagerly for callers that want it up front.
+    pool: OnceLock<Result<Arc<rayon::ThreadPool>, String>>,
     workers: usize,
 }
 
@@ -216,27 +241,52 @@ struct ParseInput {
 }
 
 impl<S: GraphStore> Indexer<S> {
-    /// Build an indexer over `root` and `store`, with a dedicated rayon
-    /// pool of [`parse_workers`] threads ([`PARSE_STACK_SIZE`] stacks —
-    /// module docs).
+    /// Build an indexer over `root` and `store`. The dedicated rayon parse
+    /// pool ([`parse_workers`] threads, [`PARSE_STACK_SIZE`] stacks — module
+    /// docs) is built lazily, on the first indexing call.
     ///
-    /// # Panics
-    /// Only if the OS refuses to spawn the pool threads at construction.
+    /// Never panics: if the OS refuses to spawn the pool threads, the failure
+    /// is collected into [`IndexResult::errors`] as a `parser_error`
+    /// (infrastructure, not file content) and the run reports
+    /// `success: false` — the same errors-collected discipline every other
+    /// failure in this crate follows. Use [`Indexer::try_new`] to build the
+    /// pool eagerly and handle that failure at construction instead.
     pub fn new(root: PathBuf, store: S) -> Self {
-        let workers = parse_workers();
-        #[allow(clippy::expect_used)] // construction-time resource failure: unrecoverable
-        let pool = rayon::ThreadPoolBuilder::new()
-            .num_threads(workers)
-            .stack_size(PARSE_STACK_SIZE)
-            .thread_name(|i| format!("selene-parse-{i}"))
-            .build()
-            .expect("failed to build the parse thread pool");
         Indexer {
             root,
             store,
-            pool: Arc::new(pool),
-            workers,
+            pool: OnceLock::new(),
+            workers: parse_workers(),
         }
+    }
+
+    /// [`Indexer::new`] with the parse pool built up front: `Err` iff the OS
+    /// refuses to spawn the pool threads (the only failure mode of pool
+    /// construction). Prefer this at a process boundary that wants to fail
+    /// fast; `new` defers the same error into the run's `errors`.
+    pub fn try_new(root: PathBuf, store: S) -> Result<Self, rayon::ThreadPoolBuildError> {
+        let workers = parse_workers();
+        let pool = Arc::new(build_pool(workers)?);
+        let cell = OnceLock::new();
+        let _ = cell.set(Ok(pool)); // fresh cell: `set` cannot fail
+        Ok(Indexer {
+            root,
+            store,
+            pool: cell,
+            workers,
+        })
+    }
+
+    /// The parse pool, built on first call and memoized (failure included, so
+    /// a doomed pool is not re-attempted per batch).
+    fn pool(&self) -> Result<Arc<rayon::ThreadPool>, String> {
+        self.pool
+            .get_or_init(|| {
+                build_pool(self.workers)
+                    .map(Arc::new)
+                    .map_err(|e| e.to_string())
+            })
+            .clone()
     }
 
     /// The wrapped store (tests and later pipeline phases query through it).
@@ -252,10 +302,41 @@ impl<S: GraphStore> Indexer<S> {
         let started = Instant::now();
         let mut result = IndexResult::default();
 
+        // Scan FIRST — outside the bulk-load bracket (module docs: the bracket
+        // is exit-safe). The scan touches no store state, and a scan failure is
+        // the one early return this function has; hoisting it above
+        // `bulk_load_begin` makes "return with the FTS indexes dropped"
+        // structurally impossible instead of merely remembered.
+        emit(on_progress, Phase::Scanning, 0, 0, None);
+        let mut files = match scan_directory(&self.root, &ScanOverrides::default()) {
+            Ok(files) => files,
+            Err(e) => {
+                result.errors.push(ExtractionError {
+                    message: format!("scan failed: {e}"),
+                    severity: Severity::Error,
+                    code: ErrorCode::ReadError,
+                    file_path: None,
+                });
+                result.duration_ms = started.elapsed().as_millis() as u64;
+                return result;
+            }
+        };
+        // scan_directory already returns sorted paths; sort defensively —
+        // commit order IS the determinism contract (#1015, module docs).
+        files.sort_unstable();
+
         // Initializing entry point: applies the schema on a fresh store and
         // defers FTS maintenance for the whole run (module docs).
         if let Err(e) = self.store.bulk_load_begin().await {
             push_store_error(&mut result.errors, "bulk_load_begin", &e);
+            // `begin` is schema-apply + a 4-statement index drop: a failure can
+            // land with some indexes already gone. Restore them best-effort
+            // rather than walk away from a half-dropped store (on a store so
+            // broken that the schema never applied, `finish` fails too — a
+            // second collected error on an already-failed run).
+            if let Err(e) = self.store.bulk_load_finish().await {
+                push_store_error(&mut result.errors, "bulk_load_finish", &e);
+            }
             result.duration_ms = started.elapsed().as_millis() as u64;
             return result;
         }
@@ -278,24 +359,6 @@ impl<S: GraphStore> Indexer<S> {
             Ok(None) => {}
             Err(e) => push_store_error(&mut result.errors, "get_meta", &e),
         }
-
-        emit(on_progress, Phase::Scanning, 0, 0, None);
-        let mut files = match scan_directory(&self.root, &ScanOverrides::default()) {
-            Ok(files) => files,
-            Err(e) => {
-                result.errors.push(ExtractionError {
-                    message: format!("scan failed: {e}"),
-                    severity: Severity::Error,
-                    code: ErrorCode::ReadError,
-                    file_path: None,
-                });
-                result.duration_ms = started.elapsed().as_millis() as u64;
-                return result;
-            }
-        };
-        // scan_directory already returns sorted paths; sort defensively —
-        // commit order IS the determinism contract (#1015, module docs).
-        files.sort_unstable();
 
         self.run_pipeline(&files, on_progress, &mut result).await;
 
@@ -383,10 +446,31 @@ impl<S: GraphStore> Indexer<S> {
         let batch_size = parse_batch(self.workers);
         let mut processed = 0usize;
 
+        // The pool is built here, not in the constructor (see [`Indexer::new`]):
+        // an OS refusal to spawn threads is a collected `parser_error`, not a
+        // panic. Nothing can be parsed without it — the run ends here.
+        let pool = match self.pool() {
+            Ok(pool) => pool,
+            Err(msg) => {
+                result.errors.push(ExtractionError {
+                    message: format!("failed to build the parse thread pool: {msg}"),
+                    severity: Severity::Error,
+                    code: ErrorCode::ParserError,
+                    file_path: None,
+                });
+                return;
+            }
+        };
+
         for batch in files.chunks(batch_size) {
             // Read step (sync std::fs — FILE_IO_BATCH_SIZE folds into the
-            // parse batch, module docs).
-            let mut inputs: Vec<ParseInput> = Vec::with_capacity(batch.len());
+            // parse batch, module docs). Each successfully-read file carries
+            // its 1-based ordinal in scan order (`processed`) through parse
+            // into commit: it is what the Storing phase reports as `current`,
+            // so progress stays monotonic and correct when a batch had reads
+            // that failed or were skipped (a batch-relative offset would drift
+            // by the number of missing inputs).
+            let mut inputs: Vec<(usize, ParseInput)> = Vec::with_capacity(batch.len());
             for rel in batch {
                 processed += 1;
                 emit(
@@ -408,7 +492,7 @@ impl<S: GraphStore> Indexer<S> {
                 }
                 let mut errors = Vec::new();
                 match read_input(&self.root, rel, &mut errors) {
-                    Some(input) => inputs.push(input),
+                    Some(input) => inputs.push((processed, input)),
                     None => {
                         // size_exceeded is a skip (warning); read failures err.
                         if errors.iter().any(|e| e.code == ErrorCode::SizeExceeded) {
@@ -423,15 +507,15 @@ impl<S: GraphStore> Indexer<S> {
 
             // Parse step: the whole batch fans out on the dedicated pool;
             // `collect` preserves input order.
-            let pool = Arc::clone(&self.pool);
-            let extracted: Vec<(ParseInput, ExtractionResult)> =
+            let pool = Arc::clone(&pool);
+            let extracted: Vec<(usize, ParseInput, ExtractionResult)> =
                 match tokio::task::spawn_blocking(move || {
                     pool.install(|| {
                         inputs
                             .into_par_iter()
-                            .map(|input| {
+                            .map(|(ordinal, input)| {
                                 let r = guarded_extract(&input);
-                                (input, r)
+                                (ordinal, input, r)
                             })
                             .collect()
                     })
@@ -451,11 +535,11 @@ impl<S: GraphStore> Indexer<S> {
                 };
 
             // Commit step: strictly sequential, in scan order (#1015).
-            for (idx, (input, extraction)) in extracted.iter().enumerate() {
+            for (ordinal, input, extraction) in &extracted {
                 emit(
                     on_progress,
                     Phase::Storing,
-                    processed - extracted.len() + idx + 1,
+                    *ordinal,
                     total,
                     Some(input.rel.clone()),
                 );

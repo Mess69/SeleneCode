@@ -357,6 +357,60 @@ async fn progress_reports_all_three_phases_in_order() {
     assert!(last_parse.3.is_some());
 }
 
+/// Storing ticks carry the file's ordinal in scan order — monotonic and
+/// correct even though this batch contains a file that never reaches the
+/// commit step (the oversized `src/big.py`, 2nd of 4 in sorted order).
+#[tokio::test(flavor = "multi_thread")]
+async fn storing_progress_is_monotonic_with_skipped_reads_in_the_batch() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mini_project(tmp.path());
+    let indexer = fresh_indexer(tmp.path().to_path_buf()).await;
+
+    let seen: Mutex<Vec<(usize, String)>> = Mutex::new(Vec::new());
+    let cb = |p: &selene_extract::IndexProgress| {
+        if p.phase == Phase::Storing {
+            seen.lock()
+                .unwrap()
+                .push((p.current, p.current_file.clone().unwrap_or_default()));
+        }
+    };
+    assert!(indexer.index_all(Some(&cb)).await.success);
+
+    let ticks = seen.into_inner().unwrap();
+    assert!(
+        ticks.windows(2).all(|w| w[0].0 < w[1].0),
+        "Storing `current` must be strictly increasing: {ticks:?}"
+    );
+    assert!(ticks.iter().all(|t| t.0 >= 1 && t.0 <= 4), "{ticks:?}");
+    // Each committed file reports its own 1-based position in SCANNED — big.py
+    // (position 2) is read-skipped, so 2 is simply absent, never re-used.
+    for (current, file) in &ticks {
+        assert_eq!(
+            SCANNED[current - 1],
+            file,
+            "tick {current} must name the file at that scan position: {ticks:?}"
+        );
+    }
+}
+
+// =============================================================================
+// Constructors: `try_new` surfaces pool-build failure as a Result (review,
+// Minor 1) — `new` defers the same failure into the run's errors, never panics.
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn try_new_builds_the_pool_eagerly_and_indexes() {
+    let tmp = tempfile::tempdir().unwrap();
+    write_mini_project(tmp.path());
+    let store = SurrealStore::in_memory().await.unwrap();
+
+    let indexer = Indexer::try_new(tmp.path().to_path_buf(), store)
+        .expect("the parse pool builds on any sane host");
+    let r = indexer.index_all(None).await;
+    assert_eq!(r.files_indexed, 3, "errors: {:?}", r.errors);
+    assert!(r.success);
+}
+
 // =============================================================================
 // index_files + path traversal refusal
 // =============================================================================
@@ -383,6 +437,61 @@ async fn index_files_indexes_exactly_the_given_paths() {
             .unwrap()
             .is_none(),
         "unlisted files must not be touched"
+    );
+}
+
+// =============================================================================
+// Bulk-mode leak (review, Important 1): every `index_all` exit re-enters
+// search-ready state — a failing scan must never strand the store in
+// deferred-FTS mode (indexes DROPPED ⇒ search_fts silently empty).
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_failing_scan_leaves_the_store_searchable() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path().join("proj");
+    std::fs::create_dir_all(&root).unwrap();
+    std::fs::write(
+        root.join("beacon.py"),
+        "def beacon_symbol():\n    return 1\n",
+    )
+    .unwrap();
+
+    let indexer = fresh_indexer(root.clone()).await;
+    let first = indexer.index_all(None).await;
+    assert_eq!(first.files_indexed, 1, "errors: {:?}", first.errors);
+    // Baseline: after a normal run the FULLTEXT indexes are rebuilt and serve
+    // the symbol (the `identifier` analyzer splits `beacon_symbol`).
+    let before = indexer
+        .store()
+        .search_fts(&["beacon".to_string()], &[], &[], 20, 0)
+        .await
+        .unwrap();
+    assert!(!before.is_empty(), "FTS must serve the symbol after a run");
+
+    // The scan root vanishes ⇒ `scan_directory` errors on the next run.
+    std::fs::remove_dir_all(&root).unwrap();
+    let second = indexer.index_all(None).await;
+    assert!(!second.success, "a failed scan is a failed run");
+    assert!(
+        second.errors.iter().any(|e| {
+            e.code == selene_extract::ErrorCode::ReadError && e.message.contains("scan failed")
+        }),
+        "errors: {:?}",
+        second.errors
+    );
+
+    // The point: the failed run must NOT have dropped the FTS indexes and
+    // walked away — search_fts is success-shaped-empty in bulk mode, so a
+    // leak here is silent and product-breaking (PRD §8.2).
+    let after = indexer
+        .store()
+        .search_fts(&["beacon".to_string()], &[], &[], 20, 0)
+        .await
+        .unwrap();
+    assert!(
+        !after.is_empty(),
+        "a failed scan left the store in bulk-load mode: search_fts is silently empty"
     );
 }
 
