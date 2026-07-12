@@ -30,6 +30,8 @@
 //! stamped on every node (TS read `Date.now()` per node; a single capture
 //! is within the Global Constraints and steadier).
 
+mod body;
+
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -52,6 +54,9 @@ pub struct Session<'s> {
     file_path: &'s str,
     source: &'s str,
     language: Language,
+    /// The language's rules — a `&'static` copy so hooks receiving
+    /// `&mut Session` never conflict with rule dispatch.
+    rules: &'static dyn LanguageRules,
     nodes: Vec<CoreNode>,
     edges: Vec<Edge>,
     unresolved: Vec<UnresolvedReference>,
@@ -64,18 +69,46 @@ pub struct Session<'s> {
     namespace_prefix: Vec<String>,
     /// The one wall-clock read (ms), captured at session start.
     updated_at: i64,
+    /// Value-reference pass state (Task 6, `src/walker/body.rs`):
+    /// `SELENE_VALUE_REFS=0` disables; file/class-scope constant targets by
+    /// name → id (+ per-name file-scope definition counts for the
+    /// conditional-def vs shadow distinction); reader scopes as byte ranges
+    /// (re-located against the tree at flush time — `Session` stays free of
+    /// the tree lifetime).
+    value_refs_enabled: bool,
+    file_scope_values: HashMap<String, String>,
+    file_scope_value_counts: HashMap<String, usize>,
+    value_ref_scopes: Vec<ValueRefScope>,
+}
+
+/// One value-reference reader scope: the symbol's id/name plus the byte
+/// range of its declaration node (re-located at flush time).
+pub(crate) struct ValueRefScope {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) start_byte: usize,
+    pub(crate) end_byte: usize,
 }
 
 impl<'s> Session<'s> {
-    fn new(file_path: &'s str, source: &'s str, language: Language) -> Self {
+    fn new(
+        file_path: &'s str,
+        source: &'s str,
+        language: Language,
+        rules: &'static dyn LanguageRules,
+    ) -> Self {
         let updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        let value_refs_enabled = std::env::var("SELENE_VALUE_REFS")
+            .map(|v| v != "0")
+            .unwrap_or(true);
         Session {
             file_path,
             source,
             language,
+            rules,
             nodes: Vec::new(),
             edges: Vec::new(),
             unresolved: Vec::new(),
@@ -84,6 +117,10 @@ impl<'s> Session<'s> {
             id_index: HashMap::new(),
             namespace_prefix: Vec::new(),
             updated_at,
+            value_refs_enabled,
+            file_scope_values: HashMap::new(),
+            file_scope_value_counts: HashMap::new(),
+            value_ref_scopes: Vec::new(),
         }
     }
 
@@ -234,6 +271,8 @@ impl<'s> Session<'s> {
             });
         }
 
+        self.capture_value_ref_scope(kind, name, &id, node);
+
         self.id_index.insert(id, (kind, name.to_string()));
         self.nodes.push(core);
         Some(self.nodes.len() - 1)
@@ -244,13 +283,72 @@ impl<'s> Session<'s> {
         self.nodes.get(idx).map(|n| n.id.clone())
     }
 
-    /// Body walker — INSERTION POINT (Task 6): calls, instantiations, bare
-    /// calls, static member reads, nested named functions and structural
-    /// types, value-ref capture (`src/walker/body.rs`). Task 5: no-op —
-    /// declaration extraction never descends into function bodies, exactly
-    /// the subset of TS behavior this task ports.
-    pub fn visit_function_body(&mut self, _body: Node<'_>, _fn_id: &str) {
-        // Task 6 lands the real walker here.
+    /// The session's language rules (a `&'static` copy — free to hold
+    /// across `&mut self` calls).
+    pub(crate) fn rules(&self) -> &'static dyn LanguageRules {
+        self.rules
+    }
+    pub(crate) fn language(&self) -> Language {
+        self.language
+    }
+    pub(crate) fn value_refs_enabled(&self) -> bool {
+        self.value_refs_enabled
+    }
+    /// Drain the value-reference state for the flush pass (scopes, targets,
+    /// per-name file-scope definition counts).
+    #[allow(clippy::type_complexity)] // the three-part flush handoff
+    pub(crate) fn take_value_ref_state(
+        &mut self,
+    ) -> (
+        Vec<ValueRefScope>,
+        HashMap<String, String>,
+        HashMap<String, usize>,
+    ) {
+        (
+            std::mem::take(&mut self.value_ref_scopes),
+            std::mem::take(&mut self.file_scope_values),
+            std::mem::take(&mut self.file_scope_value_counts),
+        )
+    }
+
+    /// Value-reference capture (runs on every created node): distinctive
+    /// file/class-scope const/var names become TARGETS (`name.len() >= 3`
+    /// and contains `[A-Z_]`; scope decided by the parent id's kind PREFIX —
+    /// the load-bearing id-prefix contract); function/method/const/var
+    /// declarations become reader SCOPES (byte ranges, re-located at flush).
+    fn capture_value_ref_scope(&mut self, kind: NodeKind, name: &str, id: &str, node: Node<'_>) {
+        if !self.value_refs_enabled {
+            return;
+        }
+        let target_kind_ok = kind == NodeKind::Constant || kind == NodeKind::Variable;
+        if target_kind_ok
+            && name.len() >= 3
+            && name.chars().any(|c| c.is_ascii_uppercase() || c == '_')
+            && let Some(parent_id) = self.scope_id()
+            && (parent_id.starts_with("file:")
+                || parent_id.starts_with("class:")
+                || parent_id.starts_with("module:")
+                || parent_id.starts_with("struct:")
+                || parent_id.starts_with("enum:"))
+        {
+            self.file_scope_values
+                .insert(name.to_string(), id.to_string());
+            *self
+                .file_scope_value_counts
+                .entry(name.to_string())
+                .or_insert(0) += 1;
+        }
+        if matches!(
+            kind,
+            NodeKind::Function | NodeKind::Method | NodeKind::Constant | NodeKind::Variable
+        ) {
+            self.value_ref_scopes.push(ValueRefScope {
+                id: id.to_string(),
+                name: name.to_string(),
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+            });
+        }
     }
 }
 
@@ -325,7 +423,7 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
         return result;
     };
 
-    let mut s = Session::new(file_path, source, language);
+    let mut s = Session::new(file_path, source, language, rules);
 
     // File node: unhashed literal id, name = basename, qualifiedName = the
     // file path (the one deliberate path-valued qualifiedName), endLine =
@@ -371,7 +469,7 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
     visit(rules, &mut s, tree.root_node());
 
     // INSERTION POINT (Task 15a): flush function-as-value candidates.
-    // INSERTION POINT (Task 6): flush value refs.
+    body::flush_value_refs(&mut s, &tree);
 
     if package_idx.is_some() {
         s.node_stack.pop();
