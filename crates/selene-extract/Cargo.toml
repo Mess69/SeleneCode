@@ -10,6 +10,8 @@ license.workspace = true
 selene-core.workspace = true
 regex.workspace = true
 serde.workspace = true
+# Scan pipeline (Tasks 16-17): gitignore-semantics matching for ScopeIgnore.
+ignore.workspace = true
 # tree-sitter core 0.26 + the 12 v0 grammar crates (13 grammars — the
 # typescript crate carries both the TS and TSX LanguageFns). Versions are
 # pinned EXACT in the root [workspace.dependencies] (node-type names are
@@ -28,6 +30,10 @@ tree-sitter-cpp.workspace = true
 tree-sitter-c-sharp.workspace = true
 tree-sitter-php.workspace = true
 tree-sitter-ruby.workspace = true
+
+[dev-dependencies]
+# Scan tests build throwaway directory trees + real `git init` repos.
+tempfile.workspace = true
 
 [lints]
 workspace = true

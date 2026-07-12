@@ -51,6 +51,12 @@ tokio        = { version = "1", features = ["macros", "rt-multi-thread", "sync",
 rayon        = "1"
 # Parsing / extraction  (PRD §3: selene-extract)
 tree-sitter  = "0.26"
+# Scan pipeline (Phase 2 Tasks 16-17): gitignore-semantics matching for
+# ScopeIgnore (the `ignore` crate is ripgrep's battle-tested matcher), and
+# child-process wait with a deadline for the git fast path's bounded `git`
+# invocations (std::process has no timeout of its own).
+ignore       = "0.4"
+wait-timeout = "0.2"
 # No §-pin in rust-ecosystem-2026-07.md; current stable major, house style
 # for non-contract deps. Used by detection sniffers + generated-file
 # classifier (Task 3) and the C/C++ pre-parse blankers (Task 12).
