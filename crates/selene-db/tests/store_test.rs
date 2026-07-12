@@ -932,6 +932,18 @@ fn file_record(
     }
 }
 
+/// Raw row count of one edge table via the `db()` handle. The typed adjacency
+/// reads (`outgoing`/`incoming`) DROP any edge whose neighbor node is missing
+/// (`attach_neighbors`), so they cannot distinguish "edge cascaded away" from
+/// "edge left dangling" — cascade regression guards must count the table raw.
+#[cfg(feature = "kv-mem")]
+async fn edge_table_count(store: &SurrealStore, table: &str) -> i64 {
+    let sql = format!("SELECT count() FROM {table} GROUP ALL");
+    let mut resp = store.db().query(sql).await.unwrap();
+    let rows: Vec<serde_json::Value> = resp.take(0).unwrap();
+    rows.first().and_then(|r| r["count"].as_i64()).unwrap_or(0)
+}
+
 /// Every `unresolved_ref` row, projected to its fields (bypasses the not-yet-
 /// built Task 7 read API via the raw `db()` handle).
 #[cfg(feature = "kv-mem")]
@@ -1066,6 +1078,11 @@ async fn delete_file_cascades_nodes_edges_and_unresolved() {
     let store = fresh_store().await;
     delete_cascade_fixture(&store).await;
 
+    // Baseline raw counts: prove the fixture actually wrote both edge rows, so
+    // the zero-after-delete assertions below cannot pass vacuously.
+    assert_eq!(edge_table_count(&store, "calls").await, 1);
+    assert_eq!(edge_table_count(&store, "contains").await, 1);
+
     store.delete_file("src/f1.rs").await.unwrap();
 
     // f1's nodes are gone; f2's node survives.
@@ -1073,7 +1090,23 @@ async fn delete_file_cascades_nodes_edges_and_unresolved() {
     assert!(store.get_node("method:M").await.unwrap().is_none());
     assert!(store.get_node("function:C").await.unwrap().is_some());
 
-    // No dangling edges readable from the surviving f2 node.
+    // RAW edge-table counts — the cascade regression guard. `outgoing`/
+    // `incoming` drop edges whose neighbor node is missing, so only a raw
+    // count can distinguish "SurrealDB cascaded the RELATE rows" (the probed
+    // 3.2 behavior delete_file RELIES on) from "rows left dangling". If a
+    // SurrealDB upgrade ever stops cascading, these fail loudly.
+    assert_eq!(
+        edge_table_count(&store, "calls").await,
+        0,
+        "cross-file calls edge row must be cascaded away with its target node"
+    );
+    assert_eq!(
+        edge_table_count(&store, "contains").await,
+        0,
+        "internal contains edge row must be cascaded away with its endpoints"
+    );
+
+    // And the typed view over the surviving f2 node agrees.
     assert!(
         store
             .outgoing("function:C", &[], None)
@@ -1093,7 +1126,8 @@ async fn delete_file_cascades_nodes_edges_and_unresolved() {
 
 /// Establishes an initial graph where `src/f2.rs`'s `function:C` reaches into
 /// `src/f1.rs`'s `method:M` (id `method:M@10`, line 10) via a `calls` edge with
-/// the given `metadata`. Returns the caller node so tests can assert incoming.
+/// the given `metadata` (plus a fixed line/column/provenance, so tests can
+/// assert their preservation through the re-attach path).
 #[cfg(feature = "kv-mem")]
 async fn reindex_fixture(store: &SurrealStore, edge_metadata: Option<serde_json::Value>) {
     let mut method = node("M", "src/f1.rs");
@@ -1110,6 +1144,7 @@ async fn reindex_fixture(store: &SurrealStore, edge_metadata: Option<serde_json:
     let cross = Edge {
         line: Some(7),
         column: Some(3),
+        provenance: Some(Provenance::TreeSitter),
         metadata: edge_metadata,
         ..edge("function:C", "method:M@10", EdgeKind::Calls)
     };
@@ -1124,7 +1159,8 @@ async fn reindex_fixture(store: &SurrealStore, edge_metadata: Option<serde_json:
 #[tokio::test(flavor = "multi_thread")]
 async fn replace_file_extraction_reattaches_cross_file_incoming_to_new_id() {
     let store = fresh_store().await;
-    reindex_fixture(&store, None).await;
+    let metadata = serde_json::json!({ "note": "kept-through-reattach" });
+    reindex_fixture(&store, Some(metadata.clone())).await;
 
     // Re-extract f1: the same method M, but shifted to line 20 → a NEW node id.
     let mut method_v2 = node("M", "src/f1.rs");
@@ -1148,16 +1184,37 @@ async fn replace_file_extraction_reattaches_cross_file_incoming_to_new_id() {
     assert_eq!(stats.incoming_dropped, 0);
     assert_eq!(stats.nodes_inserted, 1);
 
+    // Raw-count guard: exactly ONE row in the calls table — the old edge (to
+    // method:M@10) is gone with its cascaded target, the re-attached edge (to
+    // method:M@20) is present. A raw count is required because the typed reads
+    // below drop dangling edges silently (see edge_table_count's docs).
+    assert_eq!(
+        edge_table_count(&store, "calls").await,
+        1,
+        "old edge cascaded away, exactly the re-attached edge remains"
+    );
+
     // The cross-file edge now lands on the NEW node id.
     assert!(store.get_node("method:M@10").await.unwrap().is_none());
     let into_new = store.incoming("method:M@20", &[]).await.unwrap();
     assert_eq!(into_new.len(), 1, "edge re-attached to the new node id");
     assert_eq!(into_new[0].node.id, "function:C");
-    assert_eq!(into_new[0].edge.kind, EdgeKind::Calls);
+
+    // The re-attach rewrites ONLY the target: every other edge field —
+    // kind, line, column, provenance, metadata — is the original's.
+    let reattached = &into_new[0].edge;
+    assert_eq!(reattached.kind, EdgeKind::Calls);
+    assert_eq!(reattached.line, Some(7), "original line preserved");
+    assert_eq!(reattached.column, Some(3), "original column preserved");
     assert_eq!(
-        into_new[0].edge.line,
-        Some(7),
-        "original line/col preserved on re-attach"
+        reattached.provenance,
+        Some(Provenance::TreeSitter),
+        "original provenance preserved"
+    );
+    assert_eq!(
+        reattached.metadata,
+        Some(metadata),
+        "original metadata preserved"
     );
 }
 
@@ -1304,5 +1361,58 @@ async fn replace_file_extraction_ambiguous_match_picks_earliest_start_line() {
     assert!(
         store.incoming("method:M@40", &[]).await.unwrap().is_empty(),
         "the later-line node receives nothing"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_file_extraction_skips_required_field_invalid_nodes_silently() {
+    let store = fresh_store().await;
+
+    // Two valid nodes plus one invalid per required field (empty id / name /
+    // filePath). The invalid ones are skipped silently — no error — and
+    // nodes_inserted counts only the valid ones (per the ReplaceStats doc:
+    // "valid, required-field-complete").
+    let good_a = node("goodA", "src/f1.rs");
+    let good_b = node("goodB", "src/f1.rs");
+    let mut no_id = node("noId", "src/f1.rs");
+    no_id.id = String::new();
+    let mut no_name = node("noName", "src/f1.rs");
+    no_name.name = String::new();
+    let mut no_path = node("noPath", "src/f1.rs");
+    no_path.file_path = String::new();
+
+    let stats = store
+        .replace_file_extraction(
+            "src/f1.rs",
+            &[
+                no_id,
+                good_a.clone(),
+                no_name.clone(),
+                good_b.clone(),
+                no_path,
+            ],
+            &[],
+            &[],
+            &file_record("src/f1.rs", "h", "rust", 1, 2),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(
+        stats.nodes_inserted, 2,
+        "only the two required-field-complete nodes count"
+    );
+    assert_eq!(store.get_node(&good_a.id).await.unwrap(), Some(good_a));
+    assert_eq!(store.get_node(&good_b.id).await.unwrap(), Some(good_b));
+    assert_eq!(
+        store.get_node(&no_name.id).await.unwrap(),
+        None,
+        "the empty-name node must not have been written"
+    );
+    assert_eq!(
+        store.get_nodes_by_file("src/f1.rs").await.unwrap().len(),
+        2,
+        "exactly the valid nodes are attributed to the file"
     );
 }
