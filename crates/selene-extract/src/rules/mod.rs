@@ -9,7 +9,10 @@
 //! land per plan.
 
 pub(crate) mod cpp_preparse;
+pub(crate) mod csharp;
+pub(crate) mod php;
 pub(crate) mod python;
+pub(crate) mod ruby;
 
 use selene_core::{NodeKind, Visibility};
 use tree_sitter::Node;
@@ -208,6 +211,9 @@ pub trait LanguageRules: Sync {
 pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
     match l {
         Language::Python => Some(&python::PythonRules),
+        Language::CSharp => Some(&csharp::CSharpRules),
+        Language::Php => Some(&php::PhpRules),
+        Language::Ruby => Some(&ruby::RubyRules),
         _ => None,
     }
 }

@@ -1,0 +1,79 @@
+---
+source: crates/selene-extract/tests/lang_ruby_test.rs
+expression: r
+---
+nodes:
+  - id: "file:cart.rb"
+    kind: file
+    name: cart.rb
+    qualifiedName: cart.rb
+    filePath: cart.rb
+    language: ruby
+    startLine: 1
+    endLine: 11
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: 0
+  - id: "import:2c67d14f1b11a6e2b79ebc9d2e6eafbc"
+    kind: import
+    name: active_support
+    qualifiedName: active_support
+    filePath: cart.rb
+    language: ruby
+    startLine: 2
+    endLine: 2
+    startColumn: 0
+    endColumn: 24
+    signature: "require 'active_support'"
+    updatedAt: 0
+  - id: "class:fabbb5c7f88f5ae775b6230baf2997b7"
+    kind: class
+    name: Cart
+    qualifiedName: Cart
+    filePath: cart.rb
+    language: ruby
+    startLine: 4
+    endLine: 10
+    startColumn: 0
+    endColumn: 3
+    visibility: public
+    updatedAt: 0
+  - id: "method:4c93d5e3bd92879b3471aec770644623"
+    kind: method
+    name: add
+    qualifiedName: "Cart::add"
+    filePath: cart.rb
+    language: ruby
+    startLine: 7
+    endLine: 9
+    startColumn: 2
+    endColumn: 5
+    visibility: public
+    updatedAt: 0
+edges:
+  - source: "file:cart.rb"
+    target: "import:2c67d14f1b11a6e2b79ebc9d2e6eafbc"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:cart.rb"
+    target: "class:fabbb5c7f88f5ae775b6230baf2997b7"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:fabbb5c7f88f5ae775b6230baf2997b7"
+    target: "method:4c93d5e3bd92879b3471aec770644623"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:cart.rb"
+    referenceName: active_support
+    referenceKind: imports
+    line: 2
+    column: 0
+  - fromNodeId: "class:fabbb5c7f88f5ae775b6230baf2997b7"
+    referenceName: Discountable
+    referenceKind: implements
+    line: 5
+    column: 2
+errors: []
+durationMs: 0
