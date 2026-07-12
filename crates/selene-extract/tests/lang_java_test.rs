@@ -354,3 +354,34 @@ fn representative_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+// =============================================================================
+// Object+name callee branch (post-merge fix): this-receiver unwrap
+// =============================================================================
+
+#[test]
+fn this_field_receiver_unwraps_to_field_name() {
+    // `this.userbo.toLogin2()` is method_invocation(object =
+    // field_access(this, userbo)) — the callee must be `userbo.toLogin2`,
+    // not `this.userbo.toLogin2` (the resolver's single-dot receiver
+    // matching looks the FIELD up in the class's declarations).
+    let code = "class Login {\n    private UserBo userbo;\n    void go() {\n        this.userbo.toLogin2();\n        this.render();\n    }\n}\n";
+    let r = extract("Login.java", code);
+    let go_id = &find(&r, NodeKind::Method, "go").unwrap().id;
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "calls" && &u.from_node_id == go_id)
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"userbo.toLogin2"),
+        "this.field receiver must unwrap: {calls:?}"
+    );
+    assert!(
+        !calls.iter().any(|c| c.starts_with("this.")),
+        "no this.-prefixed callee may survive: {calls:?}"
+    );
+    // Bare `this.render()` → bare method name (skip set).
+    assert!(calls.contains(&"render"));
+}

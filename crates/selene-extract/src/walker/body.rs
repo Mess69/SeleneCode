@@ -80,8 +80,14 @@ fn is_value_ref_lang(l: Language) -> bool {
 /// Visit cap for both value-reference scans (Global Constraints).
 pub(crate) const MAX_VALUE_REF_NODES: usize = 20_000;
 
-/// Receivers that don't aid resolution — bare method name instead.
+/// Receivers that don't aid resolution — bare method name instead
+/// (the GENERIC function-field branch's set; TS keeps this at 4 entries).
 const SKIP_RECEIVERS: [&str; 4] = ["self", "this", "cls", "super"];
+
+/// The object+name branch's skip set — TS defines it separately with SIX
+/// entries: PHP `parent::m()` / `static::m()` must emit the bare method
+/// name, never a `parent.m` / `static.m` qualified ref (unresolvable).
+const OBJECT_NAME_SKIP_RECEIVERS: [&str; 6] = ["self", "this", "cls", "super", "parent", "static"];
 
 impl Session<'_> {
     /// Walk a function/method body (§10): calls, instantiations, bare
@@ -202,11 +208,26 @@ impl Session<'_> {
             )
         {
             let method_name = get_node_text(name_node, source).to_string();
+            // Java `this.userbo.toLogin2()` parses as
+            // method_invocation(object = field_access(this, userbo)) —
+            // unwrap to the FIELD name so the resolver's single-dot
+            // receiver matching can look it up in the enclosing class's
+            // field declarations (`this.userbo` matches nothing).
+            let raw_receiver = if object.kind() == "field_access" {
+                let inner = get_child_by_field(object, "object");
+                let fld = get_child_by_field(object, "field");
+                match (inner, fld) {
+                    (Some(i), Some(f)) if i.kind() == "this" || i.kind() == "this_expression" => {
+                        get_node_text(f, source).to_string()
+                    }
+                    _ => get_node_text(object, source).to_string(),
+                }
+            } else {
+                get_node_text(object, source).to_string()
+            };
             // PHP `$receiver` → `receiver`.
-            let receiver_name = get_node_text(object, source)
-                .trim_start_matches('$')
-                .to_string();
-            callee_name = if SKIP_RECEIVERS.contains(&receiver_name.as_str()) {
+            let receiver_name = raw_receiver.trim_start_matches('$').to_string();
+            callee_name = if OBJECT_NAME_SKIP_RECEIVERS.contains(&receiver_name.as_str()) {
                 method_name
             } else {
                 format!("{receiver_name}.{method_name}")

@@ -207,3 +207,36 @@ fn representative_fixture_snapshot() {
     r.duration_ms = 0;
     insta::assert_yaml_snapshot!("php_representative_fixture", r);
 }
+
+// =============================================================================
+// Object+name callee branch (post-merge fix): parent/static skip
+// =============================================================================
+
+#[test]
+fn parent_and_static_receivers_emit_bare_method_names() {
+    // `parent::boot()` / `static::create()` must NOT emit `parent.boot` /
+    // `static.create` qualified refs (unresolvable); the bare name lets
+    // same-file/hierarchy resolution work. `self::` was already skipped.
+    let code = "<?php\nclass Child extends Base {\n    public function boot(): void {\n        parent::boot();\n        static::create();\n        self::helper();\n        Other::make();\n    }\n}\n";
+    let r = extract("Child.php", code);
+    let boot_id = &find(&r, NodeKind::Method, "boot").unwrap().id;
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "calls" && &u.from_node_id == boot_id)
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(calls.contains(&"boot"), "parent:: → bare: {calls:?}");
+    assert!(calls.contains(&"create"), "static:: → bare: {calls:?}");
+    assert!(calls.contains(&"helper"), "self:: → bare: {calls:?}");
+    assert!(
+        calls.contains(&"Other.make"),
+        "real class receivers stay qualified: {calls:?}"
+    );
+    assert!(
+        !calls
+            .iter()
+            .any(|c| c.starts_with("parent.") || c.starts_with("static.")),
+        "no parent./static. qualified refs: {calls:?}"
+    );
+}
