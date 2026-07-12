@@ -21,6 +21,7 @@ mod grammars;
 mod helpers;
 mod language;
 mod rules;
+mod scan;
 mod types;
 mod walker;
 
@@ -32,6 +33,10 @@ pub use helpers::{
 pub use language::{Language, detect_language, is_file_level_only, is_source_file};
 pub use rules::{
     ClassKind, ImportInfo, LanguageRules, MethodClass, NodeTypeTables, VariableInfo, rules_for,
+};
+pub use scan::ignore::{ScopeIgnore, ScopeOverrides};
+pub use scan::{
+    ScanOverrides, discover_embedded_repo_roots, find_unindexed_ignored_repos, scan_directory,
 };
 pub use types::{ExtractionResult, MAX_FILE_SIZE, UnresolvedReference};
 pub use walker::{NodeExtra, Session, extract_from_source};
