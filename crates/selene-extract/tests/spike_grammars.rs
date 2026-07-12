@@ -457,7 +457,19 @@ namespace App {
             "object_creation_expression",
         ],
     );
-    eprintln!("[csharp-raw] has ERROR: {}", raw_kinds.contains("ERROR"));
+    // Task 1 review rider (Minor 2): the raw-parse observation is a pinned
+    // fact, not a printout — this class-member-list `#if` parses natively as
+    // `preproc_if` with no ERROR (the #237 misparse needs the enum-member
+    // shape). If a grammar bump changes either, this fails loudly instead of
+    // silently shifting the blanker's rationale.
+    assert!(
+        raw_kinds.contains("preproc_if"),
+        "raw C# directives must surface as preproc_if nodes, got: {raw_kinds:?}"
+    );
+    assert!(
+        !raw_kinds.contains("ERROR"),
+        "raw class-member-list #if must parse without ERROR"
+    );
 
     // Blanked form: the extractor's pre-parse blanks each directive line with
     // equal-length spaces (newlines kept) so BOTH branches survive as members.

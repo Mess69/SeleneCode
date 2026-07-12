@@ -8,6 +8,7 @@
 //! Rust/Go (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14)
 //! land per plan.
 
+pub(crate) mod cpp_preparse;
 pub(crate) mod python;
 
 use selene_core::{NodeKind, Visibility};
