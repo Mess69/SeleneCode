@@ -16,8 +16,9 @@
 //! kind: every adjacency read is **record-anchored** — one multi-statement
 //! query that first collects the edge record ids by walking the graph
 //! pointers *from the queried node records themselves* (`LET $eids =
-//! array::flatten(array::flatten([(SELECT VALUE ->kind FROM $rids), ...]))`,
-//! one subquery per kind; the double flatten is load-bearing — see
+//! array::flatten(array::flatten((SELECT VALUE [->kind1, ->kind2, ...]
+//! FROM $rids)))` — a single pass over the queried records projecting every
+//! kind's pointer field at once; the double flatten is load-bearing — see
 //! [`anchored_adjacency_sql`]), then point-fetches those edge records
 //! (`SELECT ... FROM $eids`).
 //! `record::tb(id)` recovers which table a given edge came from — exactly
@@ -330,31 +331,40 @@ fn non_contains_from_clause() -> String {
 }
 
 /// Builds the two-statement record-anchored adjacency query the module docs
-/// describe: `LET $eids = array::flatten(array::flatten([(SELECT VALUE
-/// {arrow}{kind} FROM $rids), ...]))` — one graph-pointer subquery per kind
-/// (empty `kinds` = all 12) — then `SELECT {EDGE_FIELDS} FROM $eids`
-/// point-fetching the collected edge records, with an optional extra `WHERE`
-/// filter on that (frontier-sized) row set. `arrow` is `"->"` for outgoing
-/// (the queried records are the edges' `in`) or `"<-"` for incoming (the
-/// edges' `out`). Callers bind `$rids` and take result index 1 — the `LET`
-/// occupies index 0.
+/// describe: `LET $eids = array::flatten(array::flatten((SELECT VALUE
+/// [{arrow}{kind}, ...] FROM $rids)))` — **one** pass over the queried
+/// records projecting every kind's graph pointer at once (empty `kinds` =
+/// all 12) — then `SELECT {EDGE_FIELDS} FROM $eids` point-fetching the
+/// collected edge records, with an optional extra `WHERE` filter on that
+/// (frontier-sized) row set. `arrow` is `"->"` for outgoing (the queried
+/// records are the edges' `in`) or `"<-"` for incoming (the edges' `out`).
+/// Callers bind `$rids` and take result index 1 — the `LET` occupies index 0.
+///
+/// The single-pass array projection replaced one subquery *per kind*
+/// (`[(SELECT VALUE {arrow}{kind} FROM $rids), ...]`) in the Task 9d perf
+/// pass: each per-kind subquery re-loaded every `$rids` record to read one
+/// pointer field, so a k-kind query cost k record loads per frontier node —
+/// the dominant term in hub-rooted deep traversals (a depth-3 callers
+/// prefetch over a 6,183-node frontier paid 4 × 6,183 record loads in the
+/// `LET` alone; see `docs/benchmarks/2026-07-phase1-db-gate.md`). The array
+/// literal reads all k pointer fields in one load per record.
 ///
 /// The **double** `array::flatten` is load-bearing (verified against the
 /// embedded engine — `array::flatten` strips exactly one level per call):
-/// each subquery yields one edge-id *array per queried record*, and the
-/// bracketed kind-list wraps those in one more level. One flatten pass
+/// the projection yields, per queried record, an array of per-kind edge-id
+/// arrays, and `SELECT VALUE` wraps those per-record. One flatten pass
 /// leaves nested (and, for edge-less kinds, empty `[]`) elements that make
 /// the point-fetch's `record::tb(id)` projection throw ("Expected `record`
 /// but found `[]`"); the second pass concatenates them into a flat edge-id
 /// list, dropping the empties.
 fn anchored_adjacency_sql(kinds: &[EdgeKind], arrow: &str, extra_where: Option<&str>) -> String {
-    let subqueries = table_list(kinds)
+    let pointers = table_list(kinds)
         .iter()
-        .map(|k| format!("(SELECT VALUE {arrow}{k} FROM $rids)"))
+        .map(|k| format!("{arrow}{k}"))
         .collect::<Vec<_>>()
         .join(", ");
     let mut sql = format!(
-        "LET $eids = array::flatten(array::flatten([{subqueries}])); \
+        "LET $eids = array::flatten(array::flatten((SELECT VALUE [{pointers}] FROM $rids))); \
          SELECT {EDGE_FIELDS} FROM $eids"
     );
     if let Some(filter) = extra_where {
@@ -550,6 +560,44 @@ impl SurrealStore {
         self.attach_neighbors(edges, EdgeEndpoint::Source).await
     }
 
+    /// The raw edge rows of [`Self::outgoing_batch`] — the anchored adjacency
+    /// fetch *without* the neighbor-node attach. The traversal prefetch layer
+    /// (`src/traverse.rs`) consumes this directly and maintains its own
+    /// cross-level node-payload cache, so a payload is fetched at most once
+    /// per traversal however many levels/edges reference it (Task 9d
+    /// frontier pruning: the §5.3 probe measured 6,834 cross-level payload
+    /// re-fetches in a single depth-3 hub-rooted callers prefetch on the
+    /// 20k-node bench graph).
+    pub(crate) async fn outgoing_edges(
+        &self,
+        ids: &[String],
+        kinds: &[EdgeKind],
+    ) -> Result<Vec<Edge>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = anchored_adjacency_sql(kinds, "->", None);
+        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
+        decode_edges(rows)
+    }
+
+    /// The raw edge rows of [`Self::incoming_batch`] — see
+    /// [`Self::outgoing_edges`].
+    pub(crate) async fn incoming_edges(
+        &self,
+        ids: &[String],
+        kinds: &[EdgeKind],
+    ) -> Result<Vec<Edge>> {
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let sql = anchored_adjacency_sql(kinds, "<-", None);
+        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
+        decode_edges(rows)
+    }
+
     /// [`Self::outgoing`] batched over multiple ids (no provenance filter),
     /// keyed by the queried id, as **one** query for the whole batch (not a
     /// per-id loop) — this powers the BFS frontier expansion (`selene-graph`,
@@ -560,13 +608,7 @@ impl SurrealStore {
         ids: &[String],
         kinds: &[EdgeKind],
     ) -> Result<HashMap<String, Vec<NeighborEntry>>> {
-        if ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let sql = anchored_adjacency_sql(kinds, "->", None);
-        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
-        let rows: Vec<serde_json::Value> = resp.take(1)?;
-        let edges = decode_edges(rows)?;
+        let edges = self.outgoing_edges(ids, kinds).await?;
         self.group_neighbors(edges, EdgeEndpoint::Target).await
     }
 
@@ -576,13 +618,7 @@ impl SurrealStore {
         ids: &[String],
         kinds: &[EdgeKind],
     ) -> Result<HashMap<String, Vec<NeighborEntry>>> {
-        if ids.is_empty() {
-            return Ok(HashMap::new());
-        }
-        let sql = anchored_adjacency_sql(kinds, "<-", None);
-        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
-        let rows: Vec<serde_json::Value> = resp.take(1)?;
-        let edges = decode_edges(rows)?;
+        let edges = self.incoming_edges(ids, kinds).await?;
         self.group_neighbors(edges, EdgeEndpoint::Source).await
     }
 

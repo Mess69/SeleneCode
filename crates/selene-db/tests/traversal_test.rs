@@ -977,3 +977,64 @@ async fn children_returns_direct_contains_targets_only() {
     assert!(store.children(&m1.id).await.unwrap().is_empty());
     assert!(store.children("function:nope").await.unwrap().is_empty());
 }
+
+// =============================================================================
+// Task 9d — frontier-pruning regression fence (dense fan-in)
+// =============================================================================
+
+#[tokio::test(flavor = "multi_thread")]
+async fn callers_dense_fan_in_expands_each_node_once() {
+    // A dense fan-in shape where re-expanding already-visited nodes is
+    // quadratic: 20 callers (A*) that each call all 15 intermediate targets
+    // (B*), which each call the hub. A naive frontier that re-enqueues or
+    // re-sends visited nodes would expand the whole A-set once per B; the
+    // pruned prefetch sends every node exactly once. Semantics pin: the exact
+    // TS DFS replay order — B01's entire caller subtree (A01..A20, by edge
+    // line) before B02..B15, which by then contribute nothing new — and each
+    // node exactly once (#1086 dedup).
+    let hub = func("hub");
+    let bs: Vec<Node> = (1..=15).map(|j| func(&format!("B{j:02}"))).collect();
+    let callers_a: Vec<Node> = (1..=20).map(|i| func(&format!("A{i:02}"))).collect();
+
+    let mut nodes = vec![hub.clone()];
+    nodes.extend(bs.iter().cloned());
+    nodes.extend(callers_a.iter().cloned());
+
+    let mut edges = Vec::new();
+    for (j, b) in bs.iter().enumerate() {
+        edges.push(edge_at(
+            b,
+            &hub,
+            EdgeKind::Calls,
+            u32::try_from(j + 1).unwrap(),
+        ));
+    }
+    for (i, a) in callers_a.iter().enumerate() {
+        for b in &bs {
+            edges.push(edge_at(
+                a,
+                b,
+                EdgeKind::Calls,
+                u32::try_from(i + 1).unwrap(),
+            ));
+        }
+    }
+    let store = store_with(&nodes, &edges).await;
+
+    let d3 = store.callers(&hub.id, 3).await.unwrap();
+    assert_eq!(d3.len(), 35, "15 B + 20 A, each exactly once");
+    let ids: Vec<&str> = d3.iter().map(|e| e.node.id.as_str()).collect();
+    let mut expected: Vec<&str> = vec![bs[0].id.as_str()];
+    expected.extend(callers_a.iter().map(|a| a.id.as_str()));
+    expected.extend(bs[1..].iter().map(|b| b.id.as_str()));
+    assert_eq!(ids, expected, "exact DFS replay order");
+
+    // Each entry is paired with the first edge that reached it.
+    assert_eq!(d3[0].edge.source, bs[0].id);
+    assert_eq!(d3[0].edge.target, hub.id);
+    assert_eq!(d3[1].edge.source, callers_a[0].id);
+    assert_eq!(d3[1].edge.target, bs[0].id);
+
+    let d1 = store.callers(&hub.id, 1).await.unwrap();
+    assert_eq!(d1.len(), 15, "depth 1 is the direct callers only");
+}

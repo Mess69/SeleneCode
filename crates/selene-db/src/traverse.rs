@@ -14,10 +14,15 @@
 //! enqueued-on-enqueue sets, per-add node caps, container children joining at
 //! the *same* depth, unconditional dependency-edge recording). But **every
 //! adjacency expansion is a batched store query over the whole frontier**
-//! ([`SurrealStore::outgoing_batch`]/[`SurrealStore::incoming_batch`]) — never
-//! a per-node query in a loop — so a traversal costs O(depth) round trips
-//! regardless of frontier width. Pure-SurrealQL one-shots remain a future
-//! optimization behind these same method signatures.
+//! (the edges-only [`SurrealStore::outgoing_edges`]/
+//! [`SurrealStore::incoming_edges`] plus a walk-long node-payload cache —
+//! see [`SurrealStore::level_entries`]) — never a per-node query in a loop —
+//! so a traversal costs O(depth) round-trip pairs regardless of frontier
+//! width, and each distinct node's payload crosses the wire at most once per
+//! walk (Task 9d: cross-level payload re-fetch was nearly half the node
+//! traffic of a hub-rooted depth-3 callers prefetch). Pure-SurrealQL
+//! one-shots remain a future optimization behind these same method
+//! signatures.
 //!
 //! ## No recursion
 //!
@@ -249,14 +254,74 @@ fn replay_hierarchy_walk(
 }
 
 impl SurrealStore {
+    /// One prefetch level's adjacency over `ids`: the edges-only batch fetch
+    /// ([`SurrealStore::outgoing_edges`]/[`SurrealStore::incoming_edges`])
+    /// with neighbor payloads attached from — and the misses fetched into —
+    /// `node_cache`, grouped by the queried id.
+    ///
+    /// Task 9d frontier pruning: attaching from a per-traversal cache means a
+    /// node's payload crosses the wire **once per traversal**, not once per
+    /// level that reaches it — the §5.3 probe measured 6,834 cross-level
+    /// payload re-fetches (of 17,074 distinct nodes) in a single depth-3
+    /// hub-rooted callers prefetch on the 20k-node bench graph. An edge whose
+    /// neighbor id is missing from the node table is dropped, exactly like
+    /// `edges.rs`' `attach_neighbors` (success-shaped-miss contract).
+    async fn level_entries(
+        &self,
+        ids: &[String],
+        kinds: &[EdgeKind],
+        dir: Adj,
+        node_cache: &mut HashMap<String, Node>,
+    ) -> Result<HashMap<String, Vec<NeighborEntry>>> {
+        let edges = match dir {
+            Adj::Outgoing => self.outgoing_edges(ids, kinds).await?,
+            Adj::Incoming => self.incoming_edges(ids, kinds).await?,
+        };
+        // Outgoing: the neighbor is the edge's target, the queried id its
+        // source; incoming is the mirror (same mapping as `edges.rs`'
+        // `EdgeEndpoint`).
+        let neighbor_of = |e: &Edge| match dir {
+            Adj::Outgoing => e.target.clone(),
+            Adj::Incoming => e.source.clone(),
+        };
+        let mut missing: Vec<String> = edges
+            .iter()
+            .map(&neighbor_of)
+            .filter(|id| !node_cache.contains_key(id))
+            .collect();
+        missing.sort_unstable();
+        missing.dedup();
+        if !missing.is_empty() {
+            node_cache.extend(self.get_nodes(&missing).await?);
+        }
+        let mut out: HashMap<String, Vec<NeighborEntry>> = HashMap::new();
+        for edge in edges {
+            let Some(node) = node_cache.get(&neighbor_of(&edge)).cloned() else {
+                continue;
+            };
+            let key = match dir {
+                Adj::Outgoing => edge.source.clone(),
+                Adj::Incoming => edge.target.clone(),
+            };
+            out.entry(key)
+                .or_default()
+                .push(NeighborEntry { node, edge });
+        }
+        Ok(out)
+    }
+
     /// Level-batched adjacency prefetch from `root` over `kinds` in `dir`:
-    /// one `outgoing_batch`/`incoming_batch` round trip per level, up to
-    /// `max_levels` levels (pass `u32::MAX` for "until the frontier empties").
-    /// Each node's entry list is sorted per [`entry_key`].
+    /// one edges-batch (+ cache-miss node fetch) round trip pair per level
+    /// ([`Self::level_entries`]), up to `max_levels` levels (pass `u32::MAX`
+    /// for "until the frontier empties"). Each node's entry list is sorted
+    /// per [`entry_key`].
     ///
     /// This covers every node whose shortest-hop depth is `< max_levels` — a
     /// superset of the nodes a depth-first replay can expand, since a DFS
-    /// first *enters* a node at a depth ≥ its shortest-hop depth.
+    /// first *enters* a node at a depth ≥ its shortest-hop depth. The
+    /// frontier itself is pruned exactly (`fetched` gates on first sight), so
+    /// no node is ever re-sent in a later batch and duplicate targets within
+    /// a level expand once.
     async fn prefetch_adjacency(
         &self,
         root: &str,
@@ -265,14 +330,14 @@ impl SurrealStore {
         max_levels: u32,
     ) -> Result<HashMap<String, Vec<NeighborEntry>>> {
         let mut adjacency: HashMap<String, Vec<NeighborEntry>> = HashMap::new();
+        let mut node_cache: HashMap<String, Node> = HashMap::new();
         let mut fetched: HashSet<String> = HashSet::from([root.to_string()]);
         let mut frontier: Vec<String> = vec![root.to_string()];
         let mut level: u32 = 0;
         while !frontier.is_empty() && level < max_levels {
-            let mut batch = match dir {
-                Adj::Outgoing => self.outgoing_batch(&frontier, kinds).await?,
-                Adj::Incoming => self.incoming_batch(&frontier, kinds).await?,
-            };
+            let mut batch = self
+                .level_entries(&frontier, kinds, dir, &mut node_cache)
+                .await?;
             let mut next: Vec<String> = Vec::new();
             for id in &frontier {
                 let mut entries = batch.remove(id).unwrap_or_default();
@@ -291,21 +356,34 @@ impl SurrealStore {
     }
 
     /// One BFS level's adjacency for [`Self::traverse`], honoring the
-    /// direction and edge-kind filter: one batch per direction
-    /// (`Direction::Both` = two), each node's merged list sorted per
-    /// [`entry_key`].
+    /// direction and edge-kind filter: one edges-batch per direction
+    /// (`Direction::Both` = two), payloads attached via the walk-long
+    /// `node_cache` ([`Self::level_entries`]), each node's merged list sorted
+    /// per [`entry_key`].
     async fn level_adjacency(
         &self,
         ids: &[String],
         opts: &TraversalOptions,
+        node_cache: &mut HashMap<String, Node>,
     ) -> Result<HashMap<String, Vec<NeighborEntry>>> {
         let kinds = opts.edge_kinds.as_slice();
         let mut merged = match opts.direction {
-            Direction::Outgoing => self.outgoing_batch(ids, kinds).await?,
-            Direction::Incoming => self.incoming_batch(ids, kinds).await?,
+            Direction::Outgoing => {
+                self.level_entries(ids, kinds, Adj::Outgoing, node_cache)
+                    .await?
+            }
+            Direction::Incoming => {
+                self.level_entries(ids, kinds, Adj::Incoming, node_cache)
+                    .await?
+            }
             Direction::Both => {
-                let mut out = self.outgoing_batch(ids, kinds).await?;
-                for (id, entries) in self.incoming_batch(ids, kinds).await? {
+                let mut out = self
+                    .level_entries(ids, kinds, Adj::Outgoing, node_cache)
+                    .await?;
+                for (id, entries) in self
+                    .level_entries(ids, kinds, Adj::Incoming, node_cache)
+                    .await?
+                {
                     out.entry(id).or_default().extend(entries);
                 }
                 out
@@ -320,9 +398,12 @@ impl SurrealStore {
     /// Batched adjacency prefetch for [`Self::impact_radius`]. Per depth
     /// level: the same-depth `contains` closure is expanded first (containers
     /// pull their children — transitively, for nested containers — into the
-    /// level, one `outgoing_batch` per nesting round), then **one**
-    /// `incoming_batch` over the whole closure fetches the non-`contains`
-    /// dependency edges whose sources form the next level.
+    /// level, one edges-batch per nesting round), then **one** incoming
+    /// edges-batch over the whole closure fetches the non-`contains`
+    /// dependency edges whose sources form the next level. One `node_cache`
+    /// spans both phases and every level (the Task 8 ledger's "impact
+    /// prefetch over-fetch on fan-in heavy graphs" — closed by the same
+    /// Task 9d pruning as the callers prefetch, see [`Self::level_entries`]).
     #[allow(clippy::type_complexity)] // two adjacency maps: (contains, incoming)
     async fn prefetch_impact_adjacency(
         &self,
@@ -338,6 +419,8 @@ impl SurrealStore {
             .collect();
         let mut contains_adj: HashMap<String, Vec<NeighborEntry>> = HashMap::new();
         let mut incoming_adj: HashMap<String, Vec<NeighborEntry>> = HashMap::new();
+        let mut node_cache: HashMap<String, Node> =
+            HashMap::from([(focal.id.clone(), focal.clone())]);
         let mut fetched: HashSet<String> = HashSet::from([focal.id.clone()]);
         let mut frontier: Vec<(String, NodeKind)> = vec![(focal.id.clone(), focal.kind)];
         let mut depth: u32 = 0;
@@ -350,7 +433,14 @@ impl SurrealStore {
                 .map(|(id, _)| id.clone())
                 .collect();
             while !pending.is_empty() {
-                let mut batch = self.outgoing_batch(&pending, &[EdgeKind::Contains]).await?;
+                let mut batch = self
+                    .level_entries(
+                        &pending,
+                        &[EdgeKind::Contains],
+                        Adj::Outgoing,
+                        &mut node_cache,
+                    )
+                    .await?;
                 let mut next_pending: Vec<String> = Vec::new();
                 for id in &pending {
                     let mut entries = batch.remove(id).unwrap_or_default();
@@ -368,7 +458,9 @@ impl SurrealStore {
                 pending = next_pending;
             }
 
-            let mut batch = self.incoming_batch(&closure, &non_contains).await?;
+            let mut batch = self
+                .level_entries(&closure, &non_contains, Adj::Incoming, &mut node_cache)
+                .await?;
             let mut next: Vec<(String, NodeKind)> = Vec::new();
             for id in &closure {
                 let mut entries = batch.remove(id).unwrap_or_default();
@@ -646,6 +738,8 @@ impl SurrealStore {
         let mut seen_edges: HashSet<(String, String, EdgeKind, i64, i64)> = HashSet::new();
         let mut visited: HashSet<String> = HashSet::new();
         let mut enqueued: HashSet<String> = HashSet::from([start_node.id.clone()]);
+        let mut node_cache: HashMap<String, Node> =
+            HashMap::from([(start_node.id.clone(), start_node.clone())]);
 
         if opts.include_start {
             nodes.insert(start_node.id.clone(), start_node.clone());
@@ -665,7 +759,7 @@ impl SurrealStore {
                 break;
             }
 
-            let mut adjacency = self.level_adjacency(&level, opts).await?;
+            let mut adjacency = self.level_adjacency(&level, opts, &mut node_cache).await?;
             let mut next: Vec<String> = Vec::new();
 
             for node_id in level {
