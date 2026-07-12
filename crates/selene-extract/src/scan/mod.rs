@@ -170,6 +170,15 @@ pub fn scan_directory(root: &Path, overrides: &ScanOverrides) -> std::io::Result
 /// opt-in via config (Phase 8) and not discovered here — `.gitignore` is
 /// respected (#970/#976). Returns `[]` for non-git roots: the filesystem
 /// walk handles nested repos there already.
+///
+/// KNOWN GAP (documented, deliberately not aligned): `scan_directory`'s
+/// git fast path additionally falls back to the FS walk when `root` is a
+/// GITIGNORED subdirectory of a larger repo (root ≠ toplevel +
+/// `check-ignore` hit); this standalone helper does not repeat that check
+/// and will git-discover from inside such a root. Aligning would cost two
+/// extra git invocations on every call for an edge only `scan_directory`'s
+/// callers hit — they already get the fallback there. Revisit if a direct
+/// consumer of this helper ever scans gitignored roots.
 pub fn discover_embedded_repo_roots(root: &Path) -> Vec<String> {
     if run_git(root, &["rev-parse", "--git-dir"], GIT_TIMEOUT_SHORT)
         .filter(|out| out.success)
@@ -624,6 +633,14 @@ fn collect_git_files(
     let defaults = defaults_only_ignore();
     for rel in nul_entries(&untracked.stdout) {
         if rel.ends_with('/') {
+            // Guard against the `./` whole-cwd sentinel (#936): without it a
+            // repo whose entire cwd is untracked would classify ITSELF as an
+            // embedded repo and self-recurse. This listing has no
+            // `--directory`, so the sentinel is not expected here — the
+            // guard is defensive symmetry with the discovery pass.
+            if is_whole_cwd_entry(rel) {
+                continue;
+            }
             let child = repo_dir.join(rel);
             if classify_git_dir(&child) == GitDirClass::Embedded && !matches_rel(&defaults, rel) {
                 let full = format!("{prefix}{rel}");

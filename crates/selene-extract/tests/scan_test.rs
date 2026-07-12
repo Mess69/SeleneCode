@@ -18,6 +18,11 @@ fn git(cwd: &Path, args: &[&str]) {
     let out = Command::new("git")
         .args(args)
         .current_dir(cwd)
+        // Hermetic: a developer's global/system gitconfig (hooks,
+        // fsmonitor, init.defaultBranch, ignore tweaks) must not leak into
+        // these fixture repos.
+        .env("GIT_CONFIG_GLOBAL", "/dev/null")
+        .env("GIT_CONFIG_SYSTEM", "/dev/null")
         .output()
         .expect("spawn git");
     assert!(
