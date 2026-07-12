@@ -562,7 +562,7 @@ consumed the same JS string).
 - [ ] `recover_mangled_cpp_name` (only names containing whitespace, not `operator…`/
   `~…`, not `Ret (name)` idiom; last token before `(`; reject the 23-entry
   `CPP_PRIMITIVE_NAMES` — copy from c-cpp.ts), `normalize_cpp_return_type` (unwrap
-  `unique_ptr|shared_ptr|weak_ptr|optional<T>`, strip cv/`<>`/`*&`, reject the 27-entry
+  `unique_ptr|shared_ptr|weak_ptr|optional<T>`, strip cv/`<>`/`*&`, reject the 28-entry
   primitive set), `strip_cpp_template_args`.
 - [ ] `blank_csharp_preprocessor_directives` — per-line
   `^([ \t]*)#[ \t]*(if|elif|else|endif)\b[^\n]*` (#237, keeps both branches);
@@ -605,7 +605,7 @@ Tests: `tests/lang_csharp_test.rs`, `tests/lang_php_test.rs`, `tests/lang_ruby_t
 - [ ] PHP: include/require(`_once`) expressions as importTypes with static-string-literal
   paths ONLY (#660 — dynamic paths silently skipped); class constants + trait `use` →
   `implements` refs via visit_node hook; visibility default Public; `self|static|$this`
-  return → marker `'self'`; the 19-name lowercase non-class return set (copy from
+  return → marker `'self'`; the 18-name lowercase non-class return set (copy from
   `../codegraph/src/extraction/languages/php.ts`); file-level `namespace Foo\Bar;`
   unbraced form only.
 - [ ] Ruby: `module` nodes via hook; mixins `include|extend|prepend` on receiverless
