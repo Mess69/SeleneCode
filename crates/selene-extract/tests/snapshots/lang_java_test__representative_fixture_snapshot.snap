@@ -1,0 +1,268 @@
+---
+source: crates/selene-extract/tests/lang_java_test.rs
+expression: r
+---
+nodes:
+  - id: "file:Order.java"
+    kind: file
+    name: Order.java
+    qualifiedName: Order.java
+    filePath: Order.java
+    language: java
+    startLine: 1
+    endLine: 19
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "namespace:600bcb714d91d338f1cc64cf1e2796bb"
+    kind: namespace
+    name: com.example.store
+    qualifiedName: com.example.store
+    filePath: Order.java
+    language: java
+    startLine: 1
+    endLine: 1
+    startColumn: 0
+    endColumn: 26
+    updatedAt: "[ts]"
+  - id: "import:2d8fd37d210e8e5782cf755b85389480"
+    kind: import
+    name: lombok.Data
+    qualifiedName: "com.example.store::lombok.Data"
+    filePath: Order.java
+    language: java
+    startLine: 3
+    endLine: 3
+    startColumn: 0
+    endColumn: 19
+    signature: import lombok.Data;
+    updatedAt: "[ts]"
+  - id: "class:7889d2b456084396820268784ef13003"
+    kind: class
+    name: Order
+    qualifiedName: "com.example.store::Order"
+    filePath: Order.java
+    language: java
+    startLine: 6
+    endLine: 14
+    startColumn: 0
+    endColumn: 1
+    docstring: Aggregate root
+    visibility: public
+    updatedAt: "[ts]"
+  - id: "field:8b7a669b8af52bcbcf21204cdef400cf"
+    kind: field
+    name: id
+    qualifiedName: "com.example.store::Order::id"
+    filePath: Order.java
+    language: java
+    startLine: 8
+    endLine: 8
+    startColumn: 19
+    endColumn: 21
+    signature: String id
+    visibility: private
+    isStatic: false
+    updatedAt: "[ts]"
+  - id: "constant:f85b5ceba49fc7a36a5ff2c26c64b5da"
+    kind: constant
+    name: VERSION
+    qualifiedName: "com.example.store::Order::VERSION"
+    filePath: Order.java
+    language: java
+    startLine: 9
+    endLine: 9
+    startColumn: 29
+    endColumn: 40
+    signature: int VERSION
+    visibility: private
+    isStatic: true
+    updatedAt: "[ts]"
+  - id: "method:370d70f827734cd67fe7b28e47a8ebea"
+    kind: method
+    name: describe
+    qualifiedName: "com.example.store::Order::describe"
+    filePath: Order.java
+    language: java
+    startLine: 11
+    endLine: 13
+    startColumn: 4
+    endColumn: 5
+    signature: String ()
+    visibility: public
+    isStatic: false
+    returnType: String
+    updatedAt: "[ts]"
+  - id: "method:af8f066984145300ebc29f656179f6ba"
+    kind: method
+    name: getId
+    qualifiedName: "com.example.store::Order::getId"
+    filePath: Order.java
+    language: java
+    startLine: 8
+    endLine: 8
+    startColumn: 19
+    endColumn: 21
+    docstring: Lombok-generated (@Data)
+    signature: String getId()
+    visibility: public
+    decorators:
+      - lombok
+    returnType: String
+    updatedAt: "[ts]"
+  - id: "method:a8cb269d68b874773c1074939e37a2d1"
+    kind: method
+    name: setId
+    qualifiedName: "com.example.store::Order::setId"
+    filePath: Order.java
+    language: java
+    startLine: 8
+    endLine: 8
+    startColumn: 19
+    endColumn: 21
+    docstring: Lombok-generated (@Data)
+    signature: void setId(String id)
+    visibility: public
+    decorators:
+      - lombok
+    updatedAt: "[ts]"
+  - id: "method:abb2669abecb7d1e47afe667ed36de3d"
+    kind: method
+    name: toString
+    qualifiedName: "com.example.store::Order::toString"
+    filePath: Order.java
+    language: java
+    startLine: 7
+    endLine: 7
+    startColumn: 13
+    endColumn: 18
+    docstring: Lombok-generated (@Data)
+    signature: String toString()
+    visibility: public
+    decorators:
+      - lombok
+    updatedAt: "[ts]"
+  - id: "method:73f78b3bc15c7b31161c6dc9ca8e9d48"
+    kind: method
+    name: equals
+    qualifiedName: "com.example.store::Order::equals"
+    filePath: Order.java
+    language: java
+    startLine: 7
+    endLine: 7
+    startColumn: 13
+    endColumn: 18
+    docstring: Lombok-generated (@Data)
+    signature: boolean equals(Object o)
+    visibility: public
+    decorators:
+      - lombok
+    updatedAt: "[ts]"
+  - id: "method:1feda8158781e06436dfc04439691afb"
+    kind: method
+    name: hashCode
+    qualifiedName: "com.example.store::Order::hashCode"
+    filePath: Order.java
+    language: java
+    startLine: 7
+    endLine: 7
+    startColumn: 13
+    endColumn: 18
+    docstring: Lombok-generated (@Data)
+    signature: int hashCode()
+    visibility: public
+    decorators:
+      - lombok
+    updatedAt: "[ts]"
+  - id: "interface:95c8a3e40dd4b5232571895d6eaccf93"
+    kind: interface
+    name: Repo
+    qualifiedName: "com.example.store::Repo"
+    filePath: Order.java
+    language: java
+    startLine: 16
+    endLine: 18
+    startColumn: 0
+    endColumn: 1
+    updatedAt: "[ts]"
+  - id: "method:dd5852ec8d947f68ec0af23aff99a53c"
+    kind: method
+    name: load
+    qualifiedName: "com.example.store::Repo::load"
+    filePath: Order.java
+    language: java
+    startLine: 17
+    endLine: 17
+    startColumn: 4
+    endColumn: 26
+    signature: Order (String id)
+    isStatic: false
+    returnType: Order
+    updatedAt: "[ts]"
+edges:
+  - source: "file:Order.java"
+    target: "namespace:600bcb714d91d338f1cc64cf1e2796bb"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:600bcb714d91d338f1cc64cf1e2796bb"
+    target: "import:2d8fd37d210e8e5782cf755b85389480"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:600bcb714d91d338f1cc64cf1e2796bb"
+    target: "class:7889d2b456084396820268784ef13003"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "field:8b7a669b8af52bcbcf21204cdef400cf"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "constant:f85b5ceba49fc7a36a5ff2c26c64b5da"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "method:370d70f827734cd67fe7b28e47a8ebea"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "method:af8f066984145300ebc29f656179f6ba"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "method:a8cb269d68b874773c1074939e37a2d1"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "method:abb2669abecb7d1e47afe667ed36de3d"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "method:73f78b3bc15c7b31161c6dc9ca8e9d48"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7889d2b456084396820268784ef13003"
+    target: "method:1feda8158781e06436dfc04439691afb"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:600bcb714d91d338f1cc64cf1e2796bb"
+    target: "interface:95c8a3e40dd4b5232571895d6eaccf93"
+    kind: contains
+    provenance: tree-sitter
+  - source: "interface:95c8a3e40dd4b5232571895d6eaccf93"
+    target: "method:dd5852ec8d947f68ec0af23aff99a53c"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "namespace:600bcb714d91d338f1cc64cf1e2796bb"
+    referenceName: lombok.Data
+    referenceKind: imports
+    line: 3
+    column: 0
+  - fromNodeId: "class:7889d2b456084396820268784ef13003"
+    referenceName: Data
+    referenceKind: decorates
+    line: 6
+    column: 0
+errors: []
+durationMs: "[ms]"

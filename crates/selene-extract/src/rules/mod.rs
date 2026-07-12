@@ -9,6 +9,7 @@
 //! land per plan.
 
 pub(crate) mod go;
+pub(crate) mod java;
 pub(crate) mod python;
 pub(crate) mod rust_lang;
 
@@ -211,6 +212,35 @@ pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
         Language::Python => Some(&python::PythonRules),
         Language::Go => Some(&go::GoRules),
         Language::Rust => Some(&rust_lang::RustRules),
+        Language::Java => Some(&java::JavaRules),
         _ => None,
     }
+}
+
+/// Whether the session's current scope (stack top) is a class-like node —
+/// mirrors the walker's private ladder gate, resolved through the public
+/// [`Session::nodes`] surface. Shared by hook-hosted branches (Rust
+/// const/static fallback, Java field extraction, Kotlin property scoping)
+/// that must replicate the ladder's `is_inside_class_like` gating from
+/// inside `visit_node`. (A utility over existing hooks, not a new hook —
+/// flagged in the Task 9–11 report for the core chain's awareness.)
+pub(crate) fn scope_is_class_like(s: &Session<'_>) -> bool {
+    let Some(top) = s.node_stack().last() else {
+        return false;
+    };
+    s.nodes()
+        .iter()
+        .rev()
+        .find(|n| &n.id == top)
+        .is_some_and(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Class
+                    | NodeKind::Struct
+                    | NodeKind::Interface
+                    | NodeKind::Trait
+                    | NodeKind::Enum
+                    | NodeKind::Module
+            )
+        })
 }

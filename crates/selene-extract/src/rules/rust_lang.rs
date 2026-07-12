@@ -30,7 +30,7 @@ use tree_sitter::Node;
 
 use crate::UnresolvedReference;
 use crate::helpers::{get_child_by_field, get_node_text, get_preceding_docstring};
-use crate::rules::{ImportInfo, LanguageRules, NodeTypeTables};
+use crate::rules::{ImportInfo, LanguageRules, NodeTypeTables, scope_is_class_like};
 use crate::walker::{NodeExtra, Session};
 
 static TABLES: NodeTypeTables = NodeTypeTables {
@@ -501,30 +501,6 @@ fn emit_supertrait_refs(node: Node<'_>, s: &mut Session<'_>) {
             });
         }
     }
-}
-
-/// Whether the current scope (stack top) is a class-like node — mirrors the
-/// walker's private gate for the ladder's variable branch, resolved through
-/// the public [`Session::nodes`] surface.
-fn scope_is_class_like(s: &Session<'_>) -> bool {
-    let Some(top) = s.node_stack().last() else {
-        return false;
-    };
-    s.nodes()
-        .iter()
-        .rev()
-        .find(|n| &n.id == top)
-        .is_some_and(|n| {
-            matches!(
-                n.kind,
-                NodeKind::Class
-                    | NodeKind::Struct
-                    | NodeKind::Interface
-                    | NodeKind::Trait
-                    | NodeKind::Enum
-                    | NodeKind::Module
-            )
-        })
 }
 
 /// The TS generic-fallback variable shape for `const_item`/`static_item`/
