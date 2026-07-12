@@ -1,0 +1,141 @@
+---
+source: crates/selene-extract/tests/lang_python_test.rs
+expression: r
+---
+nodes:
+  - id: "file:repo.py"
+    kind: file
+    name: repo.py
+    qualifiedName: repo.py
+    filePath: repo.py
+    language: python
+    startLine: 1
+    endLine: 21
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:04d91ba4de0423ca0f6484d605dbf1b6"
+    kind: import
+    name: typing
+    qualifiedName: typing
+    filePath: repo.py
+    language: python
+    startLine: 2
+    endLine: 2
+    startColumn: 0
+    endColumn: 27
+    signature: from typing import Optional
+    updatedAt: "[ts]"
+  - id: "import:952d428cf7038af62849de51f8ced3d8"
+    kind: import
+    name: json
+    qualifiedName: json
+    filePath: repo.py
+    language: python
+    startLine: 4
+    endLine: 4
+    startColumn: 0
+    endColumn: 11
+    signature: import json
+    updatedAt: "[ts]"
+  - id: "class:fb390bd4d9715d8f3f19ace0f6f9c49b"
+    kind: class
+    name: Repo
+    qualifiedName: Repo
+    filePath: repo.py
+    language: python
+    startLine: 7
+    endLine: 12
+    startColumn: 0
+    endColumn: 30
+    updatedAt: "[ts]"
+  - id: "method:7dbf5d0ceb2de378c0e9e5c55766e503"
+    kind: method
+    name: parse
+    qualifiedName: "Repo::parse"
+    filePath: repo.py
+    language: python
+    startLine: 11
+    endLine: 12
+    startColumn: 4
+    endColumn: 30
+    signature: "(raw: str) -> Optional[dict]"
+    isAsync: false
+    isStatic: true
+    updatedAt: "[ts]"
+  - id: "function:1bba308cc48646c010f9130969be2e33"
+    kind: function
+    name: main
+    qualifiedName: main
+    filePath: repo.py
+    language: python
+    startLine: 16
+    endLine: 17
+    startColumn: 0
+    endColumn: 8
+    docstring: module entry
+    signature: () -> None
+    isAsync: true
+    isStatic: false
+    updatedAt: "[ts]"
+  - id: "variable:2d0be7230395426c92f7b3e7e19b544a"
+    kind: variable
+    name: DEFAULT_LIMIT
+    qualifiedName: DEFAULT_LIMIT
+    filePath: repo.py
+    language: python
+    startLine: 20
+    endLine: 20
+    startColumn: 0
+    endColumn: 18
+    signature: "= 50"
+    updatedAt: "[ts]"
+edges:
+  - source: "file:repo.py"
+    target: "import:04d91ba4de0423ca0f6484d605dbf1b6"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:repo.py"
+    target: "import:952d428cf7038af62849de51f8ced3d8"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:repo.py"
+    target: "class:fb390bd4d9715d8f3f19ace0f6f9c49b"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:fb390bd4d9715d8f3f19ace0f6f9c49b"
+    target: "method:7dbf5d0ceb2de378c0e9e5c55766e503"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:repo.py"
+    target: "function:1bba308cc48646c010f9130969be2e33"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:repo.py"
+    target: "variable:2d0be7230395426c92f7b3e7e19b544a"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:repo.py"
+    referenceName: typing
+    referenceKind: imports
+    line: 2
+    column: 0
+  - fromNodeId: "file:repo.py"
+    referenceName: Optional
+    referenceKind: imports
+    line: 2
+    column: 19
+  - fromNodeId: "file:repo.py"
+    referenceName: json
+    referenceKind: imports
+    line: 4
+    column: 7
+  - fromNodeId: "method:7dbf5d0ceb2de378c0e9e5c55766e503"
+    referenceName: staticmethod
+    referenceKind: decorates
+    line: 10
+    column: 4
+errors: []
+durationMs: "[ms]"

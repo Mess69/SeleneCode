@@ -29,5 +29,8 @@ tree-sitter-c-sharp.workspace = true
 tree-sitter-php.workspace = true
 tree-sitter-ruby.workspace = true
 
+[dev-dependencies]
+insta = { workspace = true, features = ["yaml", "redactions"] }
+
 [lints]
 workspace = true
