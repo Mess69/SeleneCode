@@ -15,6 +15,9 @@
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
+mod ids;
+pub use ids::{EXTRACTION_VERSION, file_node_id, hash_content, node_id};
+
 // =============================================================================
 // NodeKind (22)
 // =============================================================================
@@ -237,13 +240,19 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Node {
-    /// Unique identifier (hash of file path + qualified name).
+    /// Unique identifier: `"<kind>:" + hex(sha256("{filePath}:{kind}:{name}:{startLine}"))[..32]`
+    /// (see [`node_id`]) — the hash input is path/kind/name/**start line**,
+    /// NOT the qualified name. File nodes are the unhashed literal
+    /// `file:<path>` ([`file_node_id`]).
     pub id: String,
     /// Type of code element.
     pub kind: NodeKind,
     /// Simple name (e.g. `calculateTotal`).
     pub name: String,
-    /// Fully qualified name (e.g. `src/utils.ts::MathHelper.calculateTotal`).
+    /// Fully qualified name (e.g. `MathHelper::calculateTotal`) — scope
+    /// segments joined by `::`, **never** a file-path component (the
+    /// extraction contract, `extraction-core.md` §9: paths in qualified
+    /// names pollute FTS).
     pub qualified_name: String,
     /// File path relative to project root.
     pub file_path: String,
