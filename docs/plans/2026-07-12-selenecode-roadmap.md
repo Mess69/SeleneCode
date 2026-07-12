@@ -82,7 +82,10 @@ single-file delete cascade, SurrealQL traversal queries (callers/callees 1-hop,
 impact radius depth-N, path-finding, filters by kind/provenance), unresolved-refs
 storage. **Gate (PRD §5.3):** criterion bench — bulk-load ≥ TS indexing throughput on a
 synthetic 100k-node graph; deep traversal (depth 5+) latency ≤ applicative BFS baseline;
-results recorded in `docs/benchmarks/`. Backend default (surrealkv vs rocksdb) decided here.
+results recorded in `docs/benchmarks/`. Backend default (surrealkv vs rocksdb) decided
+here → **rocksdb** (2026-07-12, §5.3 results: 15.3x faster bulk load, equivalent
+traversals; surrealkv optional behind its flag — `docs/benchmarks/2026-07-phase1-db-gate.md`,
+which also records the recalibrated §5.3 targets per the fix + recalibrate decision).
 
 ### Phase 2 — `selene-extract`: tree-sitter core + v0 wave *(task #4)*
 Generic AST-walker engine (the TS `TreeSitterExtractor` equivalent), extractor-config
