@@ -37,7 +37,10 @@
 //! `$input` — and an omitted optional field reads back from `$input` as
 //! `NONE`, which clears the stored column — the update is a wholesale
 //! replace, not a merge, preserving the previous `UPSERT ... CONTENT`
-//! semantics exactly (pinned by `insert_nodes_upsert_replaces_same_id`).
+//! semantics exactly (the Some→None clearing direction is pinned by
+//! `insert_nodes_upsert_clears_omitted_optionals`, the None→Some update
+//! direction by `insert_nodes_upsert_replaces_same_id`, both in
+//! `tests/store_test.rs`).
 //!
 //! This replaced a server-side `FOR $item IN $batch { UPSERT ... }` loop in
 //! the Task 9b perf pass: the loop paid per-item statement overhead (~2.3k
@@ -316,5 +319,23 @@ impl SurrealStore {
         let mut resp = self.db().query(sql).bind((var, value)).await?;
         let rows: Vec<serde_json::Value> = resp.take(0)?;
         rows.into_iter().map(row_to_node).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// [`NODE_FIELDS`] and [`NODE_CONTENT_FIELDS`] must stay in lockstep:
+    /// the read projection is exactly the stored content columns plus the
+    /// `record::id(id) AS id` bridge, in the same order. A field added to
+    /// one list but not the other (silent read/write drift against `Node`'s
+    /// wire shape) fails here loudly.
+    #[test]
+    fn node_fields_is_content_fields_plus_id_projection() {
+        assert_eq!(
+            NODE_FIELDS,
+            format!("{}, record::id(id) AS id", NODE_CONTENT_FIELDS.join(", "))
+        );
     }
 }

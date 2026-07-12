@@ -260,6 +260,37 @@ async fn insert_nodes_upsert_replaces_same_id() {
     );
 }
 
+/// The Some→None direction of the upsert's wholesale-replace contract: a
+/// field that was `Some` and is omitted on re-insert must read back `None`,
+/// not survive as a stale merge leftover. Pins the `ON DUPLICATE KEY UPDATE
+/// <field> = $input.<field>` clearing semantics (`src/nodes.rs` module docs)
+/// — an omitted optional reads from `$input` as `NONE` and clears the stored
+/// column.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_nodes_upsert_clears_omitted_optionals() {
+    let store = fresh_store().await;
+
+    let mut v1 = node("x", "src/a.rs");
+    v1.docstring = Some("v1 docs".to_string());
+    v1.signature = Some("fn x() -> u8".to_string());
+    v1.return_type = Some("u8".to_string());
+
+    let mut v2 = node("x", "src/a.rs");
+    v2.updated_at = 999; // non-optional field must update too
+    debug_assert!(v2.docstring.is_none() && v2.signature.is_none() && v2.return_type.is_none());
+
+    store.insert_nodes(&[v1]).await.unwrap();
+    store.insert_nodes(&[v2.clone()]).await.unwrap();
+
+    let got = store.get_node("function:x").await.unwrap();
+    assert_eq!(
+        got,
+        Some(v2),
+        "optionals omitted on re-insert must clear (wholesale replace, not merge)"
+    );
+}
+
 #[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_batch_keeps_only_found_ids() {
