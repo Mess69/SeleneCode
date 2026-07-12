@@ -137,5 +137,10 @@ unresolved:
     referenceKind: decorates
     line: 10
     column: 4
+  - fromNodeId: "method:7dbf5d0ceb2de378c0e9e5c55766e503"
+    referenceName: json.loads
+    referenceKind: calls
+    line: 12
+    column: 15
 errors: []
 durationMs: "[ms]"

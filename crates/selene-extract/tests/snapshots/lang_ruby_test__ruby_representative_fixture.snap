@@ -75,5 +75,10 @@ unresolved:
     referenceKind: implements
     line: 5
     column: 2
+  - fromNodeId: "method:4c93d5e3bd92879b3471aec770644623"
+    referenceName: item
+    referenceKind: calls
+    line: 8
+    column: 4
 errors: []
 durationMs: 0

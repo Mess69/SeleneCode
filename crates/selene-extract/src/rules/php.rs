@@ -155,13 +155,7 @@ impl LanguageRules for PhpRules {
                         continue;
                     };
                     let name = get_node_text(name_node, s.source()).to_string();
-                    s.create_node(
-                        &PhpRules,
-                        NodeKind::Constant,
-                        &name,
-                        elem,
-                        NodeExtra::default(),
-                    );
+                    s.create_node(NodeKind::Constant, &name, elem, NodeExtra::default());
                 }
                 true
             }
@@ -225,7 +219,7 @@ impl LanguageRules for PhpRules {
                         signature: Some(signature.clone()),
                         ..NodeExtra::default()
                     };
-                    s.create_node(&PhpRules, NodeKind::Import, &module, node, extra);
+                    s.create_node(NodeKind::Import, &module, node, extra);
                     if let Some(pid) = &parent_id {
                         s.add_unresolved(UnresolvedReference {
                             from_node_id: pid.clone(),

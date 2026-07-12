@@ -132,7 +132,7 @@ impl LanguageRules for CSharpRules {
                     is_static,
                     ..NodeExtra::default()
                 };
-                s.create_node(&CSharpRules, kind, &name, d, extra);
+                s.create_node(kind, &name, d, extra);
             }
         }
         true

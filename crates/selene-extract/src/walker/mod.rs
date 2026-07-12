@@ -30,6 +30,9 @@
 //! stamped on every node (TS read `Date.now()` per node; a single capture
 //! is within the Global Constraints and steadier).
 
+mod body;
+mod ts_core;
+
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -52,6 +55,9 @@ pub struct Session<'s> {
     file_path: &'s str,
     source: &'s str,
     language: Language,
+    /// The language's rules — a `&'static` copy so hooks receiving
+    /// `&mut Session` never conflict with rule dispatch.
+    rules: &'static dyn LanguageRules,
     nodes: Vec<CoreNode>,
     edges: Vec<Edge>,
     unresolved: Vec<UnresolvedReference>,
@@ -64,18 +70,48 @@ pub struct Session<'s> {
     namespace_prefix: Vec<String>,
     /// The one wall-clock read (ms), captured at session start.
     updated_at: i64,
+    /// Value-reference pass state (Task 6, `src/walker/body.rs`):
+    /// `SELENE_VALUE_REFS=0` disables; file/class-scope constant targets by
+    /// name → id (+ per-name file-scope definition counts for the
+    /// conditional-def vs shadow distinction); reader scopes as byte ranges
+    /// (re-located against the tree at flush time — `Session` stays free of
+    /// the tree lifetime).
+    value_refs_enabled: bool,
+    file_scope_values: HashMap<String, String>,
+    file_scope_value_counts: HashMap<String, usize>,
+    value_ref_scopes: Vec<ValueRefScope>,
+    /// Per-file Vue-store heuristic cache (`src/walker/ts_core.rs`).
+    vue_store_file: Option<bool>,
+}
+
+/// One value-reference reader scope: the symbol's id/name plus the byte
+/// range of its declaration node (re-located at flush time).
+pub(crate) struct ValueRefScope {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) start_byte: usize,
+    pub(crate) end_byte: usize,
 }
 
 impl<'s> Session<'s> {
-    fn new(file_path: &'s str, source: &'s str, language: Language) -> Self {
+    fn new(
+        file_path: &'s str,
+        source: &'s str,
+        language: Language,
+        rules: &'static dyn LanguageRules,
+    ) -> Self {
         let updated_at = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_millis() as i64)
             .unwrap_or(0);
+        let value_refs_enabled = std::env::var("SELENE_VALUE_REFS")
+            .map(|v| v != "0")
+            .unwrap_or(true);
         Session {
             file_path,
             source,
             language,
+            rules,
             nodes: Vec::new(),
             edges: Vec::new(),
             unresolved: Vec::new(),
@@ -84,7 +120,27 @@ impl<'s> Session<'s> {
             id_index: HashMap::new(),
             namespace_prefix: Vec::new(),
             updated_at,
+            value_refs_enabled,
+            file_scope_values: HashMap::new(),
+            file_scope_value_counts: HashMap::new(),
+            value_ref_scopes: Vec::new(),
+            vue_store_file: None,
         }
+    }
+
+    /// Re-entrant ladder dispatch — the `ctx.visitNode` of the TS
+    /// `ExtractorContext`; `visit_node` hooks call it to hand a subtree
+    /// back to the generic walker.
+    pub fn visit(&mut self, node: Node<'_>) {
+        let rules = self.rules;
+        visit(rules, self, node);
+    }
+
+    pub(crate) fn vue_store_file_cache(&self) -> Option<bool> {
+        self.vue_store_file
+    }
+    pub(crate) fn set_vue_store_file_cache(&mut self, v: bool) {
+        self.vue_store_file = Some(v);
     }
 
     pub fn file_path(&self) -> &str {
@@ -166,12 +222,12 @@ impl<'s> Session<'s> {
     /// Returns the created node's index into [`Session::nodes`].
     pub fn create_node(
         &mut self,
-        rules: &'static dyn LanguageRules,
         kind: NodeKind,
         name: &str,
         node: Node<'_>,
         extra: NodeExtra,
     ) -> Option<usize> {
+        let rules = self.rules;
         if name.is_empty() {
             return None;
         }
@@ -234,6 +290,8 @@ impl<'s> Session<'s> {
             });
         }
 
+        self.capture_value_ref_scope(kind, name, &id, node);
+
         self.id_index.insert(id, (kind, name.to_string()));
         self.nodes.push(core);
         Some(self.nodes.len() - 1)
@@ -244,13 +302,72 @@ impl<'s> Session<'s> {
         self.nodes.get(idx).map(|n| n.id.clone())
     }
 
-    /// Body walker — INSERTION POINT (Task 6): calls, instantiations, bare
-    /// calls, static member reads, nested named functions and structural
-    /// types, value-ref capture (`src/walker/body.rs`). Task 5: no-op —
-    /// declaration extraction never descends into function bodies, exactly
-    /// the subset of TS behavior this task ports.
-    pub fn visit_function_body(&mut self, _body: Node<'_>, _fn_id: &str) {
-        // Task 6 lands the real walker here.
+    /// The session's language rules (a `&'static` copy — free to hold
+    /// across `&mut self` calls).
+    pub(crate) fn rules(&self) -> &'static dyn LanguageRules {
+        self.rules
+    }
+    pub(crate) fn language(&self) -> Language {
+        self.language
+    }
+    pub(crate) fn value_refs_enabled(&self) -> bool {
+        self.value_refs_enabled
+    }
+    /// Drain the value-reference state for the flush pass (scopes, targets,
+    /// per-name file-scope definition counts).
+    #[allow(clippy::type_complexity)] // the three-part flush handoff
+    pub(crate) fn take_value_ref_state(
+        &mut self,
+    ) -> (
+        Vec<ValueRefScope>,
+        HashMap<String, String>,
+        HashMap<String, usize>,
+    ) {
+        (
+            std::mem::take(&mut self.value_ref_scopes),
+            std::mem::take(&mut self.file_scope_values),
+            std::mem::take(&mut self.file_scope_value_counts),
+        )
+    }
+
+    /// Value-reference capture (runs on every created node): distinctive
+    /// file/class-scope const/var names become TARGETS (`name.len() >= 3`
+    /// and contains `[A-Z_]`; scope decided by the parent id's kind PREFIX —
+    /// the load-bearing id-prefix contract); function/method/const/var
+    /// declarations become reader SCOPES (byte ranges, re-located at flush).
+    fn capture_value_ref_scope(&mut self, kind: NodeKind, name: &str, id: &str, node: Node<'_>) {
+        if !self.value_refs_enabled {
+            return;
+        }
+        let target_kind_ok = kind == NodeKind::Constant || kind == NodeKind::Variable;
+        if target_kind_ok
+            && name.len() >= 3
+            && name.chars().any(|c| c.is_ascii_uppercase() || c == '_')
+            && let Some(parent_id) = self.scope_id()
+            && (parent_id.starts_with("file:")
+                || parent_id.starts_with("class:")
+                || parent_id.starts_with("module:")
+                || parent_id.starts_with("struct:")
+                || parent_id.starts_with("enum:"))
+        {
+            self.file_scope_values
+                .insert(name.to_string(), id.to_string());
+            *self
+                .file_scope_value_counts
+                .entry(name.to_string())
+                .or_insert(0) += 1;
+        }
+        if matches!(
+            kind,
+            NodeKind::Function | NodeKind::Method | NodeKind::Constant | NodeKind::Variable
+        ) {
+            self.value_ref_scopes.push(ValueRefScope {
+                id: id.to_string(),
+                name: name.to_string(),
+                start_byte: node.start_byte(),
+                end_byte: node.end_byte(),
+            });
+        }
     }
 }
 
@@ -325,7 +442,7 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
         return result;
     };
 
-    let mut s = Session::new(file_path, source, language);
+    let mut s = Session::new(file_path, source, language, rules);
 
     // File node: unhashed literal id, name = basename, qualifiedName = the
     // file path (the one deliberate path-valued qualifiedName), endLine =
@@ -371,7 +488,7 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
     visit(rules, &mut s, tree.root_node());
 
     // INSERTION POINT (Task 15a): flush function-as-value candidates.
-    // INSERTION POINT (Task 6): flush value refs.
+    body::flush_value_refs(&mut s, &tree);
 
     if package_idx.is_some() {
         s.node_stack.pop();
@@ -402,7 +519,7 @@ fn extract_file_package(
         .named_children(&mut cursor)
         .find(|c| types.contains(&c.kind()))?;
     let name = rules.extract_package(pkg, s.source())?;
-    s.create_node(rules, NodeKind::Namespace, &name, pkg, NodeExtra::default())
+    s.create_node(NodeKind::Namespace, &name, pkg, NodeExtra::default())
 }
 
 /// `extractName`: resolve_name hook, else the `name_field` child (C/C++
@@ -471,7 +588,9 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
     } else if t.enum_types.contains(&node_type) {
         extract_enum(rules, s, node);
     } else if t.type_alias_types.contains(&node_type) {
-        extract_type_alias(rules, s, node);
+        // TS semantics: a plain alias does NOT skip children (the walker
+        // recurses into the alias value); a reclassified one does.
+        matched = extract_type_alias(rules, s, node);
     } else if t.property_types.contains(&node_type) && s.is_inside_class_like() {
         extract_property(rules, s, node);
     } else if t.field_types.contains(&node_type) && s.is_inside_class_like() {
@@ -481,12 +600,54 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         extract_variable(rules, s, node);
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);
+    }
+    // TS/JS re-export refs: `export { A, B as C } from './y'` — barrels
+    // record a dependency on their source module (Task 8).
+    else if node_type == "export_statement"
+        && is_ts_js_language(s.language())
+        && get_child_by_field(node, "source").is_some()
+    {
+        if let Some(parent_id) = s.scope_id().cloned() {
+            s.emit_re_export_refs(node, &parent_id);
+        }
+        matched = false; // children still recurse (a re-export can't nest, but parity)
+    }
+    // Vuex MODULE default export: `export default { namespaced, actions:
+    // {…} }` — store-file gated; the collection methods become nodes and
+    // the subtree is consumed (Task 8).
+    else if node_type == "export_statement"
+        && is_ts_js_language(s.language())
+        && s.looks_like_vue_store_file()
+        && let Some(exported) = get_child_by_field(node, "value")
+        && (exported.kind() == "object" || exported.kind() == "object_expression")
+    {
+        s.extract_store_collection_methods(rules, exported);
+    } else if t.call_types.contains(&node_type) {
+        // Top-level calls (IIFE module wrappers #528, side-effect calls)
+        // attribute to the stack top; children STILL recurse so nested
+        // arrows/calls extract (TS: skipChildren stays false here).
+        s.extract_call(node);
+        matched = false;
+    } else if body::INSTANTIATION_KINDS.contains(&node_type) {
+        // Children still walked so ctor-arg calls get their own refs.
+        s.extract_instantiation(node);
+        // INSERTION POINT (Task 10): anonymous-class body extraction.
+        matched = false;
+    }
+    // INSERTION POINT (Task 9): Rust `impl_item` implements refs.
+    // TS interface members: property_signature / method_signature carry
+    // type annotations the interface walker would otherwise drop (Task 8).
+    else if (node_type == "property_signature" || node_type == "method_signature")
+        && s.is_inside_class_like()
+        && ts_core::is_type_annotation_language(s.language())
+    {
+        if let Some(parent_id) = s.scope_id().cloned() {
+            s.extract_type_annotations(rules, node, &parent_id);
+        }
+        matched = false; // nested signatures still need traversal
     } else {
         matched = false;
     }
-    // INSERTION POINT (Task 7/8): TS/JS branches (re-export, store
-    // collections, interface member type refs) slot in above this line.
-    // INSERTION POINT (Task 6): call_types + INSTANTIATION_KINDS branches.
 
     if matched {
         return; // matched branches walked (or deliberately skipped) children
@@ -500,17 +661,42 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
 }
 
 fn extract_function(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+    extract_function_named(rules, s, node, None);
+}
+
+/// [`extract_function`] with an optional explicit name — supplied only for
+/// explicitly-named anonymous functions the caller resolved itself (object-
+/// literal function members, RTK endpoints — `src/walker/ts_core.rs`).
+fn extract_function_named(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    node: Node<'_>,
+    name_override: Option<&str>,
+) {
     // Receiver-typed functions (Rust impl fns, Task 9) route to method.
     if rules.get_receiver_type(node, s.source()).is_some() {
         extract_method(rules, s, node);
         return;
     }
 
-    let name = extract_name(rules, node, s.source());
-    // (TS/JS arrow/function-expression declarator naming — Task 7.)
+    let mut name = name_override
+        .map(str::to_string)
+        .unwrap_or_else(|| extract_name(rules, node, s.source()));
+    // TS/JS arrow-const naming: `const useAuth = () => {…}` — the arrow
+    // node has no `name` field; the name lives on the parent
+    // `variable_declarator` (Task 7).
+    if name_override.is_none()
+        && name == "<anonymous>"
+        && (node.kind() == "arrow_function" || node.kind() == "function_expression")
+        && let Some(parent) = node.parent()
+        && parent.kind() == "variable_declarator"
+        && let Some(var_name) = get_child_by_field(parent, "name")
+    {
+        name = get_node_text(var_name, s.source()).to_string();
+    }
     if name == "<anonymous>" || rules.is_misparsed_function(&name, node) {
-        // No node, but the body is still walked (module wrappers #528) —
-        // body walking lands in Task 6.
+        // No node, but the body is still walked — AMD/CommonJS module
+        // wrappers hold named inner functions and calls (#528).
         if let Some(body) = resolve_body(rules, node) {
             s.visit_function_body(body, "");
         }
@@ -527,11 +713,13 @@ fn extract_function(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         return_type: rules.get_return_type(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Function, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Function, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
 
+    // Type refs from parameter/return annotations (Task 8).
+    s.extract_type_annotations(rules, node, &id);
     extract_decorators_for(s, node, &id);
 
     s.push_scope(id.clone());
@@ -570,7 +758,7 @@ fn extract_method(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         qualified_name: receiver.as_ref().map(|r| format!("{r}::{name}")),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Method, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Method, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -600,6 +788,8 @@ fn extract_method(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         }
     }
 
+    // Type refs from parameter/return annotations (Task 8).
+    s.extract_type_annotations(rules, node, &id);
     extract_decorators_for(s, node, &id);
 
     s.push_scope(id.clone());
@@ -627,7 +817,7 @@ fn extract_class(
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, kind, &name, node, extra) else {
+    let Some(idx) = s.create_node(kind, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -655,7 +845,7 @@ fn extract_interface(rules: &'static dyn LanguageRules, s: &mut Session<'_>, nod
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, kind, &name, node, extra) else {
+    let Some(idx) = s.create_node(kind, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -684,7 +874,7 @@ fn extract_struct(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Struct, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Struct, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -709,7 +899,7 @@ fn extract_enum(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: No
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Enum, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Enum, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -720,7 +910,7 @@ fn extract_enum(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: No
     let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
     for child in children {
         if member_types.contains(&child.kind()) {
-            extract_enum_members(rules, s, child);
+            extract_enum_members(s, child);
         } else {
             visit(rules, s, child);
         }
@@ -731,16 +921,10 @@ fn extract_enum(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: No
 /// Enum member names: `name` field first (Rust enum_variant), else
 /// identifier-like children (multi-case declarations), else the node itself
 /// when it is a bare identifier.
-fn extract_enum_members(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+fn extract_enum_members(s: &mut Session<'_>, node: Node<'_>) {
     if let Some(name_node) = get_child_by_field(node, "name") {
         let name = get_node_text(name_node, s.source()).to_string();
-        s.create_node(
-            rules,
-            NodeKind::EnumMember,
-            &name,
-            node,
-            NodeExtra::default(),
-        );
+        s.create_node(NodeKind::EnumMember, &name, node, NodeExtra::default());
         return;
     }
     let mut cursor = node.walk();
@@ -752,42 +936,223 @@ fn extract_enum_members(rules: &'static dyn LanguageRules, s: &mut Session<'_>, 
             "simple_identifier" | "identifier" | "property_identifier"
         ) {
             let name = get_node_text(child, s.source()).to_string();
-            s.create_node(
-                rules,
-                NodeKind::EnumMember,
-                &name,
-                child,
-                NodeExtra::default(),
-            );
+            s.create_node(NodeKind::EnumMember, &name, child, NodeExtra::default());
             found = true;
         }
     }
     if !found && node.named_child_count() == 0 {
         let name = get_node_text(node, s.source()).to_string();
-        s.create_node(
-            rules,
-            NodeKind::EnumMember,
-            &name,
-            node,
-            NodeExtra::default(),
-        );
+        s.create_node(NodeKind::EnumMember, &name, node, NodeExtra::default());
     }
 }
 
-/// Type alias (`type X = ...`) — `resolve_type_alias_kind` may reclassify
-/// (Go `type_spec` wrapping struct/interface, Task 9); the struct/interface
-/// re-dispatch arrives with that task.
-fn extract_type_alias(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+/// Type alias (`type X = ...`). Returns the TS `skipChildren` bool: `true`
+/// when the alias was reclassified and its body walked; `false` for a plain
+/// alias (the walker then recurses into the alias value, matching TS).
+/// `resolve_type_alias_kind` reclassification bodies (Go `type_spec`
+/// struct/interface, C typedefs) land with Tasks 9/13 — INSERTION POINT.
+fn extract_type_alias(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    node: Node<'_>,
+) -> bool {
+    let name = extract_name(rules, node, s.source());
+    if name == "<anonymous>" {
+        return false;
+    }
     let kind = rules
         .resolve_type_alias_kind(node, s.source())
         .unwrap_or(NodeKind::TypeAlias);
-    let name = extract_name(rules, node, s.source());
+    // INSERTION POINT (Task 9/13): struct/enum/interface reclassification
+    // with body walks (returns true).
     let extra = NodeExtra {
         docstring: get_preceding_docstring(node, s.source()),
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    s.create_node(rules, kind, &name, node, extra);
+    let Some(idx) = s.create_node(kind, &name, node, extra) else {
+        return false;
+    };
+
+    // Type refs from the alias value (`type X = ITextModel | null`) +
+    // TS/TSX alias-member surfacing: `type X = { foo(): T }` members become
+    // property/method nodes with `TypeAlias::member` QNs (#359), and
+    // string-literal contract names in generic tuples become searchable
+    // method nodes (#634).
+    if let (Some(alias_id), Some(value)) = (s.id_of(idx), get_child_by_field(node, "value")) {
+        if ts_core::is_type_annotation_language(s.language()) {
+            s.extract_type_refs_from_subtree(value, &alias_id);
+        }
+        if matches!(s.language(), Language::Typescript | Language::Tsx) {
+            let alias_name = name.clone();
+            extract_ts_type_alias_members(rules, s, value, &alias_id, &alias_name);
+            extract_ts_tuple_contract_names(s, value, &alias_id, &alias_name);
+        }
+    }
+    false
+}
+
+/// #359: surface `type X = { foo: T; bar(): U }` (or intersection) members
+/// as property/method nodes under the alias. Only the immediate
+/// object_type / intersection operands — nested anonymous object types
+/// inside generic args yield no phantom members. A `foo: () => T`
+/// function-typed property counts as a method.
+fn extract_ts_type_alias_members(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    value: Node<'_>,
+    alias_id: &str,
+    alias_name: &str,
+) {
+    let mut object_types: Vec<Node<'_>> = Vec::new();
+    if value.kind() == "object_type" {
+        object_types.push(value);
+    } else if value.kind() == "intersection_type" {
+        let mut cursor = value.walk();
+        object_types.extend(
+            value
+                .named_children(&mut cursor)
+                .filter(|op| op.kind() == "object_type"),
+        );
+    } else {
+        return;
+    }
+
+    s.push_scope(alias_id.to_string());
+    for obj in object_types {
+        let mut cursor = obj.walk();
+        let members: Vec<Node<'_>> = obj
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "property_signature" || c.kind() == "method_signature")
+            .collect();
+        for child in members {
+            let Some(name_node) = get_child_by_field(child, "name") else {
+                continue;
+            };
+            let member_name = get_node_text(name_node, s.source()).to_string();
+            if member_name.is_empty() {
+                continue;
+            }
+            let member_kind =
+                if child.kind() == "method_signature" || is_ts_function_typed_property(child) {
+                    NodeKind::Method
+                } else {
+                    NodeKind::Property
+                };
+            let extra = NodeExtra {
+                docstring: get_preceding_docstring(child, s.source()),
+                signature: Some(get_node_text(child, s.source()).to_string()),
+                qualified_name: Some(format!("{alias_name}::{member_name}")),
+                ..NodeExtra::default()
+            };
+            s.create_node(member_kind, &member_name, child, extra);
+            // Type refs from the member's signature attach to the ALIAS
+            // (consistent with interface-member treatment, #432 — Task 8).
+            let alias_owned = alias_id.to_string();
+            s.extract_type_annotations(rules, child, &alias_owned);
+        }
+    }
+    s.pop_scope();
+}
+
+/// `foo: () => T` — a property_signature whose type annotation contains a
+/// `function_type` is method-shaped (`obj.foo()` ≡ `bar(): T`).
+fn is_ts_function_typed_property(property_signature: Node<'_>) -> bool {
+    let Some(type_anno) = get_child_by_field(property_signature, "type") else {
+        return false;
+    };
+    let mut cursor = type_anno.walk();
+    type_anno
+        .named_children(&mut cursor)
+        .any(|inner| inner.kind() == "function_type")
+}
+
+/// #634: string-literal contract names in a generic tuple type alias
+/// (`type L = [Service<'query_apply_record', …>, …]`) become searchable
+/// `method` nodes under the alias. Deliberately narrow: only a string
+/// literal that is a DIRECT type argument of a `generic_type` that is
+/// itself a DIRECT tuple element; names must be valid identifiers.
+fn extract_ts_tuple_contract_names(
+    s: &mut Session<'_>,
+    value: Node<'_>,
+    alias_id: &str,
+    alias_name: &str,
+) {
+    fn collect_tuples<'t>(n: Node<'t>, depth: u32, out: &mut Vec<Node<'t>>) {
+        if depth > 6 {
+            return; // a type expression is shallow; cap defensively
+        }
+        if n.kind() == "tuple_type" {
+            out.push(n);
+        }
+        let mut cursor = n.walk();
+        let children: Vec<Node<'t>> = n.named_children(&mut cursor).collect();
+        for c in children {
+            collect_tuples(c, depth + 1, out);
+        }
+    }
+    let mut tuples = Vec::new();
+    collect_tuples(value, 0, &mut tuples);
+    if tuples.is_empty() {
+        return;
+    }
+
+    fn is_valid_ident(name: &str) -> bool {
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_alphabetic() || first == '_' || first == '$')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    }
+
+    s.push_scope(alias_id.to_string());
+    for tuple in tuples {
+        let mut cursor = tuple.walk();
+        let entries: Vec<Node<'_>> = tuple
+            .named_children(&mut cursor)
+            .filter(|e| e.kind() == "generic_type")
+            .collect();
+        for entry in entries {
+            let Some(type_args) = get_child_by_field(entry, "type_arguments") else {
+                continue;
+            };
+            let mut c2 = type_args.walk();
+            let literals: Vec<Node<'_>> = type_args
+                .named_children(&mut c2)
+                .filter(|a| a.kind() == "literal_type")
+                .collect();
+            for arg in literals {
+                let Some(str_node) = arg.named_child(0) else {
+                    continue;
+                };
+                if str_node.kind() != "string" {
+                    continue;
+                }
+                let name: String = get_node_text(str_node, s.source())
+                    .trim()
+                    .trim_matches(['\'', '"', '`'])
+                    .to_string();
+                if !is_valid_ident(&name) {
+                    continue;
+                }
+                let signature: String = get_node_text(entry, s.source())
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(120)
+                    .collect();
+                let extra = NodeExtra {
+                    signature: Some(signature),
+                    qualified_name: Some(format!("{alias_name}::{name}")),
+                    ..NodeExtra::default()
+                };
+                s.create_node(NodeKind::Method, &name, entry, extra);
+            }
+        }
+    }
+    s.pop_scope();
 }
 
 /// Class property (C# property_declaration and TS/JS #808 demotions).
@@ -810,8 +1175,13 @@ fn extract_property(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         is_static: rules.is_static(node, s.source()),
         ..NodeExtra::default()
     };
-    s.create_node(rules, NodeKind::Property, &name, node, extra);
-    // (Type-annotation refs + decorator capture on properties — Task 7.)
+    let created = s.create_node(NodeKind::Property, &name, node, extra);
+    // `@Inject() private svc: Foo` — decorator + type-annotation refs on
+    // class properties too (Task 8).
+    if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
+        extract_decorators_for(s, node, &id);
+        s.extract_type_annotations(rules, node, &id);
+    }
 }
 
 /// Class field declarations (Java/C#/PHP shapes — Task 10/14). The generic
@@ -837,13 +1207,37 @@ fn extract_field(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: N
             is_static,
             ..NodeExtra::default()
         };
-        s.create_node(rules, NodeKind::Field, &name, d, extra);
+        s.create_node(NodeKind::Field, &name, d, extra);
     }
 }
 
-/// Top-level variable declarations. Task 5 ports the Python/Ruby shape
-/// (`assignment`: left identifier/constant, `= <first 100 chars>`
-/// signature); TS/JS declarators and Go specs land with Tasks 7/9.
+/// Vue store collection key names (`ts_core.rs` owns the sets; this thin
+/// check keeps the variable branch readable).
+fn ts_core_is_store_collection_name(name: &str) -> bool {
+    matches!(name, "actions" | "mutations" | "getters")
+}
+
+/// The TS/JS language family gate for the ts_core ladder branches.
+fn is_ts_js_language(l: Language) -> bool {
+    matches!(
+        l,
+        Language::Typescript | Language::Tsx | Language::Javascript | Language::Jsx
+    )
+}
+
+/// `= <first 100 chars>[...]` initializer signature (searchable context).
+fn init_signature(s: &Session<'_>, value: Node<'_>) -> String {
+    let init: String = get_node_text(value, s.source()).chars().take(100).collect();
+    let ellipsis = if init.chars().count() >= 100 {
+        "..."
+    } else {
+        ""
+    };
+    format!("= {init}{ellipsis}")
+}
+
+/// Top-level variable declarations. Task 7 lands the TS/JS declarator loop;
+/// Python/Ruby `assignment` shape from Task 5; Go specs land with Task 9.
 fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
     let kind = if rules.is_const(node, s.source()).unwrap_or(false) {
         NodeKind::Constant
@@ -852,6 +1246,137 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
     };
     let docstring = get_preceding_docstring(node, s.source());
 
+    // TS/JS: lexical_declaration / variable_declaration → declarator loop.
+    if matches!(
+        s.language(),
+        Language::Typescript | Language::Tsx | Language::Javascript | Language::Jsx
+    ) {
+        let is_exported = rules.is_exported(node, s.source());
+        let mut cursor = node.walk();
+        let declarators: Vec<Node<'_>> = node
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "variable_declarator")
+            .collect();
+        for child in declarators {
+            let Some(name_node) = get_child_by_field(child, "name") else {
+                continue;
+            };
+            let value_node = get_child_by_field(child, "value");
+            // Skip destructured patterns (`let { x, y } = props()`) — ugly
+            // multi-line names. EXCEPT RTK generated-hook destructures off a
+            // bare-identifier RHS (`export const { useGetXQuery } = api`).
+            if name_node.kind() == "object_pattern" || name_node.kind() == "array_pattern" {
+                if name_node.kind() == "object_pattern"
+                    && value_node.is_some_and(|v| v.kind() == "identifier")
+                {
+                    s.extract_rtk_hook_bindings(name_node, is_exported);
+                }
+                continue;
+            }
+            let name = get_node_text(name_node, s.source()).to_string();
+            // Arrow/function-expression values extract as FUNCTIONS (named
+            // via the declarator by extract_function), never as variables.
+            if let Some(value) = value_node
+                && (value.kind() == "arrow_function" || value.kind() == "function_expression")
+            {
+                extract_function(rules, s, value);
+                continue;
+            }
+            let signature = value_node.map(|v| init_signature(s, v));
+
+            // React HOC-wrapped components (#841): PascalCase-gated so a
+            // memoization util (`const cache = memo(fn)`) stays a constant.
+            if let Some(value) = value_node
+                && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && let Some(inner) = s.react_component_hoc(value)
+            {
+                let extra = NodeExtra {
+                    docstring: docstring.clone(),
+                    signature,
+                    is_exported,
+                    ..NodeExtra::default()
+                };
+                s.extract_react_component_node(rules, &name, child, inner, extra);
+                continue;
+            }
+
+            let extra = NodeExtra {
+                docstring: docstring.clone(),
+                signature,
+                is_exported,
+                ..NodeExtra::default()
+            };
+            let created = s.create_node(kind, &name, child, extra);
+            if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
+                s.extract_variable_type_annotation(child, &id);
+            }
+
+            // Store-shaped initializers (Task 8): exported object-of-
+            // functions (SvelteKit actions, Zustand `create(...)` returns),
+            // RTK createApi endpoints, Pinia setup stores, Vue store
+            // collections — their nested function members become nodes;
+            // otherwise the initializer body is walked for calls (object
+            // literals excepted). NOTE (TS parity): no scope push — walk
+            // attributes to the enclosing scope; only Go pushes (#693).
+            let object_of_fns = match value_node {
+                Some(v) if v.kind() == "object" || v.kind() == "object_expression" => Some(v),
+                Some(v) if v.kind() == "call_expression" => {
+                    s.find_initializer_returned_object(v, 0)
+                }
+                _ => None,
+            };
+            let has_inline_fns = object_of_fns.is_some_and(|o| s.object_has_inline_functions(o));
+            let extract_object_methods =
+                is_exported == Some(true) && object_of_fns.is_some() && has_inline_fns;
+
+            let rtk_endpoints = value_node
+                .filter(|v| v.kind() == "call_expression")
+                .and_then(|v| s.find_rtk_endpoints_object(v));
+            let pinia_setup = value_node
+                .filter(|v| v.kind() == "call_expression")
+                .and_then(|v| s.find_pinia_setup_fn(v));
+
+            let mut store_collections: Vec<Node<'_>> = Vec::new();
+            if let Some(v) = value_node
+                && (v.kind() == "call_expression" || v.kind() == "new_expression")
+            {
+                store_collections.extend(s.find_vue_store_collection_objects(v));
+            }
+            if let Some(obj) = object_of_fns
+                && !extract_object_methods
+                && ts_core_is_store_collection_name(&name)
+                && s.looks_like_vue_store_file()
+            {
+                store_collections.push(obj);
+            }
+
+            if let Some(value) = value_node
+                && value.kind() != "object"
+                && value.kind() != "object_expression"
+                && !(extract_object_methods && value.kind() == "call_expression")
+                && rtk_endpoints.is_none()
+                && pinia_setup.is_none()
+                && store_collections.is_empty()
+            {
+                s.visit_function_body(value, "");
+            }
+            if extract_object_methods && let Some(obj) = object_of_fns {
+                s.extract_object_literal_functions(rules, obj);
+            }
+            if let Some(endpoints) = rtk_endpoints {
+                s.extract_rtk_endpoints(rules, endpoints);
+            }
+            if let Some(setup) = pinia_setup {
+                s.extract_pinia_setup_body(rules, setup);
+            }
+            for coll in store_collections {
+                s.extract_object_literal_functions(rules, coll);
+            }
+        }
+        return;
+    }
+
+    // Python/Ruby assignment: left = right.
     let left = get_child_by_field(node, "left").or_else(|| node.named_child(0));
     let right = get_child_by_field(node, "right").or_else(|| node.named_child(1));
     let Some(left) = left else { return };
@@ -859,21 +1384,13 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         return;
     }
     let name = get_node_text(left, s.source()).to_string();
-    let signature = right.map(|r| {
-        let init: String = get_node_text(r, s.source()).chars().take(100).collect();
-        let ellipsis = if init.chars().count() >= 100 {
-            "..."
-        } else {
-            ""
-        };
-        format!("= {init}{ellipsis}")
-    });
+    let signature = right.map(|r| init_signature(s, r));
     let extra = NodeExtra {
         docstring,
         signature,
         ..NodeExtra::default()
     };
-    s.create_node(rules, kind, &name, node, extra);
+    s.create_node(kind, &name, node, extra);
 }
 
 /// Imports: hook first (single-module languages); Python inline
@@ -886,7 +1403,7 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
             signature: Some(info.signature.clone()),
             ..NodeExtra::default()
         };
-        s.create_node(rules, NodeKind::Import, &info.module_name, node, extra);
+        s.create_node(NodeKind::Import, &info.module_name, node, extra);
         if !info.handled_refs
             && !info.module_name.is_empty()
             && let Some(parent_id) = s.scope_id().cloned()
@@ -901,7 +1418,13 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
                 language: None,
             });
         }
-        // INSERTION POINT (Task 7): TS/JS import-binding refs.
+        // TS/JS import-binding refs: each imported LOCAL binding records a
+        // dependency (Task 8).
+        if is_ts_js_language(s.language())
+            && let Some(parent_id) = s.scope_id().cloned()
+        {
+            s.emit_import_binding_refs(node, &parent_id);
+        }
         // Python `from m import X, Y` per-name refs:
         if s.language == Language::Python
             && node.kind() == "import_from_statement"
@@ -939,7 +1462,7 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
                 signature: Some(import_text.clone()),
                 ..NodeExtra::default()
             };
-            s.create_node(rules, NodeKind::Import, &module, node, extra);
+            s.create_node(NodeKind::Import, &module, node, extra);
             if let Some(pid) = &parent_id {
                 s.add_unresolved(UnresolvedReference {
                     from_node_id: pid.clone(),

@@ -287,3 +287,101 @@ fn representative_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+// =============================================================================
+// Task 6 — body walker (Python-only; TS/Go/Rust call shapes land with
+// their configs' tasks)
+// =============================================================================
+
+#[test]
+fn call_refs_receiver_skip_set_and_bare() {
+    let code = "def run(self):\n    obj.method()\n    self.helper()\n    cls.make()\n    plain()\n    json.loads(\"{}\")\n";
+    let r = extract("calls.py", code);
+    let calls: Vec<(&str, Option<u32>, Option<u32>)> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "calls")
+        .map(|u| (u.reference_name.as_str(), u.line, u.column))
+        .collect();
+    let names: Vec<&str> = calls.iter().map(|c| c.0).collect();
+    assert!(names.contains(&"obj.method"), "calls: {names:?}");
+    assert!(names.contains(&"helper"), "self.x() strips receiver");
+    assert!(names.contains(&"make"), "cls.x() strips receiver");
+    assert!(names.contains(&"plain"));
+    assert!(names.contains(&"json.loads"), "module calls keep receiver");
+    // Line/column pin: obj.method() sits on line 2, column 4.
+    assert!(calls.contains(&("obj.method", Some(2), Some(4))));
+}
+
+#[test]
+fn nested_named_functions_become_nodes() {
+    let code = "def outer():\n    def inner():\n        leaf()\n    inner()\n";
+    let r = extract("nested.py", code);
+    let inner = find(&r, NodeKind::Function, "inner").unwrap();
+    assert_eq!(inner.qualified_name, "outer::inner");
+    // inner's body call attributes to inner, outer's call to outer.
+    let outer_id = &find(&r, NodeKind::Function, "outer").unwrap().id;
+    let inner_calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "calls" && u.from_node_id == inner.id)
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(inner_calls, vec!["leaf"]);
+    assert!(r.unresolved.iter().any(|u| u.reference_kind == "calls"
+        && u.from_node_id == *outer_id
+        && u.reference_name == "inner"));
+}
+
+#[test]
+fn value_refs_emit_and_shadow_prune() {
+    // KEPT: DEFAULT_LIMIT read by reader() (distinctive, unshadowed).
+    // PRUNED: CONFIG — shadowed by a local `CONFIG = {}` binding.
+    // SKIPPED: xy (too short / no [A-Z_]).
+    let code = "DEFAULT_LIMIT = 50\nCONFIG = {}\nxy = 1\n\n\ndef reader():\n    a = DEFAULT_LIMIT\n    return a\n\n\ndef shadower():\n    CONFIG = {}\n    return CONFIG\n";
+    let r = extract("vals.py", code);
+    let value_refs: Vec<(&str, &str)> = r
+        .edges
+        .iter()
+        .filter(|e| {
+            e.kind == EdgeKind::References
+                && e.metadata
+                    .as_ref()
+                    .is_some_and(|m| m.get("valueRef") == Some(&serde_json::Value::Bool(true)))
+        })
+        .map(|e| (e.source.as_str(), e.target.as_str()))
+        .collect();
+
+    let reader_id = &find(&r, NodeKind::Function, "reader").unwrap().id;
+    let limit_id = &find(&r, NodeKind::Variable, "DEFAULT_LIMIT").unwrap().id;
+    assert!(
+        value_refs.contains(&(reader_id.as_str(), limit_id.as_str())),
+        "reader must reference DEFAULT_LIMIT: {value_refs:?}"
+    );
+    // CONFIG shadow-pruned: no value ref targets it from anywhere.
+    let config_id = &find(&r, NodeKind::Variable, "CONFIG").unwrap().id;
+    assert!(
+        !value_refs.iter().any(|(_, t)| t == &config_id.as_str()),
+        "shadowed CONFIG must be pruned: {value_refs:?}"
+    );
+    // Provenance stamped on value-ref edges.
+    assert!(r.edges.iter().all(|e| e.provenance.is_some()));
+}
+
+#[test]
+fn python_constructor_calls_stay_calls_not_instantiates() {
+    // Python has no INSTANTIATION_KINDS node — `Foo()` is a `call`. The
+    // instantiates branch is exercised with TS's new_expression (Task 7).
+    let code = "def make():\n    return Widget()\n";
+    let r = extract("mk.py", code);
+    assert!(
+        r.unresolved
+            .iter()
+            .any(|u| u.reference_kind == "calls" && u.reference_name == "Widget")
+    );
+    assert!(
+        !r.unresolved
+            .iter()
+            .any(|u| u.reference_kind == "instantiates")
+    );
+}
