@@ -104,7 +104,13 @@ impl Session<'_> {
             self.extract_call(node);
         } else if INSTANTIATION_KINDS.contains(&node_type) {
             self.extract_instantiation(node);
-            // INSERTION POINT (Task 10): anonymous-class body (`new T() {…}`).
+            // Java/C# `new T(...) { … }` — anonymous class with body
+            // (Task 10): extract as a class so interface-impl synthesis
+            // (Phase 5.5) can bridge T's methods to the overrides.
+            if let Some(anon_body) = find_anonymous_class_body(node) {
+                self.extract_anonymous_class(node, anon_body);
+                return;
+            }
         } else if let Some(callee) = rules.extract_bare_call(node, self.source()) {
             // Ruby/Dart bare-call hook (Task 14 / wave 2).
             if let Some(caller_id) = self.node_stack().last().cloned() {
@@ -507,6 +513,83 @@ impl Session<'_> {
             }
         }
     }
+}
+
+impl Session<'_> {
+    /// A Java/C# anonymous class — `new T() { …members }` (Task 10, the
+    /// `extractAnonymousClass` port): a `class` node named `<T$anon@line>`,
+    /// an `extends` ref to T (extraction can't tell class from interface;
+    /// resolution binds T to whatever it is and Phase 5.5 handles both),
+    /// and the body walked so `method_declaration` members become method
+    /// nodes under the anon class. Without this, the overrides inside a
+    /// lambda-returned `new T() { @Override … }` are not nodes and a call
+    /// through T's abstract method has no static target.
+    pub(crate) fn extract_anonymous_class(&mut self, node: Node<'_>, body: Node<'_>) {
+        // Same type lookup as extract_instantiation, so the anon class's
+        // `extends` target matches the `instantiates` edge.
+        let type_node = get_child_by_field(node, "constructor")
+            .or_else(|| get_child_by_field(node, "type"))
+            .or_else(|| get_child_by_field(node, "name"))
+            .or_else(|| node.named_child(0));
+        let mut type_name = type_node
+            .map(|t| get_node_text(t, self.source()).to_string())
+            .unwrap_or_else(|| "Object".to_string());
+        if let Some(lt) = type_name.find('<')
+            && lt > 0
+        {
+            type_name.truncate(lt);
+        }
+        let last_dot = type_name.rfind('.').map(|i| i + 1);
+        let last_colons = type_name.rfind("::").map(|i| i + 2);
+        if let Some(cut) = last_dot.max(last_colons) {
+            type_name = type_name[cut..].trim_start_matches([':', '.']).to_string();
+        }
+        let type_name = {
+            let t = type_name.trim();
+            if t.is_empty() { "Object" } else { t }.to_string()
+        };
+
+        let anon_name = format!(
+            "<{type_name}$anon@{}>",
+            u32::try_from(node.start_position().row).unwrap_or(0) + 1
+        );
+        let Some(idx) = self.create_node(NodeKind::Class, &anon_name, node, Default::default())
+        else {
+            return;
+        };
+        let Some(anon_id) = self.nodes().get(idx).map(|n| n.id.clone()) else {
+            return;
+        };
+
+        // TS quirk ported verbatim (contract, don't fix silently): this one
+        // ref's `line` is the RAW 0-based row — the TS source omits the +1.
+        let pos = type_node.unwrap_or(node);
+        self.add_unresolved(UnresolvedReference {
+            from_node_id: anon_id.clone(),
+            reference_name: type_name,
+            reference_kind: EdgeKind::Extends.as_str().to_string(),
+            line: Some(u32::try_from(pos.start_position().row).unwrap_or(0)),
+            column: Some(u32::try_from(pos.start_position().column).unwrap_or(0)),
+            file_path: None,
+            language: None,
+        });
+
+        self.push_scope(anon_id);
+        let mut cursor = body.walk();
+        let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+        for child in children {
+            self.visit(child);
+        }
+        self.pop_scope();
+    }
+}
+
+/// A Java `class_body` / C# `declaration_list` directly under an
+/// instantiation node — the anonymous-class body (`findAnonymousClassBody`).
+pub(super) fn find_anonymous_class_body<'t>(node: Node<'t>) -> Option<Node<'t>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|c| matches!(c.kind(), "class_body" | "declaration_list"))
 }
 
 /// `^\(\s*\*?\s*([A-Za-z_][\w.]*)\s*\)$` without a regex: the parenthesized

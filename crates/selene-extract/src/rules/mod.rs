@@ -4,16 +4,20 @@
 //! ([`LanguageRules`]). Every capability the TS interface had exists here so
 //! later language tasks only *fill in*, never reshape.
 //!
-//! Registry: [`rules_for`] — v0 wires Python (Task 5); TS/JS (Task 7/8),
-//! Rust/Go (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14)
-//! land per plan.
+//! Registry: [`rules_for`] — v0 wires Python (Task 5), TS/JS (Tasks 7/8),
+//! Go/Rust (Task 9), Java (10), Kotlin (11), C#/PHP/Ruby (14); C/C++ (13)
+//! lands per plan.
 
 pub(crate) mod cpp_preparse;
 pub(crate) mod csharp;
+pub(crate) mod go;
+pub(crate) mod java;
 pub(crate) mod javascript;
+pub(crate) mod kotlin;
 pub(crate) mod php;
 pub(crate) mod python;
 pub(crate) mod ruby;
+pub(crate) mod rust_lang;
 pub(crate) mod typescript;
 
 use selene_core::{NodeKind, Visibility};
@@ -239,9 +243,41 @@ pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
         Language::Python => Some(&python::PythonRules),
         Language::Typescript | Language::Tsx => Some(&typescript::TypescriptRules),
         Language::Javascript | Language::Jsx => Some(&javascript::JavascriptRules),
+        Language::Go => Some(&go::GoRules),
+        Language::Rust => Some(&rust_lang::RustRules),
+        Language::Java => Some(&java::JavaRules),
+        Language::Kotlin => Some(&kotlin::KotlinRules),
         Language::CSharp => Some(&csharp::CSharpRules),
         Language::Php => Some(&php::PhpRules),
         Language::Ruby => Some(&ruby::RubyRules),
         _ => None,
     }
+}
+
+/// Whether the session's current scope (stack top) is a class-like node —
+/// mirrors the walker's private ladder gate, resolved through the public
+/// [`Session::nodes`] surface. Shared by hook-hosted branches (Rust
+/// const/static fallback, Java field extraction, Kotlin property scoping)
+/// that must replicate the ladder's `is_inside_class_like` gating from
+/// inside `visit_node`. (A utility over existing hooks, not a new hook —
+/// flagged in the Task 9–11 report for the core chain's awareness.)
+pub(crate) fn scope_is_class_like(s: &Session<'_>) -> bool {
+    let Some(top) = s.node_stack().last() else {
+        return false;
+    };
+    s.nodes()
+        .iter()
+        .rev()
+        .find(|n| &n.id == top)
+        .is_some_and(|n| {
+            matches!(
+                n.kind,
+                NodeKind::Class
+                    | NodeKind::Struct
+                    | NodeKind::Interface
+                    | NodeKind::Trait
+                    | NodeKind::Enum
+                    | NodeKind::Module
+            )
+        })
 }

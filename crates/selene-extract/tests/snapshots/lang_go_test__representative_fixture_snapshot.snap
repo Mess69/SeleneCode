@@ -1,0 +1,181 @@
+---
+source: crates/selene-extract/tests/lang_go_test.rs
+expression: r
+---
+nodes:
+  - id: "file:registry.go"
+    kind: file
+    name: registry.go
+    qualifiedName: registry.go
+    filePath: registry.go
+    language: go
+    startLine: 1
+    endLine: 20
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:897597fd30fa2e32c191f93b37e515be"
+    kind: import
+    name: fmt
+    qualifiedName: fmt
+    filePath: registry.go
+    language: go
+    startLine: 4
+    endLine: 4
+    startColumn: 1
+    endColumn: 6
+    signature: "\"fmt\""
+    updatedAt: "[ts]"
+  - id: "import:9bc9aa02d51970fbaf6f9fc4def0ef79"
+    kind: import
+    name: encoding/json
+    qualifiedName: encoding/json
+    filePath: registry.go
+    language: go
+    startLine: 5
+    endLine: 5
+    startColumn: 1
+    endColumn: 16
+    signature: "\"encoding/json\""
+    updatedAt: "[ts]"
+  - id: "struct:8f72c17a8bd18695ee71fc2c8a6e737b"
+    kind: struct
+    name: Item
+    qualifiedName: Item
+    filePath: registry.go
+    language: go
+    startLine: 9
+    endLine: 9
+    startColumn: 5
+    endColumn: 26
+    isExported: true
+    updatedAt: "[ts]"
+  - id: "interface:f159bbf04216947e9c6720179ff44f22"
+    kind: interface
+    name: Store
+    qualifiedName: Store
+    filePath: registry.go
+    language: go
+    startLine: 11
+    endLine: 13
+    startColumn: 5
+    endColumn: 1
+    isExported: true
+    updatedAt: "[ts]"
+  - id: "method:c8cb13835cf33934d1d82a2286b2b491"
+    kind: method
+    name: Get
+    qualifiedName: "Store::Get"
+    filePath: registry.go
+    language: go
+    startLine: 12
+    endLine: 12
+    startColumn: 1
+    endColumn: 27
+    signature: "(id int) (*Item, error)"
+    updatedAt: "[ts]"
+  - id: "constant:c50f4d9a93c7cd4cfed08f94d8ff580f"
+    kind: constant
+    name: DefaultCap
+    qualifiedName: DefaultCap
+    filePath: registry.go
+    language: go
+    startLine: 15
+    endLine: 15
+    startColumn: 6
+    endColumn: 20
+    signature: "= 8"
+    updatedAt: "[ts]"
+  - id: "method:d8d8597558c0a5c3fcc120c11baad700"
+    kind: method
+    name: Label
+    qualifiedName: "Item::Label"
+    filePath: registry.go
+    language: go
+    startLine: 17
+    endLine: 17
+    startColumn: 0
+    endColumn: 57
+    signature: () string
+    returnType: string
+    updatedAt: "[ts]"
+  - id: "function:aa53026fc889d06fa1130dcb8b5c90ad"
+    kind: function
+    name: New
+    qualifiedName: New
+    filePath: registry.go
+    language: go
+    startLine: 19
+    endLine: 19
+    startColumn: 0
+    endColumn: 35
+    signature: () *Item
+    isExported: true
+    returnType: Item
+    updatedAt: "[ts]"
+edges:
+  - source: "file:registry.go"
+    target: "import:897597fd30fa2e32c191f93b37e515be"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:registry.go"
+    target: "import:9bc9aa02d51970fbaf6f9fc4def0ef79"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:registry.go"
+    target: "struct:8f72c17a8bd18695ee71fc2c8a6e737b"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:registry.go"
+    target: "interface:f159bbf04216947e9c6720179ff44f22"
+    kind: contains
+    provenance: tree-sitter
+  - source: "interface:f159bbf04216947e9c6720179ff44f22"
+    target: "method:c8cb13835cf33934d1d82a2286b2b491"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:registry.go"
+    target: "constant:c50f4d9a93c7cd4cfed08f94d8ff580f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:registry.go"
+    target: "method:d8d8597558c0a5c3fcc120c11baad700"
+    kind: contains
+    provenance: tree-sitter
+  - source: "struct:8f72c17a8bd18695ee71fc2c8a6e737b"
+    target: "method:d8d8597558c0a5c3fcc120c11baad700"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:registry.go"
+    target: "function:aa53026fc889d06fa1130dcb8b5c90ad"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:registry.go"
+    referenceName: fmt
+    referenceKind: imports
+    line: 4
+    column: 1
+  - fromNodeId: "file:registry.go"
+    referenceName: encoding/json
+    referenceKind: imports
+    line: 5
+    column: 1
+  - fromNodeId: "method:d8d8597558c0a5c3fcc120c11baad700"
+    referenceName: fmt.Sprint
+    referenceKind: calls
+    line: 17
+    column: 39
+  - fromNodeId: "function:aa53026fc889d06fa1130dcb8b5c90ad"
+    referenceName: Item
+    referenceKind: references
+    line: 19
+    column: 12
+  - fromNodeId: "function:aa53026fc889d06fa1130dcb8b5c90ad"
+    referenceName: Item
+    referenceKind: instantiates
+    line: 19
+    column: 27
+errors: []
+durationMs: "[ms]"

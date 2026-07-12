@@ -684,6 +684,14 @@ fun interface Transformer {
         !kinds.contains("ERROR"),
         "kotlin-ng parses `fun interface` cleanly — Task 11 drops the TS ERROR-recovery"
     );
+    // Hardening (Task 1 review Minor): `has_error()` also covers MISSING
+    // nodes, which the ERROR-kind scan above cannot see — kotlin-ng emits
+    // MISSING `_class_member_semi` for single-line class bodies, so a
+    // fixture regression would otherwise slip through as "no ERROR".
+    assert!(
+        !tree.root_node().has_error(),
+        "fun-interface probe must be fully clean (no ERROR *or* MISSING nodes)"
+    );
 }
 
 #[test]

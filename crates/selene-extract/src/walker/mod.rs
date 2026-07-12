@@ -648,8 +648,14 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
     } else if body::INSTANTIATION_KINDS.contains(&node_type) {
         // Children still walked so ctor-arg calls get their own refs.
         s.extract_instantiation(node);
-        // INSERTION POINT (Task 10): anonymous-class body extraction.
-        matched = false;
+        // Java/C# `new T(...) { … }` — anonymous class with body (Task 10):
+        // consumed whole (TS skipChildren = true); plain instantiations
+        // keep recursing.
+        if let Some(anon_body) = body::find_anonymous_class_body(node) {
+            s.extract_anonymous_class(node, anon_body);
+        } else {
+            matched = false;
+        }
     }
     // INSERTION POINT (Task 9): Rust `impl_item` implements refs.
     // TS interface members: property_signature / method_signature carry
