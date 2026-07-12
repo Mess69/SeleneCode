@@ -4,11 +4,13 @@
 //! ([`LanguageRules`]). Every capability the TS interface had exists here so
 //! later language tasks only *fill in*, never reshape.
 //!
-//! Registry: [`rules_for`] — v0 wires Python (Task 5); TS/JS (Task 7/8),
-//! Rust/Go (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14)
+//! Registry: [`rules_for`] — v0 wires Python (Task 5) and Go/Rust (Task 9);
+//! TS/JS (Task 7/8), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14)
 //! land per plan.
 
+pub(crate) mod go;
 pub(crate) mod python;
+pub(crate) mod rust_lang;
 
 use selene_core::{NodeKind, Visibility};
 use tree_sitter::Node;
@@ -207,6 +209,8 @@ pub trait LanguageRules: Sync {
 pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
     match l {
         Language::Python => Some(&python::PythonRules),
+        Language::Go => Some(&go::GoRules),
+        Language::Rust => Some(&rust_lang::RustRules),
         _ => None,
     }
 }
