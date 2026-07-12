@@ -39,6 +39,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use selene_core::{Edge, EdgeKind, Node as CoreNode, NodeKind, Provenance, file_node_id, node_id};
 use tree_sitter::{Node, Parser};
 
+use crate::fnref::{FnRefCandidate, FnRefSpec, fn_ref_spec};
 use crate::helpers::{get_child_by_field, get_node_text, get_preceding_docstring};
 use crate::rules::{ClassKind, LanguageRules, MethodClass, rules_for};
 use crate::{
@@ -80,6 +81,13 @@ pub struct Session<'s> {
     file_scope_values: HashMap<String, String>,
     file_scope_value_counts: HashMap<String, usize>,
     value_ref_scopes: Vec<ValueRefScope>,
+    /// Function-as-value capture state (#756, Task 15a — `src/fnref.rs`): the
+    /// language's spec (`None` = the language captures nothing) plus the
+    /// candidates collected during the walk, each paired with the scope they
+    /// were captured in. Gated + flushed into `unresolved` at end-of-file
+    /// (`body::flush_fn_ref_candidates`).
+    fn_ref_spec: Option<&'static FnRefSpec>,
+    fn_ref_candidates: Vec<(FnRefCandidate, String)>,
     /// Per-file Vue-store heuristic cache (`src/walker/ts_core.rs`).
     vue_store_file: Option<bool>,
 }
@@ -124,6 +132,8 @@ impl<'s> Session<'s> {
             file_scope_values: HashMap::new(),
             file_scope_value_counts: HashMap::new(),
             value_ref_scopes: Vec::new(),
+            fn_ref_spec: fn_ref_spec(language),
+            fn_ref_candidates: Vec::new(),
             vue_store_file: None,
         }
     }
@@ -313,6 +323,44 @@ impl<'s> Session<'s> {
     pub(crate) fn value_refs_enabled(&self) -> bool {
         self.value_refs_enabled
     }
+    /// The refs emitted so far — the fn-ref gate reads the `imports` ones to
+    /// build its imported-binding name set (`body::flush_fn_ref_candidates`).
+    pub(crate) fn unresolved(&self) -> &[UnresolvedReference] {
+        &self.unresolved
+    }
+    /// The language's function-as-value capture spec (`None` = captures
+    /// nothing).
+    pub(crate) fn fn_ref_spec(&self) -> Option<&'static FnRefSpec> {
+        self.fn_ref_spec
+    }
+    /// Drain the captured fn-ref candidates for the gate.
+    pub(crate) fn take_fn_ref_candidates(&mut self) -> Vec<(FnRefCandidate, String)> {
+        std::mem::take(&mut self.fn_ref_candidates)
+    }
+
+    /// Function-as-value capture (#756, `tree-sitter.ts:549`
+    /// `maybeCaptureFnRefs`): if this node is one of the language's
+    /// value-position containers (call arguments, assignment RHS,
+    /// struct/object initializer, array/table literal), collect candidate
+    /// function names from it, attributed to the current scope. Candidates are
+    /// gated + flushed at end-of-file.
+    ///
+    /// Fires from BOTH walkers ([`visit`] and
+    /// [`Session::visit_function_body`]) — a node is only ever visited by one
+    /// of them — plus [`body::scan_fn_ref_subtree`] for subtrees the walkers
+    /// consume without descending.
+    pub(crate) fn maybe_capture_fn_refs(&mut self, node: Node<'_>, node_type: &str) {
+        let Some(spec) = self.fn_ref_spec else { return };
+        let Some(rule) = spec.dispatch_for(node_type) else {
+            return;
+        };
+        let Some(from_node_id) = self.node_stack.last().cloned() else {
+            return;
+        };
+        let captured = crate::fnref::capture_fn_ref_candidates(node, rule, spec, self.source);
+        self.fn_ref_candidates
+            .extend(captured.into_iter().map(|c| (c, from_node_id.clone())));
+    }
     /// Drain the value-reference state for the flush pass (scopes, targets,
     /// per-name file-scope definition counts).
     #[allow(clippy::type_complexity)] // the three-part flush handoff
@@ -487,7 +535,9 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
 
     visit(rules, &mut s, tree.root_node());
 
-    // INSERTION POINT (Task 15a): flush function-as-value candidates.
+    // Gate + flush the function-as-value candidates (#756) while the file's
+    // nodes and import refs are complete and the file node is still pushed.
+    body::flush_fn_ref_candidates(&mut s);
     body::flush_value_refs(&mut s, &tree);
 
     if package_idx.is_some() {
@@ -613,6 +663,10 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
 
     // 1. Custom visit_node hook — short-circuits the whole ladder.
     if rules.visit_node(node, s) {
+        // The hook consumed this subtree, so the walkers below never descend
+        // into it — scan it for function-as-value candidates (#756). The scan
+        // is capture-only and halts at nested function boundaries.
+        body::scan_fn_ref_subtree(s, node, 0);
         return;
     }
 
@@ -639,7 +693,12 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         }
     }
 
-    // INSERTION POINT (Task 15a): function-as-value candidate capture.
+    // Function-as-value capture (#756, Task 15a) — deliberately INDEPENDENT of
+    // the dispatch ladder below (the captured container types have no other
+    // handler there), so it can never shadow or be shadowed by an extraction
+    // branch. Subtrees a matched branch consumes without descending get
+    // `scan_fn_ref_subtree` instead (below).
+    s.maybe_capture_fn_refs(node, node_type);
 
     let mut matched = true;
     if t.function_types.contains(&node_type) {
@@ -662,6 +721,10 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         // TS/JS #808: a field-shaped method node may be a plain property.
         if rules.classify_method_node(node, s.source()) == Some(MethodClass::Property) {
             extract_property(rules, s, node);
+            // A field initializer can register callbacks
+            // (`static handlers = { click: onClick }`) — the property branch
+            // consumes the subtree, so scan it for fn-ref candidates.
+            body::scan_fn_ref_subtree(s, node, 0);
         } else {
             extract_method(rules, s, node);
         }
@@ -677,8 +740,15 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         matched = extract_type_alias(rules, s, node);
     } else if t.property_types.contains(&node_type) && s.is_inside_class_like() {
         extract_property(rules, s, node);
+        // Property initializers aren't walked — scan for fn-ref candidates
+        // (Kotlin `val cb = ::handler` class properties — Task 15b).
+        body::scan_fn_ref_subtree(s, node, 0);
     } else if t.field_types.contains(&node_type) && s.is_inside_class_like() {
         extract_field(rules, s, node);
+        // Field initializers aren't walked — scan for fn-ref candidates (Java
+        // `List<IntConsumer> table = List.of(Main::cb)`, C#
+        // `List<Action<int>> table = new() { TargetCb }` — Task 15b).
+        body::scan_fn_ref_subtree(s, node, 0);
     } else if t.variable_types.contains(&node_type)
         && (!s.is_inside_class_like() || is_class_scope_constant_assignment(node))
     {
@@ -687,6 +757,15 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         // puts one here, so the gate is effectively Ruby-only and never
         // disturbs other languages' class-internal locals.
         extract_variable(rules, s, node);
+        // `extract_variable` doesn't walk every initializer shape (object
+        // literals are deliberately skipped; Python/C don't walk at all), so
+        // scan the declaration subtree for fn-ref candidates — `const routes =
+        // { home: renderHome }`, `handlers = {"recv": target_cb}`, `static
+        // cb_t table[] = { cb_a, cb_b }`. The scan halts at nested function
+        // definitions (their bodies are walked — and attributed — separately)
+        // and flush-time dedup absorbs any overlap with the initializers
+        // `extract_variable` DOES walk.
+        body::scan_fn_ref_subtree(s, node, 0);
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);
     }

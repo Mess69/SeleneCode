@@ -10,14 +10,23 @@
 //! fn-pointer bindings and stack construction, Rust route macros) land with
 //! their language tasks — marked inline.
 
+use std::collections::{HashMap, HashSet};
+
 use selene_core::{Edge, EdgeKind, NodeKind, Provenance};
 use tree_sitter::{Node, Tree};
 
+use crate::fnref::{CaptureMode, QUALIFIED_IMPORT, SIMPLE_NAME};
 use crate::helpers::{get_child_by_field, get_node_text};
 use crate::is_generated_file;
 use crate::rules::ClassKind;
 use crate::walker::Session;
 use crate::{Language, UnresolvedReference};
+
+/// The INTERNAL reference kind for function-as-value candidates (#756). It is
+/// never an [`EdgeKind`]: Phase 3's resolver maps a resolved `function_ref` to
+/// a `references` edge carrying `metadata.fnRef = true` (map §Wire —
+/// "`function_ref` never persists as an edge kind").
+pub(crate) const FUNCTION_REF_KIND: &str = "function_ref";
 
 /// Constructor-invocation node kinds → `instantiates` refs (§10).
 pub(super) const INSTANTIATION_KINDS: [&str; 6] = [
@@ -103,7 +112,11 @@ impl Session<'_> {
         let t = rules.tables();
         let node_type = node.kind();
 
-        // INSERTION POINT (Task 15a): function-as-value capture.
+        // Function-as-value capture (#756) — function bodies are walked HERE,
+        // not by `walker::visit`, so the capture hook must fire in both
+        // walkers (a node is only ever visited by one of them).
+        self.maybe_capture_fn_refs(node, node_type);
+
         // INSERTION POINT (Task 9): Rust route-registration macros.
 
         if t.call_types.contains(&node_type) {
@@ -685,6 +698,153 @@ fn parse_paren_conversion(callee: &str) -> Option<String> {
     Some(inner.to_string())
 }
 
+/// Candidates-only scan of a subtree the main walkers won't traverse
+/// (`tree-sitter.ts:567` `scanFnRefSubtree`): top-level variable initializers,
+/// class field/property initializers, and subtrees a custom `visit_node` hook
+/// consumed. NO extraction side effects.
+///
+/// Halts at nested function boundaries: their bodies are walked — and their
+/// candidates attributed — by `extract_function`'s own body walk, so scanning
+/// into them would attribute a callback to the WRONG scope.
+pub(super) fn scan_fn_ref_subtree(s: &mut Session<'_>, node: Node<'_>, depth: u32) {
+    if s.fn_ref_spec().is_none() || depth > 12 {
+        return;
+    }
+    let node_type = node.kind();
+    if depth > 0
+        && (s.rules().tables().function_types.contains(&node_type)
+            || matches!(
+                node_type,
+                "arrow_function" | "function_expression" | "lambda_literal" | "lambda_expression"
+            ))
+    {
+        return;
+    }
+    s.maybe_capture_fn_refs(node, node_type);
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+    for child in children {
+        scan_fn_ref_subtree(s, child, depth + 1);
+    }
+}
+
+/// The function-as-value GATE (`tree-sitter.ts:603` `flushFnRefCandidates`):
+/// gate the captured candidates and push the survivors as `function_ref`
+/// [`UnresolvedReference`]s.
+///
+/// The gate bounds volume and protects precision (design doc rule 1): a
+/// candidate survives only if its name matches a function/method DEFINED IN
+/// THIS FILE or a name this file IMPORTS. Everything else (locals, params,
+/// fields passed as arguments) is dropped before it ever reaches the database.
+/// Phase 3's resolver then matches survivors against function/method nodes
+/// only and emits `references` edges — which callers/impact already traverse.
+///
+/// Exceptions, each bought by a real-repo false positive:
+/// - **C-family FILE-scope initializers** skip the gate (design doc rule 2) —
+///   a constant-expression context, and C has no symbol imports.
+/// - **`this.<member>` and `Scope::member`** always flush — the gate cannot see
+///   their scope (inherited members, same-package JVM types), and resolution is
+///   class-scoped / suffix-anchored + unique-or-drop.
+/// - **C++ bare identifiers** outside file-scope initializer tables are dropped
+///   (`address_of_only`, design doc rule 4).
+///
+/// Known v1 limit, deliberate: a C/C++ callback registered in a DIFFERENT
+/// translation unit than its definition, in a GATED position (assignment), is
+/// only captured when the name is repo-unique at resolution.
+pub(super) fn flush_fn_ref_candidates(s: &mut Session<'_>) {
+    let candidates = s.take_fn_ref_candidates();
+    if candidates.is_empty() {
+        return;
+    }
+    // Generated/minified files (vendored `jquery.min.js` and friends): their
+    // function-as-value edges are noise — single-letter minified symbols
+    // resolve everywhere (design doc rule 8; Alamofire).
+    if is_generated_file(s.file_path()) {
+        return;
+    }
+    let Some(spec) = s.fn_ref_spec() else { return };
+
+    let defined_here: HashSet<&str> = s
+        .nodes()
+        .iter()
+        .filter(|n| n.kind == NodeKind::Function || n.kind == NodeKind::Method)
+        .map(|n| n.name.as_str())
+        .collect();
+
+    // Import-binding names ONLY (every binding emitter pushes kind `imports`).
+    // Deliberately NOT `references`: those carry type-annotation and
+    // interface-member names, which let local variables that share a type
+    // member's name slip through the gate (excalidraw A/B finding). A dotted
+    // import (JVM `import com.example.OtherClass`) or backslashed PHP `use`
+    // also contributes its LAST segment — the simple name code references.
+    let mut imported_names: HashSet<&str> = HashSet::new();
+    for r in s.unresolved() {
+        if r.reference_kind != EdgeKind::Imports.as_str() {
+            continue;
+        }
+        if SIMPLE_NAME.is_match(&r.reference_name) {
+            imported_names.insert(&r.reference_name);
+        } else if let Some(last) = QUALIFIED_IMPORT
+            .captures(&r.reference_name)
+            .and_then(|c| c.get(1))
+        {
+            imported_names.insert(last.as_str());
+        }
+    }
+
+    let mut survivors: Vec<UnresolvedReference> = Vec::new();
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    for (c, from_node_id) in &candidates {
+        let at_file_scope = from_node_id.starts_with("file:");
+
+        // C++ (`address_of_only`): a BARE identifier qualifies only inside a
+        // file-scope initializer table. Everywhere else — args, assignments,
+        // local braced-init lists like `{begin, size}` — only explicit `&`
+        // forms count (fmt A/B finding: generic names `begin`/`out`/`size`
+        // collide with locals and members).
+        if spec.address_of_only
+            && !c.explicit_ref
+            && !(at_file_scope && matches!(c.mode, CaptureMode::Value | CaptureMode::List))
+        {
+            continue;
+        }
+
+        // Gate policy by candidate shape (see the doc comment above):
+        //  - `this.<member>` / `Scope::member`: ALWAYS flush.
+        //  - C-family file-scope initializers: skip the gate entirely.
+        //  - everything else: name ∈ same-file functions/methods ∪ imports.
+        if !c.name.starts_with("this.") && !c.name.contains("::") {
+            let skip_gate = (spec.is_ungated_mode(c.mode) && at_file_scope) || c.skip_gate;
+            if !skip_gate
+                && !defined_here.contains(c.name.as_str())
+                && !imported_names.contains(c.name.as_str())
+            {
+                continue;
+            }
+        }
+
+        let key = (from_node_id.clone(), c.name.clone());
+        if !seen.insert(key) {
+            continue;
+        }
+        survivors.push(UnresolvedReference {
+            from_node_id: from_node_id.clone(),
+            reference_name: c.name.clone(),
+            // The INTERNAL reference kind — resolution maps it to a
+            // `references` edge (`metadata.fnRef`); it NEVER persists as an
+            // edge kind (map §Wire).
+            reference_kind: FUNCTION_REF_KIND.to_string(),
+            line: Some(c.line),
+            column: Some(c.column),
+            file_path: None,
+            language: None,
+        });
+    }
+    for r in survivors {
+        s.add_unresolved(r);
+    }
+}
+
 /// The value-reference flush (§10): same-file `references` EDGES (metadata
 /// `{"valueRef": true}`, provenance TreeSitter) from reader scopes to
 /// distinctive file/class-scope constants, shadow-pruned by comparing
@@ -706,8 +866,7 @@ pub(super) fn flush_value_refs(s: &mut Session<'_>, tree: &Tree) {
     // more declarators than file-scope defs ⇒ a local shadow exists ⇒ drop
     // the target (a conditional module-level re-def keeps them EQUAL).
     {
-        let mut decl_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
+        let mut decl_counts: HashMap<String, usize> = HashMap::new();
         let mut bump = |name_node: Option<Node<'_>>| {
             if let Some(n) = name_node
                 && (n.kind() == "identifier" || n.kind() == "simple_identifier")
@@ -800,7 +959,7 @@ pub(super) fn flush_value_refs(s: &mut Session<'_>, tree: &Tree) {
             continue;
         };
         // (Dart/Pascal sibling-body pull — wave 2.)
-        let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        let mut seen: HashSet<&str> = HashSet::new();
         let mut stack = vec![scope_node];
         let mut visited = 0usize;
         while let Some(n) = stack.pop() {

@@ -16,6 +16,7 @@
 //! orchestrator land in Tasks 4–18.
 
 mod error;
+mod fnref;
 mod generated;
 mod grammars;
 mod helpers;
