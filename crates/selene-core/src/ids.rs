@@ -110,6 +110,21 @@ mod tests {
         );
     }
 
+    /// Pins the BOM/CRLF KEEP decision (Task 1 spike): `hash_content` hashes
+    /// the text EXACTLY as read — no BOM strip, no newline normalization.
+    /// Vector computed out-of-band with escapes in printf's FORMAT string
+    /// (not a `%s` argument — those don't expand escapes) and byte-verified:
+    /// `printf '\xef\xbb\xbfa\r\n' | xxd` → `ef bb bf 61 0d 0a`;
+    /// `printf '\xef\xbb\xbfa\r\n' | shasum -a 256` →
+    /// ea3948106c12d96eaf84d4bb8be214b194c3442acb99a3005251960b0ec2ba63.
+    #[test]
+    fn hash_content_bom_crlf_passthrough() {
+        assert_eq!(
+            hash_content("\u{feff}a\r\n"),
+            "ea3948106c12d96eaf84d4bb8be214b194c3442acb99a3005251960b0ec2ba63"
+        );
+    }
+
     #[test]
     fn extraction_version_is_one() {
         assert_eq!(EXTRACTION_VERSION, 1, "Rust engine restarts the counter");
