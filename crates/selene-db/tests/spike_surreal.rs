@@ -1,3 +1,7 @@
+// The whole spike drives the embedded in-memory engine, so the file only
+// compiles when `kv-mem` is on (a mem-less build, e.g. --no-default-features
+// --features kv-surrealkv, would otherwise fail on the `Mem` import).
+#![cfg(feature = "kv-mem")]
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Spike smoke-test — validates every SurrealQL assumption the `selene-db`
 //! design rests on, against the real `surrealdb = "3.2"` crate (resolves to

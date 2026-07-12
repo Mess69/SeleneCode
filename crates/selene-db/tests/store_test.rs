@@ -14,6 +14,7 @@
 //! because `insert_edges` (Task 5) does not exist yet; once it lands it can be
 //! rephrased against the typed API.
 
+#[cfg(feature = "kv-mem")]
 use selene_core::{Node, NodeKind, Visibility};
 use selene_db::SurrealStore;
 
@@ -141,6 +142,7 @@ async fn edge_unique_index_folds_null_line_col() {
 /// A minimal but valid `Node`: every `#[serde(skip_serializing_if)]` optional
 /// field is `None`/empty. `id` is `"function:<name>"` so it always contains
 /// the load-bearing colon.
+#[cfg(feature = "kv-mem")]
 fn node(name: &str, file_path: &str) -> Node {
     Node {
         id: format!("function:{name}"),
@@ -169,6 +171,7 @@ fn node(name: &str, file_path: &str) -> Node {
 
 /// A maximal `Node`: every optional field `Some`/non-empty, decorators and
 /// type parameters populated, a non-default kind.
+#[cfg(feature = "kv-mem")]
 fn maximal_node(name: &str, file_path: &str) -> Node {
     Node {
         id: format!("method:{name}"),
@@ -197,12 +200,14 @@ fn maximal_node(name: &str, file_path: &str) -> Node {
 
 /// A fresh in-memory, schema-applied store — the common setup for every node
 /// test below.
+#[cfg(feature = "kv-mem")]
 async fn fresh_store() -> SurrealStore {
     let store = SurrealStore::in_memory().await.unwrap();
     store.apply_schema().await.unwrap();
     store
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn minimal_and_maximal_node_round_trip_exactly() {
     let store = fresh_store().await;
@@ -218,12 +223,14 @@ async fn minimal_and_maximal_node_round_trip_exactly() {
     assert_eq!(store.get_node(&max.id).await.unwrap(), Some(max));
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_node_unknown_id_is_none_not_error() {
     let store = fresh_store().await;
     assert_eq!(store.get_node("function:nope").await.unwrap(), None);
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn insert_nodes_upsert_replaces_same_id() {
     let store = fresh_store().await;
@@ -250,6 +257,7 @@ async fn insert_nodes_upsert_replaces_same_id() {
     );
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_batch_keeps_only_found_ids() {
     let store = fresh_store().await;
@@ -275,6 +283,7 @@ async fn get_nodes_batch_keeps_only_found_ids() {
     assert!(!found.contains_key("function:missing"));
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_by_file_returns_only_that_file() {
     let store = fresh_store().await;
@@ -286,6 +295,7 @@ async fn get_nodes_by_file_returns_only_that_file() {
     assert_eq!(store.get_nodes_by_file("src/a.rs").await.unwrap(), vec![a]);
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_by_kind_filters_exact_kind() {
     let store = fresh_store().await;
@@ -306,6 +316,7 @@ async fn get_nodes_by_kind_filters_exact_kind() {
     );
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_by_name_is_case_sensitive_exact() {
     let store = fresh_store().await;
@@ -324,6 +335,7 @@ async fn get_nodes_by_name_is_case_sensitive_exact() {
     );
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_by_name_ci_matches_case_insensitively() {
     let store = fresh_store().await;
@@ -343,6 +355,7 @@ async fn get_nodes_by_name_ci_matches_case_insensitively() {
     assert_eq!(ci, expected);
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_by_name_prefix_respects_boundary_and_limit() {
     let store = fresh_store().await;
@@ -370,6 +383,7 @@ async fn get_nodes_by_name_prefix_respects_boundary_and_limit() {
     assert_eq!(limited.len(), 1, "limit must be respected");
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn get_nodes_by_qualified_name_can_return_multiple_overloads() {
     let store = fresh_store().await;
@@ -391,6 +405,7 @@ async fn get_nodes_by_qualified_name_can_return_multiple_overloads() {
     assert_eq!(found, expected);
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn count_nodes_matching_name_in_files_counts_distinct_files_not_nodes() {
     let store = fresh_store().await;
@@ -412,6 +427,7 @@ async fn count_nodes_matching_name_in_files_counts_distinct_files_not_nodes() {
     );
 }
 
+#[cfg(feature = "kv-mem")]
 #[tokio::test(flavor = "multi_thread")]
 async fn insert_nodes_chunks_over_500() {
     let store = fresh_store().await;
@@ -426,5 +442,16 @@ async fn insert_nodes_chunks_over_500() {
         by_kind.len(),
         1200,
         "all 1200 nodes across 3 chunks must be present"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn get_nodes_empty_ids_short_circuits_to_empty_map() {
+    let store = fresh_store().await;
+    let found = store.get_nodes(&[]).await.unwrap();
+    assert!(
+        found.is_empty(),
+        "empty input must yield an empty map (short-circuit, no query)"
     );
 }

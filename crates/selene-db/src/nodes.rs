@@ -111,6 +111,10 @@ fn row_to_node(row: serde_json::Value) -> Result<Node> {
 impl SurrealStore {
     /// Insert or replace `nodes` (same id ⇒ replace in place). See the
     /// module docs for the chunking and upsert-semantics rationale.
+    ///
+    /// Failure semantics: a malformed node fails its whole [`CHUNK`]-sized
+    /// batch atomically, but earlier chunks of the same call are already
+    /// committed — there is no cross-chunk rollback.
     pub async fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {
         for chunk in nodes.chunks(CHUNK) {
             let batch = chunk
