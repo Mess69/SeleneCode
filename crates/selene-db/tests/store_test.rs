@@ -12,8 +12,8 @@
 //!    with no source position between the same endpoints are duplicates.
 //!
 //! Test 4 reaches for the raw handle via the `#[doc(hidden)]` `db()` accessor
-//! because `insert_edges` (Task 5) does not exist yet; once it lands it can be
-//! rephrased against the typed API.
+//! (it predates `insert_edges`, Task 5) — kept raw deliberately: it pins the
+//! unique-index fold at the storage layer, below the typed API's own dedup.
 
 #[cfg(feature = "kv-mem")]
 use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance, Visibility};
@@ -1889,4 +1889,70 @@ async fn deferred_and_inline_fts_agree() {
         "deferred FTS rebuild must be functionally identical to inline FTS"
     );
     assert_eq!(a.len(), 2, "sanity: the 'user' corpus subset matches");
+}
+
+// =============================================================================
+// `impl GraphStore for SurrealStore` — the trait wiring (Task 10)
+// =============================================================================
+
+/// Drives the store exclusively through a `S: GraphStore` generic — the way
+/// Phase 2's extraction orchestrator will hold it — never through
+/// `SurrealStore`'s inherent methods. Compiling at all proves the trait impl
+/// exists with `Send` futures (the desugared `impl Future … + Send` trait
+/// signatures force the proof at the impl site); the assertions prove the
+/// delegation reaches the real operations, including the newly-lifted
+/// [`selene_db::GraphStore::replace_file_extraction`].
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn graph_store_trait_drives_the_store_generically() {
+    use selene_db::{GraphStore, ReplaceStats};
+
+    async fn index_and_query<S: GraphStore>(store: &S) -> ReplaceStats {
+        let caller = node("caller", "src/lib.rs");
+        let callee = node("callee", "src/util.rs");
+        store
+            .insert_nodes(&[caller.clone(), callee.clone()])
+            .await
+            .unwrap();
+        store
+            .insert_edges(&[edge(&caller.id, &callee.id, EdgeKind::Calls)])
+            .await
+            .unwrap();
+
+        // Re-index src/util.rs through the trait: the cross-file incoming
+        // `calls` edge must be re-attached by (name, kind) across the churn.
+        let stats = store
+            .replace_file_extraction(
+                "src/util.rs",
+                std::slice::from_ref(&callee),
+                &[],
+                &[],
+                &file_record("src/util.rs", "hash-v2", "rust", 2000, 1),
+            )
+            .await
+            .unwrap();
+
+        let callers = store.callers(&callee.id, 1).await.unwrap();
+        assert_eq!(callers.len(), 1, "reattached edge visible via callers");
+        assert_eq!(callers[0].node.id, caller.id);
+
+        assert_eq!(store.node_edge_count().await.unwrap(), (2, 1));
+        assert_eq!(
+            store
+                .get_file("src/util.rs")
+                .await
+                .unwrap()
+                .expect("file row written by the protocol")
+                .content_hash,
+            "hash-v2"
+        );
+        stats
+    }
+
+    let store = fresh_store().await;
+    let stats = index_and_query(&store).await;
+    assert_eq!(stats.nodes_inserted, 1);
+    assert_eq!(stats.incoming_reattached, 1);
+    assert_eq!(stats.incoming_resurrected, 0);
+    assert_eq!(stats.incoming_dropped, 0);
 }

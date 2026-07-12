@@ -1,7 +1,6 @@
 //! Edge CRUD + adjacency + file projections: inherent methods on
-//! [`SurrealStore`] mirroring the edge section of [`crate::GraphStore`]
-//! (Task 5). `impl GraphStore for SurrealStore` is wired later (Task 10);
-//! until then these are plain inherent `async fn`s with identical signatures.
+//! [`SurrealStore`] carrying the edge section of [`crate::GraphStore`]
+//! (Task 5); the trait impl in `src/store_impl.rs` delegates here (Task 10).
 //!
 //! ## Every `EdgeKind` is its own relation table
 //!
@@ -392,7 +391,7 @@ fn node_rids(ids: &[String]) -> Vec<RecordId> {
 impl SurrealStore {
     /// Insert `edges`. See the module docs for the bulk `INSERT RELATION`
     /// write shape, the two-layer duplicate-as-skip mechanism, and the
-    /// chunking. Endpoints are pre-validated ([`Self::existing_node_ids`]):
+    /// chunking. Endpoints are pre-validated (`existing_node_ids`):
     /// an edge whose source or target is not a known node id is silently
     /// skipped, not an error. Returns the number of edges actually inserted
     /// (excludes skipped missing-endpoint edges and deduped/duplicate edges).
@@ -439,11 +438,13 @@ impl SurrealStore {
             return Ok(0);
         }
 
+        // Computed once per edge: bound (cloned) for the lookup, then zipped
+        // back with the chunk for the membership check below.
         let eids: Vec<RecordId> = chunk.iter().map(|e| edge_record_id(e)).collect();
         let mut resp = self
             .db()
             .query("SELECT VALUE id FROM $eids")
-            .bind(("eids", eids))
+            .bind(("eids", eids.clone()))
             .await?;
         let already: Vec<RecordId> = resp.take(0)?;
         // mutable_key_type false positive: RecordId transitively reaches a
@@ -453,8 +454,8 @@ impl SurrealStore {
         let already: HashSet<RecordId> = already.into_iter().collect();
 
         let mut by_kind: HashMap<&'static str, Vec<SqlValue>> = HashMap::new();
-        for edge in chunk {
-            if already.contains(&edge_record_id(edge)) {
+        for (edge, eid) in chunk.iter().zip(&eids) {
+            if already.contains(eid) {
                 continue;
             }
             by_kind

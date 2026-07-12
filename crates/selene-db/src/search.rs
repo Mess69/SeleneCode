@@ -1,7 +1,6 @@
-//! Search candidate fetch: inherent methods on [`SurrealStore`] mirroring the
-//! search-candidates section of [`crate::GraphStore`] (Task 7). `impl
-//! GraphStore for SurrealStore` is wired later (Task 10); until then these
-//! are plain inherent `async fn`s with identical signatures. Final ranking
+//! Search candidate fetch: inherent methods on [`SurrealStore`] carrying the
+//! search-candidates section of [`crate::GraphStore`] (Task 7); the trait
+//! impl in `src/store_impl.rs` delegates here (Task 10). Final ranking
 //! (kind/path/name-match bonuses, blending FTS with LIKE/fuzzy candidates)
 //! stays out of this crate — see the trait's "search candidates are
 //! unranked" contract doc.

@@ -1,10 +1,12 @@
 //! The [`GraphStore`] trait and the shared parameter/result types it uses.
 //!
 //! This module defines the **store contract** only — no SurrealDB, no I/O.
-//! `SurrealStore` (Task 3) is the sole implementation; a permissive fallback
-//! (PRD §5.2/§5.4) would be a second implementation of the same trait. Every
-//! other layer crate (`selene-graph`, `selene-mcp`, `selene-cli`, …) is written
-//! against this trait, never against SurrealDB directly.
+//! `SurrealStore` is the sole implementation, and the sole *planned* one: the
+//! permissive fallback backend (PRD §5.2) was dropped when the §5.4 spike
+//! resolved to SurrealQL-max (2026-07-12, see the crate docs). The trait
+//! remains as the **seam** every other layer crate (`selene-graph`,
+//! `selene-mcp`, `selene-cli`, …) is written against — and tests mock —
+//! never against SurrealDB directly; it is not a portability layer.
 //!
 //! `Node`, `Edge`, `NodeKind`, `EdgeKind`, `Provenance` are re-used verbatim
 //! from `selene_core` — they are not redefined here.
@@ -133,7 +135,7 @@ pub struct GraphStats {
 }
 
 /// Outcome counts from the single-file re-index protocol
-/// (`SurrealStore::replace_file_extraction`, a port of CodeGraph's
+/// ([`GraphStore::replace_file_extraction`], a port of CodeGraph's
 /// `storeExtractionResult`).
 ///
 /// `nodes_inserted`/`edges_inserted` are the fresh rows written for the
@@ -142,7 +144,7 @@ pub struct GraphStats {
 /// nodes were deleted — deleting those nodes cascades their edges away, so
 /// each snapshotted edge is afterwards either:
 /// - **reattached** — a re-extracted node with the same `(name, kind)` was
-///   found and the edge was re-`RELATE`d onto its new id;
+///   found and the edge was re-attached onto its new id;
 /// - **resurrected** — no match, but the edge's `metadata` carried a stamped
 ///   `refName`/`refKind`, so it becomes a `pending` [`UnresolvedRef`] for the
 ///   cross-file resolver (`#899`/`#1240`); or
@@ -152,10 +154,6 @@ pub struct GraphStats {
 /// snapshot size, except that a reattached edge which duplicates an existing
 /// one is deduped away by `insert_edges` and therefore not counted in
 /// `incoming_reattached`.
-///
-/// This struct is **not yet** on the [`GraphStore`] trait — the protocol is an
-/// inherent method on the SurrealDB backend; Task 10 may lift both onto the
-/// trait.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReplaceStats {
@@ -270,10 +268,11 @@ pub struct TraversalOptions {
 // GraphStore
 // =============================================================================
 
-/// The store contract every `selene-db` backend (the SurrealDB-embedded
-/// implementation, and any future permissive fallback per PRD §5.2/§5.4) must
-/// satisfy. Every other layer crate depends on this trait, never on a
-/// concrete backend.
+/// The store contract. [`crate::SurrealStore`] (embedded SurrealDB) is the
+/// sole backend — the permissive fallback (PRD §5.2) is dropped per the
+/// locked SurrealQL-max decision (2026-07-12, see the crate docs) — but every
+/// other layer crate still depends on this trait, never on the concrete
+/// backend: it is the mocking/test seam and the layering boundary.
 ///
 /// # Async / `Send` futures
 ///
@@ -332,9 +331,10 @@ pub struct TraversalOptions {
 /// [`GraphStore::search_fts`] and [`GraphStore::search_name_like`] return
 /// candidates with a raw store-level relevance signal, not a final ranking.
 /// Blending in kind/path/name-match bonuses and merging the two candidate
-/// sources is upstream product logic, deliberately kept out of this crate so
-/// a permissive fallback backend only needs to implement candidate fetch, not
-/// the full CodeGraph scoring pipeline.
+/// sources is upstream product logic, deliberately kept out of this crate:
+/// the store implements candidate *fetch* only, so the full CodeGraph scoring
+/// pipeline lives in one place upstream (`selene-graph`/`selene-context`)
+/// instead of being smeared across the storage layer.
 pub trait GraphStore: Send + Sync {
     // -------------------------------------------------------------------
     // Nodes
@@ -491,6 +491,45 @@ pub trait GraphStore: Send + Sync {
 
     /// The distinct set of `language` values across all tracked files.
     fn distinct_file_languages(&self) -> impl Future<Output = Result<BTreeSet<String>>> + Send;
+
+    /// Replace the whole stored extraction of `path` in one protocol pass —
+    /// the single-file re-index write protocol (a port of CodeGraph's
+    /// `storeExtractionResult` steps 2–8; step 1, the content-hash skip, is
+    /// the caller's job). `nodes`/`edges`/`unresolved` are the freshly
+    /// extracted rows for this file. In order:
+    ///
+    /// - **(a)** snapshot the cross-file **incoming** edges with their target
+    ///   `(name, kind)` ([`Self::cross_file_incoming_with_target`]) — a
+    ///   re-extraction churns node ids (any line shift changes an id), and
+    ///   deleting the old nodes cascades these edges away;
+    /// - **(b)** delete the old extraction ([`Self::delete_file`] cascade);
+    /// - **(c)** insert the re-extracted `nodes`, silently skipping any with
+    ///   an empty required field (`id`/`name`/`file_path`), mirroring TS;
+    /// - **(d)** insert the re-extracted `edges` (endpoint validation + dedup
+    ///   per [`Self::insert_edges`]);
+    /// - **(e)** re-attach each snapshotted incoming edge to the re-extracted
+    ///   node matching its old target's `(name, kind)`; resurrect an
+    ///   unmatched edge as a `pending` [`UnresolvedRef`] if its `metadata`
+    ///   carries a stamped `refName`/`refKind` (`#899`), else drop it;
+    /// - **(f)** insert the caller-supplied `unresolved` refs;
+    /// - **(g)** upsert `file_record` **last**.
+    ///
+    /// The step order is the crash-safety mechanism: there is no
+    /// multi-statement transaction spanning the protocol (exactly as the
+    /// TS/SQLite original had none), and the file row landing last means a
+    /// crash mid-protocol leaves no `file` row — the next indexing run sees
+    /// the file as un-indexed and re-runs the whole protocol, so a partial
+    /// re-index never masquerades as complete. Implementations must not move
+    /// the file-row write earlier. Full narrative: `src/files.rs`; returned
+    /// counts: [`ReplaceStats`].
+    fn replace_file_extraction(
+        &self,
+        path: &str,
+        nodes: &[Node],
+        edges: &[Edge],
+        unresolved: &[UnresolvedRef],
+        file_record: &FileRecord,
+    ) -> impl Future<Output = Result<ReplaceStats>> + Send;
 
     // -------------------------------------------------------------------
     // Unresolved references

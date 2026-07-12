@@ -1,8 +1,7 @@
-//! Graph traversals: inherent [`SurrealStore`] methods mirroring the
-//! TRAVERSAL section of [`crate::GraphStore`] (Task 8). As with the other
-//! operation modules, `impl GraphStore for SurrealStore` is wired later
-//! (Task 10); until then these are plain inherent `async fn`s with identical
-//! signatures.
+//! Graph traversals: inherent [`SurrealStore`] methods carrying the
+//! TRAVERSAL section of [`crate::GraphStore`] (Task 8); as with the other
+//! operation modules, the trait impl in `src/store_impl.rs` delegates here
+//! (Task 10).
 //!
 //! ## Frontier-batched hybrid, not SurrealQL recursion
 //!
@@ -55,8 +54,9 @@
 //! ancestors + descendants union, so [`SurrealStore::type_hierarchy`] lets
 //! the descendants pass expand the root despite the shared visited set.
 //! Everything else (the single shared visited set, the `!nodes.has`
-//! collection guard) is ported verbatim. Flagged in
-//! `.superpowers/sdd/task-8-report.md`.
+//! collection guard) is ported verbatim. (Divergence surfaced at Task 8
+//! review and accepted: spec-over-source, since both binding documents agree
+//! the TS behavior was a bug.)
 
 use std::collections::{HashMap, HashSet};
 

@@ -1,7 +1,6 @@
-//! Node CRUD + lookups: inherent methods on [`SurrealStore`] mirroring the
-//! node section of [`crate::GraphStore`] (Task 4). `impl GraphStore for
-//! SurrealStore` is wired later (Task 10) once every section exists; until
-//! then these are plain inherent `async fn`s with identical signatures.
+//! Node CRUD + lookups: inherent methods on [`SurrealStore`] carrying the
+//! node section of [`crate::GraphStore`] (Task 4); the trait impl in
+//! `src/store_impl.rs` delegates here (Task 10).
 //!
 //! ## Record id ↔ `Node.id` mapping
 //!
@@ -175,7 +174,7 @@ impl SurrealStore {
     /// Insert or replace `nodes` (same id ⇒ replace in place). See the
     /// module docs for the chunking and upsert-semantics rationale.
     ///
-    /// Failure semantics: a malformed node fails its whole [`CHUNK`]-sized
+    /// Failure semantics: a malformed node fails its whole `CHUNK`-sized
     /// batch atomically, but earlier chunks of the same call are already
     /// committed — there is no cross-chunk rollback.
     pub async fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {

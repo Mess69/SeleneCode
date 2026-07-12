@@ -1,8 +1,7 @@
 //! Project metadata KV + aggregate stats + full clear: inherent methods on
-//! [`SurrealStore`] mirroring the metadata/stats section of
-//! [`crate::GraphStore`] (Task 7). `impl GraphStore for SurrealStore` is
-//! wired later (Task 10); until then these are plain inherent `async fn`s
-//! with identical signatures.
+//! [`SurrealStore`] carrying the metadata/stats section of
+//! [`crate::GraphStore`] (Task 7); the trait impl in `src/store_impl.rs`
+//! delegates here (Task 10).
 //!
 //! ## Placement: a dedicated module, not `src/surreal.rs`
 //!

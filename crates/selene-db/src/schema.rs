@@ -8,8 +8,8 @@
 //! indexes that reference it, the **node** table before the ENFORCED edge
 //! relations that point at it.
 //!
-//! ## Field-shape decisions (verified against SurrealDB 3.2.1 in the Task 3
-//! spike — see `.superpowers/sdd/task-3-report.md`)
+//! ## Field-shape decisions (each probed against embedded SurrealDB 3.2.1 in
+//! the Task 3 spike; every load-bearing finding is inlined below)
 //!
 //! - **`node` / `file` / `unresolved_ref` are `SCHEMAFULL`**; field names are
 //!   the exact camelCase serde output of `selene_core::Node`, `FileRecord`, and

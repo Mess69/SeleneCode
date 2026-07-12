@@ -1,8 +1,9 @@
-//! [`SurrealStore`] — the embedded-SurrealDB backend: open/init and the
-//! idempotent schema apply. The `GraphStore` operations (nodes, edges, files,
-//! unresolved refs, traversals, search) are added as inherent methods in later
-//! tasks, and `impl GraphStore for SurrealStore` is wired in Task 10 once they
-//! all exist.
+//! [`SurrealStore`] — the embedded-SurrealDB backend: open/init, the
+//! idempotent schema apply, and bulk-load mode. The `GraphStore` operations
+//! (nodes, edges, files, unresolved refs, traversals, search) are inherent
+//! methods in the per-section modules (`src/nodes.rs`, `src/edges.rs`, …);
+//! `impl GraphStore for SurrealStore` is the pure-delegation
+//! `src/store_impl.rs` (Task 10).
 //!
 //! Namespace/database are fixed at `selene`/`graph`. On disk the store lives in
 //! a directory named [`DATABASE_DIRNAME`]; callers place that under a project's
@@ -109,7 +110,7 @@ impl SurrealStore {
     /// a later run never overwrites an existing version.
     ///
     /// Returns `Err` if *any* schema statement fails: the whole program is run
-    /// as one query and validated with [`surrealdb::Response::check`], which
+    /// as one query and validated with `surrealdb::Response::check`, which
     /// surfaces the first per-statement error (unique-index and other runtime
     /// errors hide behind an `Ok` from `query().await` otherwise — see the
     /// Task 1 spike).
@@ -186,7 +187,7 @@ impl SurrealStore {
     /// 100k-node corpus, with `search_fts` results identical to an inline
     /// (non-deferred) load (`docs/benchmarks/2026-07-phase1-db-gate.md`).
     /// Total time is corpus-size-dependent; the poll interval is bounded
-    /// ([`INDEX_POLL_INTERVAL`]), the wait itself is not.
+    /// (`INDEX_POLL_INTERVAL`), the wait itself is not.
     ///
     /// Idempotent: the DEFINEs are `IF NOT EXISTS`, and an already-built
     /// index reports `ready` (or carries no `building` entry) on the first

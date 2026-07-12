@@ -1,8 +1,9 @@
 //! File records + the single-file re-index protocol: inherent methods on
-//! [`SurrealStore`] mirroring the file section of [`crate::GraphStore`]
-//! (Task 6). `impl GraphStore for SurrealStore` is wired later (Task 10); until
-//! then these are plain inherent `async fn`s. [`SurrealStore::replace_file_extraction`]
-//! is *not* on the trait at all yet (see [`ReplaceStats`] — Task 10 may lift it).
+//! [`SurrealStore`] carrying the file section of [`crate::GraphStore`] —
+//! including [`crate::GraphStore::replace_file_extraction`], lifted onto the
+//! trait in Task 10 because Phase 2's orchestrator consumes the trait, not
+//! the concrete store. The trait impl in `src/store_impl.rs` delegates here
+//! (Tasks 6 + 10).
 //!
 //! ## `file` record id ↔ `FileRecord.path`
 //!
@@ -22,9 +23,10 @@
 //! (a throwaway exploration probe, not kept): deleting a `node` record —
 //! including a `DELETE node WHERE filePath = $path` multi-record delete —
 //! automatically
-//! removes every RELATE edge whose reserved `in`/`out` link points at a deleted
-//! node, across *all* edge tables, while nodes in other files (and their edges)
-//! are untouched. So `delete_file` does **not** enumerate the 12 edge tables:
+//! removes every relation edge whose reserved `in`/`out` link points at a
+//! deleted node, across *all* edge tables, while nodes in other files (and
+//! their edges) are untouched. So `delete_file` does **not** enumerate the 12
+//! edge tables:
 //! deleting the file's nodes cascades their edges for free. Only `unresolved_ref`
 //! (a plain, non-relation table) needs an explicit delete — by its denormalized
 //! `filePath` *and* by `fromNodeId ∈ {deleted node ids}` (belt-and-suspenders

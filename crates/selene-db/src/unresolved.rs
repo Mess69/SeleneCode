@@ -1,7 +1,6 @@
-//! Unresolved-reference CRUD: inherent methods on [`SurrealStore`] mirroring
-//! the unresolved-references section of [`crate::GraphStore`] (Task 7).
-//! `impl GraphStore for SurrealStore` is wired later (Task 10); until then
-//! these are plain inherent `async fn`s with identical signatures.
+//! Unresolved-reference CRUD: inherent methods on [`SurrealStore`] carrying
+//! the unresolved-references section of [`crate::GraphStore`] (Task 7); the
+//! trait impl in `src/store_impl.rs` delegates here (Task 10).
 //!
 //! ## Record identity
 //!
@@ -95,7 +94,7 @@ fn row_to_unresolved(row: serde_json::Value) -> Result<UnresolvedRef> {
 
 impl SurrealStore {
     /// Insert `refs` (typically as [`crate::RefStatus::Pending`]), chunked at
-    /// [`CHUNK`]. Promoted from `src/files.rs`'s private
+    /// `CHUNK`. Promoted from `src/files.rs`'s private
     /// `insert_unresolved_rows` (Task 6) — see the module docs.
     pub async fn insert_unresolved(&self, refs: &[UnresolvedRef]) -> Result<()> {
         for chunk in refs.chunks(CHUNK) {
@@ -147,7 +146,7 @@ impl SurrealStore {
     }
 
     /// Every [`crate::RefStatus::Pending`] ref whose `file_path` is in `paths`,
-    /// chunked at [`CHUNK`] per IN-list round trip.
+    /// chunked at `CHUNK` per IN-list round trip.
     pub async fn unresolved_by_files(&self, paths: &[String]) -> Result<Vec<UnresolvedRef>> {
         if paths.is_empty() {
             return Ok(Vec::new());
@@ -168,7 +167,7 @@ impl SurrealStore {
     }
 
     /// Delete refs matching `(from_node_id, reference_name)` keys, chunked at
-    /// [`CHUNK`]. One `DELETE ... WHERE fromNodeId = $fromN AND
+    /// `CHUNK`. One `DELETE ... WHERE fromNodeId = $fromN AND
     /// referenceName = $nameN` statement per key, combined into a single
     /// multi-statement query per chunk (SurrealQL has no composite-tuple
     /// `IN` list).
