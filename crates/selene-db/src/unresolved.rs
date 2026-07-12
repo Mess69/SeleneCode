@@ -47,10 +47,8 @@
 
 use std::collections::HashSet;
 
-use crate::{Result, SurrealStore, UnresolvedRef};
-
-/// Rows/keys processed per round trip. Mirrors `src/nodes.rs`'s `CHUNK`.
-const CHUNK: usize = 500;
+use crate::util::{CHUNK, clamp_i64};
+use crate::{RefStatus, Result, SurrealStore, UnresolvedRef};
 
 /// Column list for every `unresolved_ref` read, in [`UnresolvedRef`]'s field
 /// order. Unlike `node`/`file`, `UnresolvedRef` has no `id` field at all (see
@@ -117,7 +115,8 @@ impl SurrealStore {
     pub async fn unresolved_pending_count(&self) -> Result<u64> {
         let mut resp = self
             .db()
-            .query("SELECT count() FROM unresolved_ref WHERE status = 'pending' GROUP ALL")
+            .query("SELECT count() FROM unresolved_ref WHERE status = $status GROUP ALL")
+            .bind(("status", RefStatus::Pending.as_str()))
             .await?;
         let rows: Vec<serde_json::Value> = resp.take(0)?;
         Ok(rows.first().and_then(|r| r["count"].as_u64()).unwrap_or(0))
@@ -125,19 +124,23 @@ impl SurrealStore {
 
     /// A page of [`crate::RefStatus::Pending`] refs, ordered deterministically by
     /// `(fromNodeId, referenceName, referenceKind)` — the documented order
-    /// key stable batching depends on — for resolver batching.
+    /// key stable batching depends on — with the record id as the final
+    /// tiebreak, so rows tied on the whole key still page stably (no row
+    /// lost or duplicated across pages).
     pub async fn unresolved_pending_batch(
         &self,
         offset: usize,
         limit: usize,
     ) -> Result<Vec<UnresolvedRef>> {
         let sql = format!(
-            "SELECT {UNRESOLVED_FIELDS} FROM unresolved_ref WHERE status = 'pending' \
-             ORDER BY fromNodeId, referenceName, referenceKind LIMIT $limit START $offset"
+            "SELECT {UNRESOLVED_FIELDS}, id FROM unresolved_ref WHERE status = $status \
+             ORDER BY fromNodeId, referenceName, referenceKind, id \
+             LIMIT $limit START $offset"
         );
         let mut resp = self
             .db()
             .query(sql)
+            .bind(("status", RefStatus::Pending.as_str()))
             .bind(("limit", clamp_i64(limit)))
             .bind(("offset", clamp_i64(offset)))
             .await?;
@@ -155,9 +158,14 @@ impl SurrealStore {
         for chunk in paths.chunks(CHUNK) {
             let sql = format!(
                 "SELECT {UNRESOLVED_FIELDS} FROM unresolved_ref \
-                 WHERE status = 'pending' AND filePath IN $paths"
+                 WHERE status = $status AND filePath IN $paths"
             );
-            let mut resp = self.db().query(sql).bind(("paths", chunk.to_vec())).await?;
+            let mut resp = self
+                .db()
+                .query(sql)
+                .bind(("status", RefStatus::Pending.as_str()))
+                .bind(("paths", chunk.to_vec()))
+                .await?;
             let rows: Vec<serde_json::Value> = resp.take(0)?;
             for row in rows {
                 out.push(row_to_unresolved(row)?);
@@ -175,6 +183,7 @@ impl SurrealStore {
         self.run_keyed_statements(
             keys,
             "DELETE unresolved_ref WHERE fromNodeId = $from{i} AND referenceName = $name{i};",
+            &[],
         )
         .await
     }
@@ -185,7 +194,9 @@ impl SurrealStore {
     pub async fn mark_failed(&self, keys: &[(String, String)]) -> Result<()> {
         self.run_keyed_statements(
             keys,
-            "UPDATE unresolved_ref SET status = 'failed' WHERE fromNodeId = $from{i} AND referenceName = $name{i};",
+            "UPDATE unresolved_ref SET status = $status \
+             WHERE fromNodeId = $from{i} AND referenceName = $name{i};",
+            &[("status", RefStatus::Failed.as_str())],
         )
         .await
     }
@@ -214,11 +225,14 @@ impl SurrealStore {
             for i in 0..chunk.len() {
                 sql.push_str(&format!(
                     "SELECT {UNRESOLVED_FIELDS} FROM unresolved_ref \
-                     WHERE status = 'failed' AND (referenceName = $n{i} OR nameTail = $n{i}) \
+                     WHERE status = $status AND (referenceName = $n{i} OR nameTail = $n{i}) \
                      LIMIT $cap{i};"
                 ));
             }
-            let mut query = self.db().query(sql);
+            let mut query = self
+                .db()
+                .query(sql)
+                .bind(("status", RefStatus::Failed.as_str()));
             for (i, name) in chunk.iter().enumerate() {
                 query = query
                     .bind((format!("n{i}"), name.clone()))
@@ -248,8 +262,15 @@ impl SurrealStore {
     /// Shared tail of [`Self::delete_resolved`]/[`Self::mark_failed`]: run one
     /// `template` statement per `(from_node_id, reference_name)` key, `{i}`
     /// substituted with the key's index, all statements in one chunk combined
-    /// into a single round trip. Empty `keys` is a no-op (zero queries).
-    async fn run_keyed_statements(&self, keys: &[(String, String)], template: &str) -> Result<()> {
+    /// into a single round trip. `extra_binds` are bound once per chunk query
+    /// (e.g. `mark_failed`'s `$status`), on top of the per-key `$from{i}`/
+    /// `$name{i}` binds. Empty `keys` is a no-op (zero queries).
+    async fn run_keyed_statements(
+        &self,
+        keys: &[(String, String)],
+        template: &str,
+        extra_binds: &[(&'static str, &'static str)],
+    ) -> Result<()> {
         if keys.is_empty() {
             return Ok(());
         }
@@ -259,6 +280,9 @@ impl SurrealStore {
                 sql.push_str(&template.replace("{i}", &i.to_string()));
             }
             let mut query = self.db().query(sql);
+            for (key, value) in extra_binds {
+                query = query.bind((*key, *value));
+            }
             for (i, (from, name)) in chunk.iter().enumerate() {
                 query = query
                     .bind((format!("from{i}"), from.clone()))
@@ -268,11 +292,4 @@ impl SurrealStore {
         }
         Ok(())
     }
-}
-
-/// `usize` → `i64`, saturating at `i64::MAX` (mirrors `src/nodes.rs`'s
-/// `get_nodes_by_name_prefix` limit-binding pattern) — SurrealDB's `LIMIT`/
-/// `START` bind as signed integers.
-fn clamp_i64(n: usize) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
 }

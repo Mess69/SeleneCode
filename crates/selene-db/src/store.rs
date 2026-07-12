@@ -70,6 +70,19 @@ pub enum RefStatus {
     Failed,
 }
 
+impl RefStatus {
+    /// The canonical wire string — identical to the serde representation and
+    /// to what the store persists in the `status` column. Queries bind this
+    /// instead of restringing `'pending'`/`'failed'` literals (the same
+    /// discipline as `NodeKind::as_str`/`EdgeKind::as_str`).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RefStatus::Pending => "pending",
+            RefStatus::Failed => "failed",
+        }
+    }
+}
+
 /// A reference (call, import, type use, …) whose target symbol could not be
 /// resolved at extraction time, held for a later cross-file resolution pass.
 ///
@@ -739,4 +752,22 @@ pub trait GraphStore: Send + Sync {
 
     /// Direct `contains` children of `id`.
     fn children(&self, id: &str) -> impl Future<Output = Result<Vec<Node>>> + Send;
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    /// `RefStatus::as_str` must stay identical to the serde wire strings the
+    /// store persists in the `status` column — queries bind `as_str()`, so a
+    /// drift between the two would silently match nothing.
+    #[test]
+    fn ref_status_as_str_matches_serde_representation() {
+        for status in [RefStatus::Pending, RefStatus::Failed] {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
+        }
+    }
 }

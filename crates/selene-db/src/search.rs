@@ -117,10 +117,8 @@
 use selene_core::{Node, NodeKind};
 
 use crate::nodes::NODE_FIELDS;
+use crate::util::{CHUNK, clamp_i64};
 use crate::{Result, SearchCandidate, SurrealStore};
-
-/// Names/keys processed per round trip. Mirrors `src/nodes.rs`'s `CHUNK`.
-const CHUNK: usize = 500;
 
 impl SurrealStore {
     /// Full-text candidate fetch. See the module docs for the statement
@@ -292,12 +290,6 @@ impl SurrealStore {
 /// [`NodeKind`] wire strings for an `IN`-list bind.
 fn kind_strings(kinds: &[NodeKind]) -> Vec<String> {
     kinds.iter().map(|k| k.as_str().to_string()).collect()
-}
-
-/// `usize` → `i64`, saturating at `i64::MAX` (mirrors `src/nodes.rs`'s
-/// `get_nodes_by_name_prefix` limit-binding pattern).
-fn clamp_i64(n: usize) -> i64 {
-    i64::try_from(n).unwrap_or(i64::MAX)
 }
 
 /// Decodes one `search_fts` row into a [`SearchCandidate`]. `Node`'s

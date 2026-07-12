@@ -136,12 +136,8 @@ use surrealdb::types::{
     Array as SqlArray, Number as SqlNumber, RecordId, RecordIdKey, SurrealValue, Value as SqlValue,
 };
 
+use crate::util::CHUNK;
 use crate::{Error, NeighborEntry, Result, SurrealStore};
-
-/// Edges written per [`SurrealStore::insert_edges`] round trip, and node ids
-/// checked per [`SurrealStore::existing_node_ids`] round trip. Mirrors
-/// `src/nodes.rs`'s `CHUNK`.
-const CHUNK: usize = 500;
 
 /// Shared projection for every edge read: bridges the reserved `in`/`out`
 /// record-link fields to raw `Node.id` strings via `record::id(..)` (same

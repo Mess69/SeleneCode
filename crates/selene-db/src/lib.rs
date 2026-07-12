@@ -40,12 +40,19 @@
 //! - **TS ops whose consumer is a later phase's product logic** (`deleteNode`,
 //!   `deleteEdgesBySource`, `getAllNodes`/the iterator variants,
 //!   `getNodeNamesByFiles`, `getStaleFiles`, `getUnresolvedByName`,
-//!   `getAllMetadata`, `iterateNodesByLanguageWithDecorator`) → added with
-//!   their consuming phase (resolver/orchestrator, Phases 2–3); the pipeline's
-//!   currently-ported operations all have trait methods. Final search
-//!   *scoring* (kind/path/name bonuses, fuzzy, rescoring) is upstream product
-//!   logic by design — see the trait's "search candidates are unranked"
-//!   contract.
+//!   `getUnresolvedReferences()` (the unfiltered fetch-all;
+//!   `unresolved_pending_batch` pages the pending set), `deleteUnresolvedByNode`
+//!   (its per-file cascade is already inside `delete_file`), `getAllMetadata`,
+//!   `iterateNodesByLanguageWithDecorator`) → added with their consuming phase
+//!   (resolver/orchestrator, Phases 2–3); the pipeline's currently-ported
+//!   operations all have trait methods. Final search *scoring* (kind/path/name
+//!   bonuses, fuzzy, rescoring) is upstream product logic by design — see the
+//!   trait's "search candidates are unranked" contract.
+//! - **`traverseBFS`/`traverseDFS`**: the TS pair ships here as the single
+//!   BFS-shaped [`GraphStore::traverse`]; the DFS variant's consumer arrives
+//!   with `selene-graph`, where the depth-first replay walks
+//!   (`impact_radius`, `type_hierarchy`) already cover today's DFS-order
+//!   needs in-store.
 //!
 //! ## Layout
 //!
@@ -77,6 +84,7 @@ mod store_impl;
 mod surreal;
 mod traverse;
 mod unresolved;
+mod util;
 
 pub use error::{Error, Result};
 pub use schema::SCHEMA_VERSION;

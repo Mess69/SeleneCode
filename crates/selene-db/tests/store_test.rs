@@ -1956,3 +1956,118 @@ async fn graph_store_trait_drives_the_store_generically() {
     assert_eq!(stats.incoming_resurrected, 0);
     assert_eq!(stats.incoming_dropped, 0);
 }
+
+// =============================================================================
+// Pre-merge hygiene wave (final whole-branch review)
+// =============================================================================
+
+/// A store whose `meta:schema_version` claims a FUTURE schema must refuse
+/// `apply_schema` (and anything routed through it, like `bulk_load_begin`):
+/// this build's `DEFINE ... IF NOT EXISTS` DDL would silently no-op against
+/// the newer schema and then read/write shapes it does not understand.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn apply_schema_refuses_a_future_schema_version() {
+    let store = fresh_store().await; // v1 applied + seeded
+
+    store
+        .db()
+        .query("UPDATE meta:schema_version SET value = '999'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+
+    match store.apply_schema().await.unwrap_err() {
+        selene_db::Error::SchemaTooNew { stored, supported } => {
+            assert_eq!(stored, 999);
+            assert_eq!(supported, selene_db::SCHEMA_VERSION);
+        }
+        other => panic!("expected SchemaTooNew, got: {other:?}"),
+    }
+    assert!(
+        matches!(
+            store.bulk_load_begin().await,
+            Err(selene_db::Error::SchemaTooNew { .. })
+        ),
+        "bulk_load_begin initializes via apply_schema and must refuse too"
+    );
+
+    // An equal (i.e. current) stored version stays accepted.
+    store
+        .db()
+        .query("UPDATE meta:schema_version SET value = '1'")
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    store.apply_schema().await.unwrap();
+}
+
+/// 501 distinct edges in one call spans the 500-edge chunk boundary; a second
+/// call with the same 501 plus one new edge must count ONLY the new edge —
+/// the already-present filter runs per chunk, so chunk 1 (500 duplicates)
+/// contributes 0 and chunk 2 (1 duplicate + 1 new) contributes exactly 1.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_edges_pins_chunk_boundary_and_cross_chunk_dedup_counts() {
+    let store = fresh_store().await;
+    let a = node("chunkA", "src/a.rs");
+    let b = node("chunkB", "src/a.rs");
+    store.insert_nodes(&[a.clone(), b.clone()]).await.unwrap();
+
+    let mut edges: Vec<Edge> = (1..=501u32)
+        .map(|line| Edge {
+            line: Some(line),
+            ..edge(&a.id, &b.id, EdgeKind::Calls)
+        })
+        .collect();
+    assert_eq!(
+        store.insert_edges(&edges).await.unwrap(),
+        501,
+        "all 501 distinct edges inserted across two chunks"
+    );
+
+    edges.push(Edge {
+        line: Some(502),
+        ..edge(&a.id, &b.id, EdgeKind::Calls)
+    });
+    assert_eq!(
+        store.insert_edges(&edges).await.unwrap(),
+        1,
+        "second pass: 501 duplicates skipped across both chunks, 1 new edge counted"
+    );
+    assert_eq!(edge_table_count(&store, "calls").await, 502);
+}
+
+/// Rows tied on the whole `(fromNodeId, referenceName, referenceKind)` order
+/// key must still page stably: the record id is the final tiebreak, so
+/// limit-1 pages partition a tied group (no row lost, none returned twice)
+/// and agree with the order of a single larger page.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn unresolved_pending_batch_pages_stably_across_order_key_ties() {
+    let store = fresh_store().await;
+    let tied = |line: u32| UnresolvedRef {
+        line: Some(line),
+        ..unresolved_ref("function:f", "Helper.m", "src/a.rs", RefStatus::Pending)
+    };
+    store.insert_unresolved(&[tied(1), tied(2)]).await.unwrap();
+
+    let p0 = store.unresolved_pending_batch(0, 1).await.unwrap();
+    let p1 = store.unresolved_pending_batch(1, 1).await.unwrap();
+    assert_eq!((p0.len(), p1.len()), (1, 1));
+    let mut lines = vec![p0[0].line, p1[0].line];
+    lines.sort();
+    assert_eq!(
+        lines,
+        vec![Some(1), Some(2)],
+        "the two tied rows partition across pages — no loss, no duplicate"
+    );
+    let all = store.unresolved_pending_batch(0, 2).await.unwrap();
+    assert_eq!(
+        vec![all[0].line, all[1].line],
+        vec![p0[0].line, p1[0].line],
+        "single-row pages replay the two-row page's order"
+    );
+}

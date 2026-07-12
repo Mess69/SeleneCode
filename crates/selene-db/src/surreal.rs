@@ -109,12 +109,28 @@ impl SurrealStore {
     /// current [`schema::SCHEMA_VERSION`] is seeded into `meta:schema_version`;
     /// a later run never overwrites an existing version.
     ///
+    /// **Refuses a future store** ([`Error::SchemaTooNew`]): if the stored
+    /// version is *greater* than this build's [`schema::SCHEMA_VERSION`], no
+    /// DDL is run — against a newer schema every `IF NOT EXISTS` statement
+    /// would silently no-op and this (older) build would then read/write
+    /// shapes it does not understand. The guard runs *before* the DDL so a
+    /// future store is left byte-untouched.
+    ///
     /// Returns `Err` if *any* schema statement fails: the whole program is run
     /// as one query and validated with `surrealdb::Response::check`, which
     /// surfaces the first per-statement error (unique-index and other runtime
     /// errors hide behind an `Ok` from `query().await` otherwise — see the
     /// Task 1 spike).
     pub async fn apply_schema(&self) -> Result<()> {
+        if let Some(stored) = self.schema_version().await?
+            && stored > schema::SCHEMA_VERSION
+        {
+            return Err(Error::SchemaTooNew {
+                stored,
+                supported: schema::SCHEMA_VERSION,
+            });
+        }
+
         self.db.query(schema::all_ddl()).await?.check()?;
 
         if self.schema_version().await?.is_none() {

@@ -63,12 +63,8 @@ use std::collections::HashMap;
 use selene_core::{Node, NodeKind};
 use surrealdb::types::{RecordId, SurrealValue, Value as SqlValue};
 
+use crate::util::{CHUNK, clamp_i64};
 use crate::{Error, Result, SurrealStore};
-
-/// Nodes written per `insert_nodes` round trip. Mirrors the TS store's
-/// `SQLITE_PARAM_CHUNK_SIZE`, kept here to bound single-statement/bind-array
-/// size rather than for a SQLite-specific limit.
-const CHUNK: usize = 500;
 
 /// Column list shared by every node read query, in `Node`'s declared field
 /// order, with the record id resolved to its raw stored key via
@@ -279,12 +275,11 @@ impl SurrealStore {
         let sql = format!(
             "SELECT {NODE_FIELDS} FROM node WHERE string::starts_with(name, $prefix) LIMIT $limit"
         );
-        let limit = i64::try_from(limit).unwrap_or(i64::MAX);
         let mut resp = self
             .db()
             .query(sql)
             .bind(("prefix", prefix.to_string()))
-            .bind(("limit", limit))
+            .bind(("limit", clamp_i64(limit)))
             .await?;
         let rows: Vec<serde_json::Value> = resp.take(0)?;
         rows.into_iter().map(row_to_node).collect()
@@ -323,6 +318,12 @@ impl SurrealStore {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use std::collections::BTreeSet;
+
+    use selene_core::Visibility;
+
     use super::*;
 
     /// [`NODE_FIELDS`] and [`NODE_CONTENT_FIELDS`] must stay in lockstep:
@@ -335,6 +336,58 @@ mod tests {
         assert_eq!(
             NODE_FIELDS,
             format!("{}, record::id(id) AS id", NODE_CONTENT_FIELDS.join(", "))
+        );
+    }
+
+    /// The field lists must also stay in lockstep with `Node`'s serde shape
+    /// itself: a fully-populated `Node` (every optional `Some`, every `Vec`
+    /// non-empty, so no `skip_serializing_if` fires) must serialize to
+    /// exactly `NODE_CONTENT_FIELDS ∪ {id}` — this catches a new `Node`
+    /// field missing from BOTH lists, which the projection-vs-content check
+    /// above cannot see.
+    #[test]
+    fn node_serde_key_set_matches_the_field_lists() {
+        let full = Node {
+            id: "method:full".to_string(),
+            kind: NodeKind::Method,
+            name: "full".to_string(),
+            qualified_name: "src/full.rs::Widget.full".to_string(),
+            file_path: "src/full.rs".to_string(),
+            language: "rust".to_string(),
+            start_line: 10,
+            end_line: 20,
+            start_column: 2,
+            end_column: 3,
+            docstring: Some("does a thing".to_string()),
+            signature: Some("fn full(&self) -> bool".to_string()),
+            visibility: Some(Visibility::Public),
+            is_exported: Some(true),
+            is_async: Some(true),
+            is_static: Some(false),
+            is_abstract: Some(false),
+            decorators: vec!["#[inline]".to_string()],
+            type_parameters: vec!["T".to_string()],
+            return_type: Some("bool".to_string()),
+            updated_at: 42,
+        };
+
+        let value = serde_json::to_value(&full).unwrap();
+        let serde_keys: BTreeSet<&str> = value
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        let expected: BTreeSet<&str> = NODE_CONTENT_FIELDS
+            .iter()
+            .copied()
+            .chain(std::iter::once("id"))
+            .collect();
+        assert_eq!(
+            serde_keys, expected,
+            "Node's serde key set must equal NODE_CONTENT_FIELDS ∪ {{id}} — \
+             a mismatch means a Node field is missing from the read/write \
+             field lists (or a list names a field Node no longer has)"
         );
     }
 }

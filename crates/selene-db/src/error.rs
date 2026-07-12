@@ -50,6 +50,23 @@ pub enum Error {
     /// partial search results), never an expected outcome.
     #[error("index build failed: {0}")]
     IndexBuild(String),
+
+    /// The store on disk was written by a **newer** schema than this build
+    /// supports (`meta:schema_version` > [`crate::SCHEMA_VERSION`]).
+    /// `apply_schema` refuses to touch such a store: every DDL statement is
+    /// `DEFINE ... IF NOT EXISTS`, so against a future schema they would all
+    /// silently no-op and this build would then read/write shapes it does
+    /// not understand. Upgrade the binary, or discard and re-index.
+    #[error(
+        "store schema version {stored} is newer than this build supports \
+         ({supported}) — refusing to open; upgrade the binary or re-index"
+    )]
+    SchemaTooNew {
+        /// The version stored in `meta:schema_version`.
+        stored: u32,
+        /// This build's [`crate::SCHEMA_VERSION`].
+        supported: u32,
+    },
 }
 
 /// Convenience result alias for `selene-db`.
