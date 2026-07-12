@@ -1,0 +1,97 @@
+---
+source: crates/selene-extract/tests/lang_cpp_test.rs
+expression: r
+---
+nodes:
+  - id: "file:geo.cpp"
+    kind: file
+    name: geo.cpp
+    qualifiedName: geo.cpp
+    filePath: geo.cpp
+    language: cpp
+    startLine: 1
+    endLine: 21
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:d26f03a629265311b0d9119c6704ea4f"
+    kind: import
+    name: vector
+    qualifiedName: vector
+    filePath: geo.cpp
+    language: cpp
+    startLine: 1
+    endLine: 2
+    startColumn: 0
+    endColumn: 0
+    signature: "#include <vector>"
+    updatedAt: "[ts]"
+  - id: "struct:78db77c1e577ecc3744a11af286ab67f"
+    kind: struct
+    name: Point
+    qualifiedName: "geo::Point"
+    filePath: geo.cpp
+    language: cpp
+    startLine: 6
+    endLine: 9
+    startColumn: 0
+    endColumn: 1
+    docstring: a 2D point
+    updatedAt: "[ts]"
+  - id: "class:ff727aefea82a378384d4b1a81a3f7bc"
+    kind: class
+    name: Shape
+    qualifiedName: "geo::Shape"
+    filePath: geo.cpp
+    language: cpp
+    startLine: 11
+    endLine: 14
+    startColumn: 0
+    endColumn: 1
+    updatedAt: "[ts]"
+  - id: "method:1f27a94f9c1368ddec5668bc8667f235"
+    kind: method
+    name: area
+    qualifiedName: "Shape::area"
+    filePath: geo.cpp
+    language: cpp
+    startLine: 16
+    endLine: 18
+    startColumn: 0
+    endColumn: 1
+    updatedAt: "[ts]"
+edges:
+  - source: "file:geo.cpp"
+    target: "import:d26f03a629265311b0d9119c6704ea4f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:geo.cpp"
+    target: "struct:78db77c1e577ecc3744a11af286ab67f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:geo.cpp"
+    target: "class:ff727aefea82a378384d4b1a81a3f7bc"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:geo.cpp"
+    target: "method:1f27a94f9c1368ddec5668bc8667f235"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:ff727aefea82a378384d4b1a81a3f7bc"
+    target: "method:1f27a94f9c1368ddec5668bc8667f235"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:geo.cpp"
+    referenceName: vector
+    referenceKind: imports
+    line: 1
+    column: 0
+  - fromNodeId: "method:1f27a94f9c1368ddec5668bc8667f235"
+    referenceName: compute_area
+    referenceKind: calls
+    line: 17
+    column: 9
+errors: []
+durationMs: "[ms]"

@@ -385,3 +385,27 @@ fn this_field_receiver_unwraps_to_field_name() {
     // Bare `this.render()` → bare method name (skip set).
     assert!(calls.contains(&"render"));
 }
+
+#[test]
+fn chained_factory_reencodes_with_paren_marker() {
+    // `Foo.getInstance().bar()` — resolution must infer bar's class from
+    // what the factory RETURNS; the `().` marker splits it (#645/#608).
+    // Factory args normalize to empty parens.
+    let code = "class App {\n    void run() {\n        Foo.getInstance().bar();\n        Foo.create(cfg).baz();\n    }\n}\n";
+    let r = extract("App.java", code);
+    let run_id = &find(&r, NodeKind::Method, "run").unwrap().id;
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "calls" && &u.from_node_id == run_id)
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"Foo.getInstance().bar"),
+        "chained factory re-encode: {calls:?}"
+    );
+    assert!(
+        calls.contains(&"Foo.create().baz"),
+        "factory args normalized away: {calls:?}"
+    );
+}

@@ -35,7 +35,6 @@
 // Staging allowance: these pure functions are wired by the *config* tasks —
 // C/C++/Metal/CUDA by Task 13 (core chain), C# by Task 14 — so between this
 // commit and those, the compiler sees them as unused. Task 13 removes this.
-#![allow(dead_code)]
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -682,6 +681,7 @@ pub(crate) fn blank_csharp_preprocessor_directives(source: &str) -> Cow<'_, str>
 /// drops a final statement without one). The one length-CHANGING transform:
 /// safe because the byte is appended at EOF, after every position that
 /// feeds a node id.
+#[allow(dead_code)] // VB.NET consumer is wave 2 (`_eof` grammar bug); ported with Task 12's set
 pub(crate) fn ensure_trailing_newline(source: &str) -> Cow<'_, str> {
     if source.ends_with('\n') {
         Cow::Borrowed(source)

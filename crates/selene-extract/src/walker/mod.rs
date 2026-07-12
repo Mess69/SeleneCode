@@ -529,11 +529,61 @@ fn extract_name(rules: &'static dyn LanguageRules, node: Node<'_>, source: &str)
     let raw = rules
         .resolve_name(node, source)
         .or_else(|| {
-            get_child_by_field(node, rules.tables().name_field)
-                .map(|n| get_node_text(n, source).to_string())
+            let name_node = get_child_by_field(node, rules.tables().name_field)?;
+            Some(resolve_declarator_name(name_node, source))
+        })
+        .or_else(|| {
+            // Arrow/function expressions never name themselves from body
+            // identifiers — the parent declarator names them (or nothing).
+            if node.kind() == "arrow_function" || node.kind() == "function_expression" {
+                return None;
+            }
+            // Fall back to the first identifier-like child (how a C
+            // `struct point` gets its name despite name_field being
+            // `declarator` — struct_specifier has no such field).
+            let mut cursor = node.walk();
+            node.named_children(&mut cursor)
+                .find(|c| {
+                    matches!(
+                        c.kind(),
+                        "identifier" | "type_identifier" | "simple_identifier" | "constant"
+                    )
+                })
+                .map(|c| get_node_text(c, source).to_string())
         })
         .unwrap_or_else(|| "<anonymous>".to_string());
     rules.recover_mangled_name(raw)
+}
+
+/// The C/C++ declarator-unwrapping tail of `extractNameRaw` (Task 13):
+/// pointer/reference declarators unwrap to their inner (`int* f()` names
+/// `f`, not `* f(...)`); a user-defined conversion operator names
+/// `operator <type>`; a `function_declarator`/`declarator` yields its inner
+/// declarator (the identifier). Inert for grammars whose name field is
+/// already an identifier. (Lua dot/method index shapes — wave 2.)
+fn resolve_declarator_name(name_node: Node<'_>, source: &str) -> String {
+    let mut resolved = name_node;
+    while resolved.kind() == "pointer_declarator" || resolved.kind() == "reference_declarator" {
+        let inner = get_child_by_field(resolved, "declarator").or_else(|| resolved.named_child(0));
+        match inner {
+            Some(i) => resolved = i,
+            None => break,
+        }
+    }
+    if resolved.kind() == "operator_cast" {
+        return match resolved.named_child(0) {
+            Some(type_node) => format!("operator {}", get_node_text(type_node, source).trim()),
+            None => get_node_text(resolved, source).to_string(),
+        };
+    }
+    if resolved.kind() == "function_declarator" || resolved.kind() == "declarator" {
+        let inner = get_child_by_field(resolved, "declarator").or_else(|| resolved.named_child(0));
+        return match inner {
+            Some(i) => get_node_text(i, source).to_string(),
+            None => get_node_text(resolved, source).to_string(),
+        };
+    }
+    get_node_text(resolved, source).to_string()
 }
 
 /// Class/module-scope `CONST = …`: an `assignment` whose LHS is a
@@ -566,7 +616,29 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         return;
     }
 
-    // INSERTION POINT (Task 13): C++ `namespace_definition` prefix branch.
+    // C++ namespace blocks (Task 13): carry the namespace name as a
+    // qualifiedName prefix while walking the body — NO node is minted, so
+    // `namespace flash { void compute(); }` indexes `flash::compute` and a
+    // namespace-qualified call resolves by exact qualified match (#387).
+    // C++17 nested forms (`namespace a::b {`) prefix as written; an
+    // ANONYMOUS namespace falls through to the generic walk — its contents
+    // stay bare, matching how call sites spell them.
+    if s.language() == Language::Cpp && node_type == "namespace_definition" {
+        let ns_name = get_child_by_field(node, "name")
+            .map(|n| get_node_text(n, s.source()).to_string())
+            .unwrap_or_default();
+        if !ns_name.is_empty() {
+            s.namespace_prefix.push(ns_name);
+            let mut cursor = node.walk();
+            let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+            for child in children {
+                visit(rules, s, child);
+            }
+            s.namespace_prefix.pop();
+            return;
+        }
+    }
+
     // INSERTION POINT (Task 15a): function-as-value candidate capture.
 
     let mut matched = true;
@@ -1399,6 +1471,49 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         return;
     }
 
+    // C: a declaration's name nests inside declarator fields; only
+    // file-scope init/pointer/array declarators are tracked (a BARE
+    // identifier declarator is a macro-misparsed prototype — skipping it
+    // costs only uninitialized scalar globals). Several declarators per
+    // declaration (`int a = 1, b = 2;`) all extract.
+    if s.language() == Language::C {
+        if has_function_ancestor(node) {
+            return;
+        }
+        let is_exported = rules.is_exported(node, s.source());
+        let mut cursor = node.walk();
+        let declarators: Vec<Node<'_>> = node
+            .named_children(&mut cursor)
+            .filter(|c| {
+                matches!(
+                    c.kind(),
+                    "init_declarator" | "pointer_declarator" | "array_declarator"
+                )
+            })
+            .collect();
+        for child in declarators {
+            let Some(name_node) = c_declarator_identifier(Some(child)) else {
+                continue;
+            };
+            let name = get_node_text(name_node, s.source()).to_string();
+            if name.is_empty() {
+                continue;
+            }
+            let signature = (child.kind() == "init_declarator")
+                .then(|| get_child_by_field(child, "value"))
+                .flatten()
+                .map(|v| init_signature(s, v));
+            let extra = NodeExtra {
+                docstring: docstring.clone(),
+                signature,
+                is_exported,
+                ..NodeExtra::default()
+            };
+            s.create_node(kind, &name, child, extra);
+        }
+        return;
+    }
+
     // Python/Ruby assignment: left = right.
     let left = get_child_by_field(node, "left").or_else(|| node.named_child(0));
     let right = get_child_by_field(node, "right").or_else(|| node.named_child(1));
@@ -1414,6 +1529,41 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         ..NodeExtra::default()
     };
     s.create_node(kind, &name, node, extra);
+}
+
+/// `cDeclaratorIdentifier`: dig through declarator wrappers to the
+/// identifier; a `function_declarator` is a prototype → `None`.
+fn c_declarator_identifier<'t>(node: Option<Node<'t>>) -> Option<Node<'t>> {
+    let mut cur = node;
+    let mut guard = 0;
+    while let Some(n) = cur {
+        guard += 1;
+        if guard > 12 {
+            return None;
+        }
+        match n.kind() {
+            "identifier" => return Some(n),
+            "function_declarator" => return None,
+            "init_declarator"
+            | "pointer_declarator"
+            | "array_declarator"
+            | "parenthesized_declarator" => cur = get_child_by_field(n, "declarator"),
+            _ => return None,
+        }
+    }
+    None
+}
+
+/// Any `function_definition` ancestor? (C file-scope-only variable gate.)
+fn has_function_ancestor(node: Node<'_>) -> bool {
+    let mut p = node.parent();
+    while let Some(n) = p {
+        if n.kind() == "function_definition" {
+            return true;
+        }
+        p = n.parent();
+    }
+    false
 }
 
 /// Imports: hook first (single-module languages); Python inline

@@ -5,9 +5,11 @@
 //! later language tasks only *fill in*, never reshape.
 //!
 //! Registry: [`rules_for`] — v0 wires Python (Task 5), TS/JS (Tasks 7/8),
-//! Go/Rust (Task 9), Java (10), Kotlin (11), C#/PHP/Ruby (14); C/C++ (13)
-//! lands per plan.
+//! Go/Rust (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14) — the
+//! full v0 thirteen.
 
+pub(crate) mod c;
+pub(crate) mod cpp;
 pub(crate) mod cpp_preparse;
 pub(crate) mod csharp;
 pub(crate) mod go;
@@ -247,6 +249,8 @@ pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
         Language::Rust => Some(&rust_lang::RustRules),
         Language::Java => Some(&java::JavaRules),
         Language::Kotlin => Some(&kotlin::KotlinRules),
+        Language::C => Some(&c::CRules),
+        Language::Cpp => Some(&cpp::CppRules),
         Language::CSharp => Some(&csharp::CSharpRules),
         Language::Php => Some(&php::PhpRules),
         Language::Ruby => Some(&ruby::RubyRules),

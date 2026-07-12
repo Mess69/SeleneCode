@@ -208,6 +208,49 @@ impl Session<'_> {
             )
         {
             let method_name = get_node_text(name_node, source).to_string();
+
+            // PHP static-factory fluent chain (#608): `Cls::for($x)->method()`
+            // — the receiver is itself a static call; encode
+            // `Cls::factory().method` so the resolver infers the class from
+            // the factory's declared return (the `().` marker splits it).
+            if !method_name.is_empty()
+                && language == Language::Php
+                && object.kind() == "scoped_call_expression"
+            {
+                let inner_scope = get_child_by_field(object, "scope");
+                let inner_name = get_child_by_field(object, "name");
+                let callee = match (inner_scope, inner_name) {
+                    (Some(sc), Some(nm)) => format!(
+                        "{}::{}().{method_name}",
+                        get_node_text(sc, source),
+                        get_node_text(nm, source)
+                    ),
+                    _ => method_name,
+                };
+                self.push_call_ref(&caller_id, callee, node);
+                return;
+            }
+
+            // Java static-factory / fluent chain (#645/#608):
+            // `Foo.getInstance().bar()` — encode `Foo.getInstance().bar`
+            // (empty parens normalized: factory args would break the split).
+            if !method_name.is_empty()
+                && language == Language::Java
+                && object.kind() == "method_invocation"
+            {
+                let inner_obj = get_child_by_field(object, "object");
+                let inner_name = get_child_by_field(object, "name");
+                if let (Some(io), Some(inm)) = (inner_obj, inner_name) {
+                    let callee = format!(
+                        "{}.{}().{method_name}",
+                        get_node_text(io, source),
+                        get_node_text(inm, source)
+                    );
+                    self.push_call_ref(&caller_id, callee, node);
+                    return;
+                }
+            }
+
             // Java `this.userbo.toLogin2()` parses as
             // method_invocation(object = field_access(this, userbo)) —
             // unwrap to the FIELD name so the resolver's single-dot
@@ -389,8 +432,21 @@ impl Session<'_> {
             callee_name = inner;
         }
 
-        // INSERTION POINT (Task 12/13): C/C++ template-arg strip
-        // (strip_cpp_template_args) + local fn-pointer call rewrite.
+        // C/C++ templated callees (Task 13): `fn<T, 256>(args)` /
+        // `ns::fn<T>(args)` carry template args that can never match the
+        // bare defined name — strip them (the CUDA kernel-launch shape once
+        // `<<<…>>>` is blanked). `operator<`/`operator<<` callees excluded:
+        // their `<` IS the operator.
+        if !callee_name.is_empty()
+            && callee_name.contains('<')
+            && matches!(language, Language::Cpp | Language::C)
+            && !callee_name.contains("operator")
+        {
+            callee_name =
+                crate::rules::cpp_preparse::strip_cpp_template_args(&callee_name).into_owned();
+        }
+        // INSERTION POINT (Task 13b/wave 2): C++ local fn-pointer call
+        // rewrite (`auto kernel = &fn<…>; kernel<<<…>>>(…)`).
 
         if !callee_name.is_empty() {
             self.push_call_ref(&caller_id, callee_name, node);

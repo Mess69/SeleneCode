@@ -1,0 +1,156 @@
+---
+source: crates/selene-extract/tests/lang_c_test.rs
+expression: r
+---
+nodes:
+  - id: "file:buf.c"
+    kind: file
+    name: buf.c
+    qualifiedName: buf.c
+    filePath: buf.c
+    language: c
+    startLine: 1
+    endLine: 15
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:ee17036156865f27a27616ebc39b394f"
+    kind: import
+    name: stdlib.h
+    qualifiedName: stdlib.h
+    filePath: buf.c
+    language: c
+    startLine: 1
+    endLine: 2
+    startColumn: 0
+    endColumn: 0
+    signature: "#include <stdlib.h>"
+    updatedAt: "[ts]"
+  - id: "constant:88f8b50c13ab3639ff0ef88c316b40c4"
+    kind: constant
+    name: BUF_MAX
+    qualifiedName: BUF_MAX
+    filePath: buf.c
+    language: c
+    startLine: 4
+    endLine: 4
+    startColumn: 10
+    endColumn: 24
+    docstring: buffer bounds
+    signature: "= 4096"
+    updatedAt: "[ts]"
+  - id: "struct:89deb90f8fda07e1d7df2c9ca64eb65d"
+    kind: struct
+    name: buffer
+    qualifiedName: buffer
+    filePath: buf.c
+    language: c
+    startLine: 6
+    endLine: 6
+    startColumn: 0
+    endColumn: 38
+    updatedAt: "[ts]"
+  - id: "enum:fa44d91307cf115246ac24a44cb4329b"
+    kind: enum
+    name: status_t
+    qualifiedName: status_t
+    filePath: buf.c
+    language: c
+    startLine: 8
+    endLine: 8
+    startColumn: 0
+    endColumn: 34
+    updatedAt: "[ts]"
+  - id: "enum:2da13581b27649a5b9798d349508b554"
+    kind: enum
+    name: "<anonymous>"
+    qualifiedName: "<anonymous>"
+    filePath: buf.c
+    language: c
+    startLine: 8
+    endLine: 8
+    startColumn: 8
+    endColumn: 24
+    updatedAt: "[ts]"
+  - id: "enum_member:3265f813460bc75028ee3757c1fe5d29"
+    kind: enum_member
+    name: OK
+    qualifiedName: "<anonymous>::OK"
+    filePath: buf.c
+    language: c
+    startLine: 8
+    endLine: 8
+    startColumn: 15
+    endColumn: 17
+    updatedAt: "[ts]"
+  - id: "enum_member:7942d5b811ebf3a3e6094f6cd4ed080c"
+    kind: enum_member
+    name: ERR
+    qualifiedName: "<anonymous>::ERR"
+    filePath: buf.c
+    language: c
+    startLine: 8
+    endLine: 8
+    startColumn: 19
+    endColumn: 22
+    updatedAt: "[ts]"
+  - id: "function:4f8eb6b53406f66ccbb18d06d4d48533"
+    kind: function
+    name: grow
+    qualifiedName: grow
+    filePath: buf.c
+    language: c
+    startLine: 11
+    endLine: 14
+    startColumn: 0
+    endColumn: 1
+    docstring: grow to fit
+    returnType: status_t
+    updatedAt: "[ts]"
+edges:
+  - source: "file:buf.c"
+    target: "import:ee17036156865f27a27616ebc39b394f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:buf.c"
+    target: "constant:88f8b50c13ab3639ff0ef88c316b40c4"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:buf.c"
+    target: "struct:89deb90f8fda07e1d7df2c9ca64eb65d"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:buf.c"
+    target: "enum:fa44d91307cf115246ac24a44cb4329b"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:buf.c"
+    target: "enum:2da13581b27649a5b9798d349508b554"
+    kind: contains
+    provenance: tree-sitter
+  - source: "enum:2da13581b27649a5b9798d349508b554"
+    target: "enum_member:3265f813460bc75028ee3757c1fe5d29"
+    kind: contains
+    provenance: tree-sitter
+  - source: "enum:2da13581b27649a5b9798d349508b554"
+    target: "enum_member:7942d5b811ebf3a3e6094f6cd4ed080c"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:buf.c"
+    target: "function:4f8eb6b53406f66ccbb18d06d4d48533"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:buf.c"
+    referenceName: stdlib.h
+    referenceKind: imports
+    line: 1
+    column: 0
+  - fromNodeId: "function:4f8eb6b53406f66ccbb18d06d4d48533"
+    referenceName: realloc
+    referenceKind: calls
+    line: 12
+    column: 14
+errors: []
+durationMs: "[ms]"

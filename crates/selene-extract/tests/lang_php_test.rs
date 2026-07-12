@@ -240,3 +240,23 @@ fn parent_and_static_receivers_emit_bare_method_names() {
         "no parent./static. qualified refs: {calls:?}"
     );
 }
+
+#[test]
+fn php_static_factory_fluent_chain_reencodes() {
+    // `Cls::for($x)->method()` — encode `Cls::for().method` so the PHP
+    // resolver splits on the `().` marker and infers the class from the
+    // factory's declared return (#608).
+    let code = "<?php\nclass Runner {\n    public function go(): void {\n        Builder::make($x)->run();\n    }\n}\n";
+    let r = extract("Runner.php", code);
+    let go_id = &find(&r, NodeKind::Method, "go").unwrap().id;
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "calls" && &u.from_node_id == go_id)
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"Builder::make().run"),
+        "php fluent chain re-encode: {calls:?}"
+    );
+}
