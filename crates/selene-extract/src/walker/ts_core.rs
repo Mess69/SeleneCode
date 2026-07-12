@@ -292,8 +292,7 @@ impl Session<'_> {
         inner_fn: Option<Node<'_>>,
         extra: NodeExtra,
     ) {
-        let Some(idx) = self.create_node(rules, NodeKind::Component, name, declarator, extra)
-        else {
+        let Some(idx) = self.create_node(NodeKind::Component, name, declarator, extra) else {
             return;
         };
         let Some(id) = self.nodes().get(idx).map(|n| n.id.clone()) else {
@@ -540,7 +539,7 @@ impl Session<'_> {
                     signature: Some(sig),
                     ..NodeExtra::default()
                 };
-                if let Some(idx) = self.create_node(rules, NodeKind::Function, &name, value, extra)
+                if let Some(idx) = self.create_node(NodeKind::Function, &name, value, extra)
                     && let Some(id) = self.nodes().get(idx).map(|n| n.id.clone())
                 {
                     self.push_scope(id.clone());
@@ -609,7 +608,6 @@ impl Session<'_> {
     /// api` — mint a function node per hook-conventional binding.
     pub(super) fn extract_rtk_hook_bindings(
         &mut self,
-        rules: &'static dyn LanguageRules,
         pattern: Node<'_>,
         is_exported: Option<bool>,
     ) {
@@ -628,7 +626,7 @@ impl Session<'_> {
                 signature: Some("= RTK Query generated hook".to_string()),
                 ..NodeExtra::default()
             };
-            self.create_node(rules, NodeKind::Function, &name, binding, extra);
+            self.create_node(NodeKind::Function, &name, binding, extra);
         }
     }
 

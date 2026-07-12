@@ -112,6 +112,18 @@ pub struct ImportInfo {
     pub handled_refs: bool,
 }
 
+/// `extractVariables` hook result (the TS `VariableInfo`): one entry per
+/// declared variable. `delegate_to_function` names a declarator whose value
+/// is actually a function — the walker extracts THAT node as a function
+/// instead of minting a variable (Kotlin/Scala/R property hooks, wave 2).
+pub struct VariableInfo<'t> {
+    pub name: String,
+    /// `NodeKind::Variable` or `NodeKind::Constant`.
+    pub kind: NodeKind,
+    pub signature: Option<String>,
+    pub delegate_to_function: Option<Node<'t>>,
+}
+
 /// A language's extraction rules: the type tables plus every optional hook
 /// of the TS `LanguageExtractor`, defaulted inert (return `None`/`false`/
 /// empty — exactly the absent-closure behavior in TS).
@@ -168,6 +180,12 @@ pub trait LanguageRules: Sync {
     }
     /// Compile-time member synthesis (Java Lombok). Runs after the class
     /// body walk, class still on the scope stack.
+    ///
+    /// DEVIATION from the Task 5 brief's `class_idx: usize` sketch
+    /// (controller-approved): takes the class's AST `Node` instead — Lombok
+    /// synthesis needs the class SYNTAX (annotations, field declarators),
+    /// not the output-node index; the created class is the scope-stack top
+    /// when this runs, so the index adds nothing.
     fn synthesize_members(&self, class_node: Node<'_>, session: &mut Session<'_>) {}
     fn classify_class_node(&self, node: Node<'_>, source: &str) -> Option<ClassKind> {
         None
@@ -180,6 +198,12 @@ pub trait LanguageRules: Sync {
         None
     }
     fn extract_import(&self, node: Node<'_>, source: &str) -> Option<ImportInfo> {
+        None
+    }
+    /// Language-owned variable extraction (Kotlin/Scala/R property hooks —
+    /// Tasks 11+/wave 2). `None` = the walker's generic variable branches
+    /// apply; `Some(entries)` = the hook owns the declaration.
+    fn extract_variables<'t>(&self, node: Node<'t>, source: &str) -> Option<Vec<VariableInfo<'t>>> {
         None
     }
     fn get_receiver_type(&self, node: Node<'_>, source: &str) -> Option<String> {

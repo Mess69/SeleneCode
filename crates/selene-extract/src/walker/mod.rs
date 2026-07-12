@@ -128,6 +128,14 @@ impl<'s> Session<'s> {
         }
     }
 
+    /// Re-entrant ladder dispatch — the `ctx.visitNode` of the TS
+    /// `ExtractorContext`; `visit_node` hooks call it to hand a subtree
+    /// back to the generic walker.
+    pub fn visit(&mut self, node: Node<'_>) {
+        let rules = self.rules;
+        visit(rules, self, node);
+    }
+
     pub(crate) fn vue_store_file_cache(&self) -> Option<bool> {
         self.vue_store_file
     }
@@ -214,12 +222,12 @@ impl<'s> Session<'s> {
     /// Returns the created node's index into [`Session::nodes`].
     pub fn create_node(
         &mut self,
-        rules: &'static dyn LanguageRules,
         kind: NodeKind,
         name: &str,
         node: Node<'_>,
         extra: NodeExtra,
     ) -> Option<usize> {
+        let rules = self.rules;
         if name.is_empty() {
             return None;
         }
@@ -511,7 +519,7 @@ fn extract_file_package(
         .named_children(&mut cursor)
         .find(|c| types.contains(&c.kind()))?;
     let name = rules.extract_package(pkg, s.source())?;
-    s.create_node(rules, NodeKind::Namespace, &name, pkg, NodeExtra::default())
+    s.create_node(NodeKind::Namespace, &name, pkg, NodeExtra::default())
 }
 
 /// `extractName`: resolve_name hook, else the `name_field` child (C/C++
@@ -705,7 +713,7 @@ fn extract_function_named(
         return_type: rules.get_return_type(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Function, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Function, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -750,7 +758,7 @@ fn extract_method(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         qualified_name: receiver.as_ref().map(|r| format!("{r}::{name}")),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Method, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Method, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -809,7 +817,7 @@ fn extract_class(
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, kind, &name, node, extra) else {
+    let Some(idx) = s.create_node(kind, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -837,7 +845,7 @@ fn extract_interface(rules: &'static dyn LanguageRules, s: &mut Session<'_>, nod
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, kind, &name, node, extra) else {
+    let Some(idx) = s.create_node(kind, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -866,7 +874,7 @@ fn extract_struct(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Struct, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Struct, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -891,7 +899,7 @@ fn extract_enum(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: No
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Enum, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Enum, &name, node, extra) else {
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
@@ -902,7 +910,7 @@ fn extract_enum(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: No
     let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
     for child in children {
         if member_types.contains(&child.kind()) {
-            extract_enum_members(rules, s, child);
+            extract_enum_members(s, child);
         } else {
             visit(rules, s, child);
         }
@@ -913,16 +921,10 @@ fn extract_enum(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: No
 /// Enum member names: `name` field first (Rust enum_variant), else
 /// identifier-like children (multi-case declarations), else the node itself
 /// when it is a bare identifier.
-fn extract_enum_members(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+fn extract_enum_members(s: &mut Session<'_>, node: Node<'_>) {
     if let Some(name_node) = get_child_by_field(node, "name") {
         let name = get_node_text(name_node, s.source()).to_string();
-        s.create_node(
-            rules,
-            NodeKind::EnumMember,
-            &name,
-            node,
-            NodeExtra::default(),
-        );
+        s.create_node(NodeKind::EnumMember, &name, node, NodeExtra::default());
         return;
     }
     let mut cursor = node.walk();
@@ -934,25 +936,13 @@ fn extract_enum_members(rules: &'static dyn LanguageRules, s: &mut Session<'_>, 
             "simple_identifier" | "identifier" | "property_identifier"
         ) {
             let name = get_node_text(child, s.source()).to_string();
-            s.create_node(
-                rules,
-                NodeKind::EnumMember,
-                &name,
-                child,
-                NodeExtra::default(),
-            );
+            s.create_node(NodeKind::EnumMember, &name, child, NodeExtra::default());
             found = true;
         }
     }
     if !found && node.named_child_count() == 0 {
         let name = get_node_text(node, s.source()).to_string();
-        s.create_node(
-            rules,
-            NodeKind::EnumMember,
-            &name,
-            node,
-            NodeExtra::default(),
-        );
+        s.create_node(NodeKind::EnumMember, &name, node, NodeExtra::default());
     }
 }
 
@@ -980,7 +970,7 @@ fn extract_type_alias(
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, kind, &name, node, extra) else {
+    let Some(idx) = s.create_node(kind, &name, node, extra) else {
         return false;
     };
 
@@ -996,7 +986,7 @@ fn extract_type_alias(
         if matches!(s.language(), Language::Typescript | Language::Tsx) {
             let alias_name = name.clone();
             extract_ts_type_alias_members(rules, s, value, &alias_id, &alias_name);
-            extract_ts_tuple_contract_names(rules, s, value, &alias_id, &alias_name);
+            extract_ts_tuple_contract_names(s, value, &alias_id, &alias_name);
         }
     }
     false
@@ -1055,7 +1045,7 @@ fn extract_ts_type_alias_members(
                 qualified_name: Some(format!("{alias_name}::{member_name}")),
                 ..NodeExtra::default()
             };
-            s.create_node(rules, member_kind, &member_name, child, extra);
+            s.create_node(member_kind, &member_name, child, extra);
             // Type refs from the member's signature attach to the ALIAS
             // (consistent with interface-member treatment, #432 — Task 8).
             let alias_owned = alias_id.to_string();
@@ -1083,7 +1073,6 @@ fn is_ts_function_typed_property(property_signature: Node<'_>) -> bool {
 /// literal that is a DIRECT type argument of a `generic_type` that is
 /// itself a DIRECT tuple element; names must be valid identifiers.
 fn extract_ts_tuple_contract_names(
-    rules: &'static dyn LanguageRules,
     s: &mut Session<'_>,
     value: Node<'_>,
     alias_id: &str,
@@ -1159,7 +1148,7 @@ fn extract_ts_tuple_contract_names(
                     qualified_name: Some(format!("{alias_name}::{name}")),
                     ..NodeExtra::default()
                 };
-                s.create_node(rules, NodeKind::Method, &name, entry, extra);
+                s.create_node(NodeKind::Method, &name, entry, extra);
             }
         }
     }
@@ -1186,7 +1175,7 @@ fn extract_property(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         is_static: rules.is_static(node, s.source()),
         ..NodeExtra::default()
     };
-    let created = s.create_node(rules, NodeKind::Property, &name, node, extra);
+    let created = s.create_node(NodeKind::Property, &name, node, extra);
     // `@Inject() private svc: Foo` — decorator + type-annotation refs on
     // class properties too (Task 8).
     if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
@@ -1218,7 +1207,7 @@ fn extract_field(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: N
             is_static,
             ..NodeExtra::default()
         };
-        s.create_node(rules, NodeKind::Field, &name, d, extra);
+        s.create_node(NodeKind::Field, &name, d, extra);
     }
 }
 
@@ -1280,7 +1269,7 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
                 if name_node.kind() == "object_pattern"
                     && value_node.is_some_and(|v| v.kind() == "identifier")
                 {
-                    s.extract_rtk_hook_bindings(rules, name_node, is_exported);
+                    s.extract_rtk_hook_bindings(name_node, is_exported);
                 }
                 continue;
             }
@@ -1317,7 +1306,7 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
                 is_exported,
                 ..NodeExtra::default()
             };
-            let created = s.create_node(rules, kind, &name, child, extra);
+            let created = s.create_node(kind, &name, child, extra);
             if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
                 s.extract_variable_type_annotation(child, &id);
             }
@@ -1401,7 +1390,7 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         signature,
         ..NodeExtra::default()
     };
-    s.create_node(rules, kind, &name, node, extra);
+    s.create_node(kind, &name, node, extra);
 }
 
 /// Imports: hook first (single-module languages); Python inline
@@ -1414,7 +1403,7 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
             signature: Some(info.signature.clone()),
             ..NodeExtra::default()
         };
-        s.create_node(rules, NodeKind::Import, &info.module_name, node, extra);
+        s.create_node(NodeKind::Import, &info.module_name, node, extra);
         if !info.handled_refs
             && !info.module_name.is_empty()
             && let Some(parent_id) = s.scope_id().cloned()
@@ -1473,7 +1462,7 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
                 signature: Some(import_text.clone()),
                 ..NodeExtra::default()
             };
-            s.create_node(rules, NodeKind::Import, &module, node, extra);
+            s.create_node(NodeKind::Import, &module, node, extra);
             if let Some(pid) = &parent_id {
                 s.add_unresolved(UnresolvedReference {
                     from_node_id: pid.clone(),

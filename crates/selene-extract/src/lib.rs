@@ -30,6 +30,8 @@ pub use helpers::{
     clean_comment_markers, get_child_by_field, get_node_text, get_preceding_docstring,
 };
 pub use language::{Language, detect_language, is_file_level_only, is_source_file};
-pub use rules::{ClassKind, ImportInfo, LanguageRules, MethodClass, NodeTypeTables, rules_for};
+pub use rules::{
+    ClassKind, ImportInfo, LanguageRules, MethodClass, NodeTypeTables, VariableInfo, rules_for,
+};
 pub use types::{ExtractionResult, MAX_FILE_SIZE, UnresolvedReference};
 pub use walker::{NodeExtra, Session, extract_from_source};
