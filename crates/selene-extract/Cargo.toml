@@ -34,6 +34,17 @@ tree-sitter-cpp.workspace = true
 tree-sitter-c-sharp.workspace = true
 tree-sitter-php.workspace = true
 tree-sitter-ruby.workspace = true
+# Orchestrator (Task 18): dedicated rayon pool for the parse fan-out; tokio
+# ONLY at the DB seam (spawn_blocking bridge — extraction stays sync).
+# selene-db without default features: the orchestrator needs the GraphStore
+# contract + the in-memory engine for tests, not the RocksDB disk engine
+# (the packaging binary re-enables it; features unify additively there).
+rayon.workspace = true
+tokio.workspace = true
+# Direct path dep (not workspace-inherited): cargo forbids a member turning
+# OFF a workspace dep's default features, and this crate must not drag the
+# RocksDB disk engine into every extract build.
+selene-db = { path = "../selene-db", default-features = false, features = ["kv-mem"] }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["yaml", "redactions"] }
