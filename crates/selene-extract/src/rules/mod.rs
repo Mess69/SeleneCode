@@ -8,7 +8,9 @@
 //! Rust/Go (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14)
 //! land per plan.
 
+pub(crate) mod javascript;
 pub(crate) mod python;
+pub(crate) mod typescript;
 
 use selene_core::{NodeKind, Visibility};
 use tree_sitter::Node;
@@ -207,6 +209,8 @@ pub trait LanguageRules: Sync {
 pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
     match l {
         Language::Python => Some(&python::PythonRules),
+        Language::Typescript | Language::Tsx => Some(&typescript::TypescriptRules),
+        Language::Javascript | Language::Jsx => Some(&javascript::JavascriptRules),
         _ => None,
     }
 }

@@ -1,0 +1,91 @@
+---
+source: crates/selene-extract/tests/lang_javascript_test.rs
+expression: r
+---
+nodes:
+  - id: "file:app.js"
+    kind: file
+    name: app.js
+    qualifiedName: app.js
+    filePath: app.js
+    language: javascript
+    startLine: 1
+    endLine: 14
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "function:459ce64ab4a0bc101f4a86a2b3a9705a"
+    kind: function
+    name: init
+    qualifiedName: init
+    filePath: app.js
+    language: javascript
+    startLine: 3
+    endLine: 5
+    startColumn: 2
+    endColumn: 3
+    signature: ()
+    isExported: false
+    isAsync: false
+    updatedAt: "[ts]"
+  - id: "class:32974417e2d2db7af0faf9375e221644"
+    kind: class
+    name: App
+    qualifiedName: App
+    filePath: app.js
+    language: javascript
+    startLine: 9
+    endLine: 13
+    startColumn: 7
+    endColumn: 1
+    isExported: true
+    updatedAt: "[ts]"
+  - id: "method:c1cec2dbc1b886102ff425066f4c1bf3"
+    kind: method
+    name: start
+    qualifiedName: "App::start"
+    filePath: app.js
+    language: javascript
+    startLine: 10
+    endLine: 12
+    startColumn: 2
+    endColumn: 3
+    isAsync: false
+    updatedAt: "[ts]"
+edges:
+  - source: "file:app.js"
+    target: "function:459ce64ab4a0bc101f4a86a2b3a9705a"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:app.js"
+    target: "class:32974417e2d2db7af0faf9375e221644"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:32974417e2d2db7af0faf9375e221644"
+    target: "method:c1cec2dbc1b886102ff425066f4c1bf3"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:app.js"
+    referenceName: "(function () {\n  function init() {\n    render();\n  }\n  init();\n})"
+    referenceKind: calls
+    line: 2
+    column: 0
+  - fromNodeId: "function:459ce64ab4a0bc101f4a86a2b3a9705a"
+    referenceName: render
+    referenceKind: calls
+    line: 4
+    column: 4
+  - fromNodeId: "file:app.js"
+    referenceName: init
+    referenceKind: calls
+    line: 6
+    column: 2
+  - fromNodeId: "method:c1cec2dbc1b886102ff425066f4c1bf3"
+    referenceName: boot
+    referenceKind: calls
+    line: 11
+    column: 4
+errors: []
+durationMs: "[ms]"

@@ -569,7 +569,9 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
     } else if t.enum_types.contains(&node_type) {
         extract_enum(rules, s, node);
     } else if t.type_alias_types.contains(&node_type) {
-        extract_type_alias(rules, s, node);
+        // TS semantics: a plain alias does NOT skip children (the walker
+        // recurses into the alias value); a reclassified one does.
+        matched = extract_type_alias(rules, s, node);
     } else if t.property_types.contains(&node_type) && s.is_inside_class_like() {
         extract_property(rules, s, node);
     } else if t.field_types.contains(&node_type) && s.is_inside_class_like() {
@@ -579,12 +581,26 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         extract_variable(rules, s, node);
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);
-    } else {
+    }
+    // INSERTION POINT (Task 8): TS/JS re-export refs + Vuex-module default
+    // export branch slot in here (before call_types, per map §8).
+    else if t.call_types.contains(&node_type) {
+        // Top-level calls (IIFE module wrappers #528, side-effect calls)
+        // attribute to the stack top; children STILL recurse so nested
+        // arrows/calls extract (TS: skipChildren stays false here).
+        s.extract_call(node);
+        matched = false;
+    } else if body::INSTANTIATION_KINDS.contains(&node_type) {
+        // Children still walked so ctor-arg calls get their own refs.
+        s.extract_instantiation(node);
+        // INSERTION POINT (Task 10): anonymous-class body extraction.
         matched = false;
     }
-    // INSERTION POINT (Task 7/8): TS/JS branches (re-export, store
-    // collections, interface member type refs) slot in above this line.
-    // INSERTION POINT (Task 6): call_types + INSTANTIATION_KINDS branches.
+    // INSERTION POINT (Task 9): Rust `impl_item` implements refs.
+    // INSERTION POINT (Task 8): TS interface member type-annotation refs.
+    else {
+        matched = false;
+    }
 
     if matched {
         return; // matched branches walked (or deliberately skipped) children
@@ -604,11 +620,21 @@ fn extract_function(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         return;
     }
 
-    let name = extract_name(rules, node, s.source());
-    // (TS/JS arrow/function-expression declarator naming — Task 7.)
+    let mut name = extract_name(rules, node, s.source());
+    // TS/JS arrow-const naming: `const useAuth = () => {…}` — the arrow
+    // node has no `name` field; the name lives on the parent
+    // `variable_declarator` (Task 7).
+    if name == "<anonymous>"
+        && (node.kind() == "arrow_function" || node.kind() == "function_expression")
+        && let Some(parent) = node.parent()
+        && parent.kind() == "variable_declarator"
+        && let Some(var_name) = get_child_by_field(parent, "name")
+    {
+        name = get_node_text(var_name, s.source()).to_string();
+    }
     if name == "<anonymous>" || rules.is_misparsed_function(&name, node) {
-        // No node, but the body is still walked (module wrappers #528) —
-        // body walking lands in Task 6.
+        // No node, but the body is still walked — AMD/CommonJS module
+        // wrappers hold named inner functions and calls (#528).
         if let Some(body) = resolve_body(rules, node) {
             s.visit_function_body(body, "");
         }
@@ -872,20 +898,207 @@ fn extract_enum_members(rules: &'static dyn LanguageRules, s: &mut Session<'_>, 
     }
 }
 
-/// Type alias (`type X = ...`) — `resolve_type_alias_kind` may reclassify
-/// (Go `type_spec` wrapping struct/interface, Task 9); the struct/interface
-/// re-dispatch arrives with that task.
-fn extract_type_alias(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+/// Type alias (`type X = ...`). Returns the TS `skipChildren` bool: `true`
+/// when the alias was reclassified and its body walked; `false` for a plain
+/// alias (the walker then recurses into the alias value, matching TS).
+/// `resolve_type_alias_kind` reclassification bodies (Go `type_spec`
+/// struct/interface, C typedefs) land with Tasks 9/13 — INSERTION POINT.
+fn extract_type_alias(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    node: Node<'_>,
+) -> bool {
+    let name = extract_name(rules, node, s.source());
+    if name == "<anonymous>" {
+        return false;
+    }
     let kind = rules
         .resolve_type_alias_kind(node, s.source())
         .unwrap_or(NodeKind::TypeAlias);
-    let name = extract_name(rules, node, s.source());
+    // INSERTION POINT (Task 9/13): struct/enum/interface reclassification
+    // with body walks (returns true).
     let extra = NodeExtra {
         docstring: get_preceding_docstring(node, s.source()),
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    s.create_node(rules, kind, &name, node, extra);
+    let Some(idx) = s.create_node(rules, kind, &name, node, extra) else {
+        return false;
+    };
+
+    // TS/TSX alias-member surfacing: `type X = { foo(): T }` members become
+    // property/method nodes with `TypeAlias::member` QNs (#359), and
+    // string-literal contract names in generic tuples become searchable
+    // method nodes (#634). Type refs from the alias value — Task 8.
+    if matches!(s.language(), Language::Typescript | Language::Tsx)
+        && let (Some(alias_id), Some(value)) = (s.id_of(idx), get_child_by_field(node, "value"))
+    {
+        let alias_name = name.clone();
+        extract_ts_type_alias_members(rules, s, value, &alias_id, &alias_name);
+        extract_ts_tuple_contract_names(rules, s, value, &alias_id, &alias_name);
+    }
+    false
+}
+
+/// #359: surface `type X = { foo: T; bar(): U }` (or intersection) members
+/// as property/method nodes under the alias. Only the immediate
+/// object_type / intersection operands — nested anonymous object types
+/// inside generic args yield no phantom members. A `foo: () => T`
+/// function-typed property counts as a method.
+fn extract_ts_type_alias_members(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    value: Node<'_>,
+    alias_id: &str,
+    alias_name: &str,
+) {
+    let mut object_types: Vec<Node<'_>> = Vec::new();
+    if value.kind() == "object_type" {
+        object_types.push(value);
+    } else if value.kind() == "intersection_type" {
+        let mut cursor = value.walk();
+        object_types.extend(
+            value
+                .named_children(&mut cursor)
+                .filter(|op| op.kind() == "object_type"),
+        );
+    } else {
+        return;
+    }
+
+    s.push_scope(alias_id.to_string());
+    for obj in object_types {
+        let mut cursor = obj.walk();
+        let members: Vec<Node<'_>> = obj
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "property_signature" || c.kind() == "method_signature")
+            .collect();
+        for child in members {
+            let Some(name_node) = get_child_by_field(child, "name") else {
+                continue;
+            };
+            let member_name = get_node_text(name_node, s.source()).to_string();
+            if member_name.is_empty() {
+                continue;
+            }
+            let member_kind =
+                if child.kind() == "method_signature" || is_ts_function_typed_property(child) {
+                    NodeKind::Method
+                } else {
+                    NodeKind::Property
+                };
+            let extra = NodeExtra {
+                docstring: get_preceding_docstring(child, s.source()),
+                signature: Some(get_node_text(child, s.source()).to_string()),
+                qualified_name: Some(format!("{alias_name}::{member_name}")),
+                ..NodeExtra::default()
+            };
+            s.create_node(rules, member_kind, &member_name, child, extra);
+            // INSERTION POINT (Task 8): type refs from the member signature.
+        }
+    }
+    s.pop_scope();
+}
+
+/// `foo: () => T` — a property_signature whose type annotation contains a
+/// `function_type` is method-shaped (`obj.foo()` ≡ `bar(): T`).
+fn is_ts_function_typed_property(property_signature: Node<'_>) -> bool {
+    let Some(type_anno) = get_child_by_field(property_signature, "type") else {
+        return false;
+    };
+    let mut cursor = type_anno.walk();
+    type_anno
+        .named_children(&mut cursor)
+        .any(|inner| inner.kind() == "function_type")
+}
+
+/// #634: string-literal contract names in a generic tuple type alias
+/// (`type L = [Service<'query_apply_record', …>, …]`) become searchable
+/// `method` nodes under the alias. Deliberately narrow: only a string
+/// literal that is a DIRECT type argument of a `generic_type` that is
+/// itself a DIRECT tuple element; names must be valid identifiers.
+fn extract_ts_tuple_contract_names(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    value: Node<'_>,
+    alias_id: &str,
+    alias_name: &str,
+) {
+    fn collect_tuples<'t>(n: Node<'t>, depth: u32, out: &mut Vec<Node<'t>>) {
+        if depth > 6 {
+            return; // a type expression is shallow; cap defensively
+        }
+        if n.kind() == "tuple_type" {
+            out.push(n);
+        }
+        let mut cursor = n.walk();
+        let children: Vec<Node<'t>> = n.named_children(&mut cursor).collect();
+        for c in children {
+            collect_tuples(c, depth + 1, out);
+        }
+    }
+    let mut tuples = Vec::new();
+    collect_tuples(value, 0, &mut tuples);
+    if tuples.is_empty() {
+        return;
+    }
+
+    fn is_valid_ident(name: &str) -> bool {
+        let mut chars = name.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_alphabetic() || first == '_' || first == '$')
+            && chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '$')
+    }
+
+    s.push_scope(alias_id.to_string());
+    for tuple in tuples {
+        let mut cursor = tuple.walk();
+        let entries: Vec<Node<'_>> = tuple
+            .named_children(&mut cursor)
+            .filter(|e| e.kind() == "generic_type")
+            .collect();
+        for entry in entries {
+            let Some(type_args) = get_child_by_field(entry, "type_arguments") else {
+                continue;
+            };
+            let mut c2 = type_args.walk();
+            let literals: Vec<Node<'_>> = type_args
+                .named_children(&mut c2)
+                .filter(|a| a.kind() == "literal_type")
+                .collect();
+            for arg in literals {
+                let Some(str_node) = arg.named_child(0) else {
+                    continue;
+                };
+                if str_node.kind() != "string" {
+                    continue;
+                }
+                let name: String = get_node_text(str_node, s.source())
+                    .trim()
+                    .trim_matches(['\'', '"', '`'])
+                    .to_string();
+                if !is_valid_ident(&name) {
+                    continue;
+                }
+                let signature: String = get_node_text(entry, s.source())
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ")
+                    .chars()
+                    .take(120)
+                    .collect();
+                let extra = NodeExtra {
+                    signature: Some(signature),
+                    qualified_name: Some(format!("{alias_name}::{name}")),
+                    ..NodeExtra::default()
+                };
+                s.create_node(rules, NodeKind::Method, &name, entry, extra);
+            }
+        }
+    }
+    s.pop_scope();
 }
 
 /// Class property (C# property_declaration and TS/JS #808 demotions).
@@ -939,9 +1152,19 @@ fn extract_field(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: N
     }
 }
 
-/// Top-level variable declarations. Task 5 ports the Python/Ruby shape
-/// (`assignment`: left identifier/constant, `= <first 100 chars>`
-/// signature); TS/JS declarators and Go specs land with Tasks 7/9.
+/// `= <first 100 chars>[...]` initializer signature (searchable context).
+fn init_signature(s: &Session<'_>, value: Node<'_>) -> String {
+    let init: String = get_node_text(value, s.source()).chars().take(100).collect();
+    let ellipsis = if init.chars().count() >= 100 {
+        "..."
+    } else {
+        ""
+    };
+    format!("= {init}{ellipsis}")
+}
+
+/// Top-level variable declarations. Task 7 lands the TS/JS declarator loop;
+/// Python/Ruby `assignment` shape from Task 5; Go specs land with Task 9.
 fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
     let kind = if rules.is_const(node, s.source()).unwrap_or(false) {
         NodeKind::Constant
@@ -950,6 +1173,66 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
     };
     let docstring = get_preceding_docstring(node, s.source());
 
+    // TS/JS: lexical_declaration / variable_declaration → declarator loop.
+    if matches!(
+        s.language(),
+        Language::Typescript | Language::Tsx | Language::Javascript | Language::Jsx
+    ) {
+        let is_exported = rules.is_exported(node, s.source());
+        let mut cursor = node.walk();
+        let declarators: Vec<Node<'_>> = node
+            .named_children(&mut cursor)
+            .filter(|c| c.kind() == "variable_declarator")
+            .collect();
+        for child in declarators {
+            let Some(name_node) = get_child_by_field(child, "name") else {
+                continue;
+            };
+            let value_node = get_child_by_field(child, "value");
+            // Skip destructured patterns (`let { x, y } = props()`) — ugly
+            // multi-line names. INSERTION POINT (Task 8): RTK Query hook
+            // bindings (`export const { useGetXQuery } = api`).
+            if name_node.kind() == "object_pattern" || name_node.kind() == "array_pattern" {
+                continue;
+            }
+            let name = get_node_text(name_node, s.source()).to_string();
+            // Arrow/function-expression values extract as FUNCTIONS (named
+            // via the declarator by extract_function), never as variables.
+            if let Some(value) = value_node
+                && (value.kind() == "arrow_function" || value.kind() == "function_expression")
+            {
+                extract_function(rules, s, value);
+                continue;
+            }
+            let signature = value_node.map(|v| init_signature(s, v));
+            // INSERTION POINT (Task 8): React HOC component consts
+            // (forwardRef/memo/styled → `component` node), exported
+            // object-of-functions / Zustand / RTK createApi / Pinia/Vuex
+            // store collections.
+            let extra = NodeExtra {
+                docstring: docstring.clone(),
+                signature,
+                is_exported,
+                ..NodeExtra::default()
+            };
+            s.create_node(rules, kind, &name, child, extra);
+            // INSERTION POINT (Task 8): variable type-annotation refs.
+            // Walk the initializer for calls — object literals excepted
+            // (their function-valued properties are Task 8's business).
+            // NOTE (TS parity): no scope push — initializer calls attribute
+            // to the enclosing scope (the file), exactly as in TS; only
+            // Go's spec branch (Task 9) pushes the declared symbol (#693).
+            if let Some(value) = value_node
+                && value.kind() != "object"
+                && value.kind() != "object_expression"
+            {
+                s.visit_function_body(value, "");
+            }
+        }
+        return;
+    }
+
+    // Python/Ruby assignment: left = right.
     let left = get_child_by_field(node, "left").or_else(|| node.named_child(0));
     let right = get_child_by_field(node, "right").or_else(|| node.named_child(1));
     let Some(left) = left else { return };
@@ -957,15 +1240,7 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         return;
     }
     let name = get_node_text(left, s.source()).to_string();
-    let signature = right.map(|r| {
-        let init: String = get_node_text(r, s.source()).chars().take(100).collect();
-        let ellipsis = if init.chars().count() >= 100 {
-            "..."
-        } else {
-            ""
-        };
-        format!("= {init}{ellipsis}")
-    });
+    let signature = right.map(|r| init_signature(s, r));
     let extra = NodeExtra {
         docstring,
         signature,

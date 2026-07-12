@@ -1,0 +1,86 @@
+---
+source: crates/selene-extract/tests/lang_typescript_test.rs
+expression: r
+---
+nodes:
+  - id: "file:Login.tsx"
+    kind: file
+    name: Login.tsx
+    qualifiedName: Login.tsx
+    filePath: Login.tsx
+    language: tsx
+    startLine: 1
+    endLine: 11
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:86960f17db4cc6b31aa543beb3254d30"
+    kind: import
+    name: react
+    qualifiedName: react
+    filePath: Login.tsx
+    language: tsx
+    startLine: 1
+    endLine: 1
+    startColumn: 0
+    endColumn: 26
+    signature: "import React from 'react';"
+    updatedAt: "[ts]"
+  - id: "function:6f7347e471a47b0f7fd726e030921a80"
+    kind: function
+    name: LoginButton
+    qualifiedName: LoginButton
+    filePath: Login.tsx
+    language: tsx
+    startLine: 4
+    endLine: 6
+    startColumn: 27
+    endColumn: 1
+    docstring: login button
+    signature: "({ onClick }: { onClick: () => void })"
+    isExported: true
+    isAsync: false
+    isStatic: false
+    updatedAt: "[ts]"
+  - id: "function:7d9860729267091db54712ed23de0c63"
+    kind: function
+    name: Page
+    qualifiedName: Page
+    filePath: Login.tsx
+    language: tsx
+    startLine: 8
+    endLine: 10
+    startColumn: 15
+    endColumn: 1
+    signature: ()
+    isExported: true
+    isAsync: false
+    isStatic: false
+    updatedAt: "[ts]"
+edges:
+  - source: "file:Login.tsx"
+    target: "import:86960f17db4cc6b31aa543beb3254d30"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:Login.tsx"
+    target: "function:6f7347e471a47b0f7fd726e030921a80"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:Login.tsx"
+    target: "function:7d9860729267091db54712ed23de0c63"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:Login.tsx"
+    referenceName: react
+    referenceKind: imports
+    line: 1
+    column: 0
+  - fromNodeId: "function:7d9860729267091db54712ed23de0c63"
+    referenceName: login
+    referenceKind: calls
+    line: 9
+    column: 37
+errors: []
+durationMs: "[ms]"

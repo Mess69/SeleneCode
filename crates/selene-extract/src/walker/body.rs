@@ -20,7 +20,7 @@ use crate::walker::Session;
 use crate::{Language, UnresolvedReference};
 
 /// Constructor-invocation node kinds → `instantiates` refs (§10).
-const INSTANTIATION_KINDS: [&str; 6] = [
+pub(super) const INSTANTIATION_KINDS: [&str; 6] = [
     "new_expression",               // typescript / javascript / tsx / jsx
     "object_creation_expression",   // java / c#
     "instance_creation_expression", // some grammars
