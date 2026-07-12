@@ -136,10 +136,11 @@ impl SurrealStore {
     ///
     /// Not part of the stable surface: the pipeline crates
     /// (`selene-graph`/`selene-mcp`/`selene-cli`) depend on [`crate::GraphStore`],
-    /// never on SurrealDB directly. This exists only so this crate's own
-    /// integration tests can drive raw SurrealQL before the typed
-    /// insert/traversal methods land in later tasks; `#[doc(hidden)]` keeps it
-    /// out of the rendered API.
+    /// never on SurrealDB directly. Used internally by this crate's other
+    /// modules (e.g. `src/nodes.rs`) to run typed queries, and by this
+    /// crate's own integration tests to drive raw SurrealQL for whatever
+    /// operation groups haven't landed yet; `#[doc(hidden)]` keeps it out of
+    /// the rendered API.
     #[doc(hidden)]
     pub fn db(&self) -> &Surreal<Db> {
         &self.db

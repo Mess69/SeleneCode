@@ -20,6 +20,7 @@
 //! `docs/reference/from-codegraph/maps/db-graph-search.md`.
 
 mod error;
+mod nodes;
 mod schema;
 mod store;
 mod surreal;
