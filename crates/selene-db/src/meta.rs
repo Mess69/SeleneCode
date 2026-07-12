@@ -169,8 +169,9 @@ impl SurrealStore {
 
 /// One `SELECT count() FROM {table} GROUP ALL;` statement per [`EdgeKind`],
 /// in [`EdgeKind::ALL`] order, combined into a single multi-statement query —
-/// mirrors `src/edges.rs`'s `relate_chunk`/`src/unresolved.rs`'s keyed
-/// batching: one round trip regardless of the 12-table split.
+/// mirrors `src/edges.rs`'s `insert_edge_chunk` per-kind statements/
+/// `src/unresolved.rs`'s keyed batching: one round trip regardless of the
+/// 12-table split.
 fn edge_group_all_sql() -> String {
     let mut sql = String::with_capacity(EdgeKind::ALL.len() * 40);
     for kind in EdgeKind::ALL {

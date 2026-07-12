@@ -26,28 +26,40 @@
 //!
 //! `insert_nodes` must implement "insert or replace" (the TS store's INSERT
 //! OR REPLACE): re-submitting an existing id fully replaces its record. This
-//! backend uses SurrealDB's `UPSERT <record> CONTENT <object>` — `UPSERT`
-//! creates the record if absent or **replaces its content wholesale** if
-//! present (unlike `MERGE`, which only overwrites the fields given). Because
-//! `insert_nodes` always sends every `Node` field (optional ones simply
-//! omitted, never `null` — SCHEMAFULL `option<T>` columns reject `NULL` and
-//! only accept absent/`NONE`; see [`node_content`]), CONTENT-replace and a
-//! field-by-field merge would coincide here, but CONTENT is the semantically
-//! correct choice for "insert or replace".
+//! backend uses SurrealDB's **native bulk insert** with a full-field update
+//! clause: `INSERT INTO node $batch ON DUPLICATE KEY UPDATE <every content
+//! field> = $input.<field>`. Each `$batch` element carries its record id as
+//! an `id: RecordId` value ([`node_item`]), so a fresh id takes the plain
+//! bulk-create path and an existing id is retried as an update (verified in
+//! `surrealdb-core` 3.2.1 `doc/insert.rs`: a `RecordExists` conflict falls
+//! through to `insert_update` when an `ON DUPLICATE KEY UPDATE` clause is
+//! present). Because the update clause assigns **every** content field from
+//! `$input` — and an omitted optional field reads back from `$input` as
+//! `NONE`, which clears the stored column — the update is a wholesale
+//! replace, not a merge, preserving the previous `UPSERT ... CONTENT`
+//! semantics exactly (pinned by `insert_nodes_upsert_replaces_same_id`).
+//!
+//! This replaced a server-side `FOR $item IN $batch { UPSERT ... }` loop in
+//! the Task 9b perf pass: the loop paid per-item statement overhead (~2.3k
+//! nodes/s in the pre-rewrite probe), which native bulk `INSERT` removes.
+//! Re-measured post-rewrite on the 20k-node corpus (release, kv-mem): the
+//! bulk path loads ~4.9k nodes/s with the schema's four FULLTEXT indexes
+//! removed and ~0.8k nodes/s with them in place — FTS incremental indexing,
+//! not statement shape, now dominates node write cost — see
+//! `docs/benchmarks/2026-07-phase1-db-gate.md` for the probe table.
 //!
 //! ## Chunking
 //!
 //! `insert_nodes` batches input at [`CHUNK`] nodes per round trip (mirrors
 //! the TS store's `SQLITE_PARAM_CHUNK_SIZE`, kept here to bound statement
 //! size / bind-variable count rather than for a SQLite-specific limit). Each
-//! chunk is ONE query: a `FOR $item IN $batch { UPSERT
-//! type::record('node', $item.key) CONTENT $item.content; }` loop bound to a
-//! single `$batch` array parameter, not one round trip per node.
+//! chunk is ONE bulk `INSERT` statement bound to a single `$batch` array
+//! parameter, not one round trip (or one statement) per node.
 
 use std::collections::HashMap;
 
 use selene_core::{Node, NodeKind};
-use surrealdb::types::RecordId;
+use surrealdb::types::{RecordId, SurrealValue, Value as SqlValue};
 
 use crate::{Error, Result, SurrealStore};
 
@@ -68,6 +80,37 @@ pub(crate) const NODE_FIELDS: &str = "\
 kind, name, qualifiedName, filePath, language, startLine, endLine, startColumn, endColumn, \
 docstring, signature, visibility, isExported, isAsync, isStatic, isAbstract, decorators, \
 typeParameters, returnType, updatedAt, record::id(id) AS id";
+
+/// Every *stored content* column of the `node` table (i.e. [`NODE_FIELDS`]
+/// minus the `record::id(id)` projection), in the same order. Drives the
+/// `ON DUPLICATE KEY UPDATE <field> = $input.<field>` clause of
+/// [`SurrealStore::insert_nodes`]'s bulk insert: assigning **all** of them
+/// from `$input` is what turns the duplicate-key update into a wholesale
+/// content replace (an omitted optional field is `NONE` in `$input`, so the
+/// stored column is cleared). Must stay in sync with `Node`'s serde shape
+/// and the schema (`src/schema.rs`).
+const NODE_CONTENT_FIELDS: [&str; 20] = [
+    "kind",
+    "name",
+    "qualifiedName",
+    "filePath",
+    "language",
+    "startLine",
+    "endLine",
+    "startColumn",
+    "endColumn",
+    "docstring",
+    "signature",
+    "visibility",
+    "isExported",
+    "isAsync",
+    "isStatic",
+    "isAbstract",
+    "decorators",
+    "typeParameters",
+    "returnType",
+    "updatedAt",
+];
 
 /// Serializes `node` into its stored content object: `Node`'s own camelCase
 /// JSON shape minus `id` (the record key, not a stored field — see the
@@ -98,11 +141,24 @@ fn node_content(node: &Node) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-/// One element of the `insert_nodes` chunk batch bound to `$batch`: the raw
-/// record key plus the stored content, consumed by the `FOR` loop's
-/// `UPSERT type::record('node', $item.key) CONTENT $item.content`.
-fn node_to_batch_item(node: &Node) -> Result<serde_json::Value> {
-    Ok(serde_json::json!({ "key": node.id, "content": node_content(node)? }))
+/// One element of the `insert_nodes` bulk-`INSERT` batch bound to `$batch`:
+/// the [`node_content`] object plus the record id as a real
+/// [`RecordId`] value under `id`. The id must be a `RecordId` (not a plain
+/// string): it is bound via `surrealdb::types::Value`, which serde-JSON
+/// content cannot carry, hence the `serde_json::Value` →
+/// [`SqlValue`] bridge through [`SurrealValue::into_value`].
+fn node_item(node: &Node) -> Result<SqlValue> {
+    let SqlValue::Object(mut obj) = node_content(node)?.into_value() else {
+        return Err(Error::Decode(format!(
+            "node '{}' did not serialize to an object",
+            node.id
+        )));
+    };
+    obj.insert(
+        "id".to_string(),
+        SqlValue::RecordId(RecordId::new("node", node.id.as_str())),
+    );
+    Ok(SqlValue::Object(obj))
 }
 
 /// Reconstructs a `Node` from a row shaped by [`NODE_FIELDS`]: every `Node`
@@ -120,17 +176,20 @@ impl SurrealStore {
     /// batch atomically, but earlier chunks of the same call are already
     /// committed — there is no cross-chunk rollback.
     pub async fn insert_nodes(&self, nodes: &[Node]) -> Result<()> {
+        if nodes.is_empty() {
+            return Ok(());
+        }
+        let update_clause = NODE_CONTENT_FIELDS
+            .iter()
+            .map(|f| format!("{f} = $input.{f}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql =
+            format!("INSERT INTO node $batch ON DUPLICATE KEY UPDATE {update_clause} RETURN NONE");
         for chunk in nodes.chunks(CHUNK) {
-            let batch = chunk
-                .iter()
-                .map(node_to_batch_item)
-                .collect::<Result<Vec<_>>>()?;
+            let batch = chunk.iter().map(node_item).collect::<Result<Vec<_>>>()?;
             self.db()
-                .query(
-                    "FOR $item IN $batch {\
-                        UPSERT type::record('node', $item.key) CONTENT $item.content;\
-                     };",
-                )
+                .query(sql.as_str())
                 .bind(("batch", batch))
                 .await?
                 .check()?;
@@ -149,15 +208,25 @@ impl SurrealStore {
 
     /// Batch lookup by id. The returned map contains only the ids that were
     /// found; unknown ids are simply absent, never an error.
+    ///
+    /// The query selects `FROM $ids` (a bound array of record ids — direct
+    /// point lookups; a missing record simply yields no row), **not**
+    /// `FROM node WHERE id IN $ids`: the `IN`-list form is a full table scan
+    /// with a per-row linear membership test, measured at ~43 ms for 500 ids
+    /// on a 20k-node graph vs ~3 ms for the `FROM $ids` form (~5 ms for the
+    /// whole method; Task 9b probe, release, kv-mem). Input ids are deduped
+    /// so a repeated id cannot fetch (or emit) twice.
     pub async fn get_nodes(&self, ids: &[String]) -> Result<HashMap<String, Node>> {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let rids: Vec<RecordId> = ids
+        let mut rids: Vec<RecordId> = ids
             .iter()
             .map(|id| RecordId::new("node", id.as_str()))
             .collect();
-        let sql = format!("SELECT {NODE_FIELDS} FROM node WHERE id IN $ids");
+        rids.sort_unstable();
+        rids.dedup();
+        let sql = format!("SELECT {NODE_FIELDS} FROM $ids");
         let mut resp = self.db().query(sql).bind(("ids", rids)).await?;
         let rows: Vec<serde_json::Value> = resp.take(0)?;
         let mut out = HashMap::with_capacity(rows.len());

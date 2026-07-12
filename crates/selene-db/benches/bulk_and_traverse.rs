@@ -217,12 +217,20 @@ mod benches {
                 .iter(|| async { store.callers(&lm.hub_id, 3).await.expect("callers") })
         });
         group.bench_function(BenchmarkId::new("impact_d3", backend), |b| {
-            b.to_async(runtime)
-                .iter(|| async { store.impact_radius(&lm.deep_tail_id, 3).await.expect("impact") })
+            b.to_async(runtime).iter(|| async {
+                store
+                    .impact_radius(&lm.deep_tail_id, 3)
+                    .await
+                    .expect("impact")
+            })
         });
         group.bench_function(BenchmarkId::new("impact_d5", backend), |b| {
-            b.to_async(runtime)
-                .iter(|| async { store.impact_radius(&lm.deep_tail_id, 5).await.expect("impact") })
+            b.to_async(runtime).iter(|| async {
+                store
+                    .impact_radius(&lm.deep_tail_id, 5)
+                    .await
+                    .expect("impact")
+            })
         });
         group.bench_function(BenchmarkId::new("find_path", backend), |b| {
             b.to_async(runtime).iter(|| async {

@@ -130,7 +130,12 @@ impl SplitMix64 {
 fn make_id(seed: u64, kind: NodeKind, global_index: usize) -> String {
     let mut mix = SplitMix64::new(seed ^ (global_index as u64).wrapping_mul(0x2545_F491_4F6C_DD1D));
     let high = mix.next_u64();
-    format!("{}:{:016x}{:016x}", kind.as_str(), high, global_index as u64)
+    format!(
+        "{}:{:016x}{:016x}",
+        kind.as_str(),
+        high,
+        global_index as u64
+    )
 }
 
 /// A camelCase identifier built from 2–3 [`VOCAB`] roots (first lowercased,
@@ -188,11 +193,7 @@ fn pick_symbol_kind(rng: &mut SplitMix64) -> NodeKind {
 fn is_class_like(kind: NodeKind) -> bool {
     matches!(
         kind,
-        NodeKind::Class
-            | NodeKind::Struct
-            | NodeKind::Interface
-            | NodeKind::Trait
-            | NodeKind::Enum
+        NodeKind::Class | NodeKind::Struct | NodeKind::Interface | NodeKind::Trait | NodeKind::Enum
     )
 }
 
@@ -349,20 +350,32 @@ impl SyntheticGraph {
             let start = g * CHAIN_LEN;
             let end = (start + CHAIN_LEN).min(num_syms);
             for s in start..end.saturating_sub(1) {
-                edges.push(mk_edge(&sym_id(s), &sym_id(s + 1), EdgeKind::Calls, next_line()));
+                edges.push(mk_edge(
+                    &sym_id(s),
+                    &sym_id(s + 1),
+                    EdgeKind::Calls,
+                    next_line(),
+                ));
             }
             g += 1;
         }
 
         // --- hub fan-in: >= HUB_FAN_IN distinct callers -> hub ---
-        let fan_in = HUB_FAN_IN.min(num_syms.saturating_sub(CHAIN_LEN + 1) / 2).max(0);
+        let fan_in = HUB_FAN_IN
+            .min(num_syms.saturating_sub(CHAIN_LEN + 1) / 2)
+            .max(0);
         let mut wired = 0;
         // Draw sources from the tail end of the symbol range (never the
         // corridor, never the hub itself), stepping to keep them distinct.
         let mut src = num_syms.saturating_sub(1);
         while wired < fan_in && src > hub_sym {
             if src != hub_sym && src >= CHAIN_LEN {
-                edges.push(mk_edge(&sym_id(src), &sym_id(hub_sym), EdgeKind::Calls, next_line()));
+                edges.push(mk_edge(
+                    &sym_id(src),
+                    &sym_id(hub_sym),
+                    EdgeKind::Calls,
+                    next_line(),
+                ));
                 wired += 1;
             }
             src -= 1;
@@ -379,7 +392,12 @@ impl SyntheticGraph {
                     pick_non_corridor(&mut rng, num_syms)
                 };
                 if target != s {
-                    edges.push(mk_edge(&sym_id(s), &sym_id(target), EdgeKind::Calls, next_line()));
+                    edges.push(mk_edge(
+                        &sym_id(s),
+                        &sym_id(target),
+                        EdgeKind::Calls,
+                        next_line(),
+                    ));
                 }
             }
             // ~1.5 references.

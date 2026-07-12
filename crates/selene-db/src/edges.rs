@@ -13,73 +13,100 @@
 //! queries being assembled with `format!`.
 //!
 //! A query that spans several kinds does **not** loop one round trip per
-//! kind. SurrealQL supports a multi-table `FROM t1, t2, ...` clause as a real
-//! union in a single statement (verified against the embedded engine before
-//! relying on it), and `record::tb(id)` recovers which table a given row came
-//! from — exactly the [`EdgeKind`] wire string, since table names are the
-//! wire strings. So `outgoing`/`incoming`/`edges_between`/the file-projection
-//! queries are each **one** SurrealQL statement regardless of how many kinds
-//! they span, satisfying the "not a per-id loop" batching contract with room
-//! to spare.
+//! kind: every adjacency read is **record-anchored** — one multi-statement
+//! query that first collects the edge record ids by walking the graph
+//! pointers *from the queried node records themselves* (`LET $eids =
+//! array::flatten(array::flatten([(SELECT VALUE ->kind FROM $rids), ...]))`,
+//! one subquery per kind; the double flatten is load-bearing — see
+//! [`anchored_adjacency_sql`]), then point-fetches those edge records
+//! (`SELECT ... FROM $eids`).
+//! `record::tb(id)` recovers which table a given edge came from — exactly
+//! the [`EdgeKind`] wire string, since table names are the wire strings.
+//!
+//! This replaced a multi-table scan (`SELECT ... FROM t1, t2, ... WHERE in
+//! IN $rids`) in the Task 9b perf pass: SurrealDB executes that shape as a
+//! full scan of every listed edge table with a per-row linear `IN`-list
+//! membership test — O(edges × frontier) per traversal level, measured at
+//! ~1.5 s for a 150-id frontier expansion (and ~0.16 s for a single
+//! 2.1k-edge hub's incoming lookup) on a 20k-node/102k-edge graph, and
+//! catastrophically worse for deep traversals whose frontiers grow into
+//! the thousands. The record-anchored form is O(frontier × degree) point
+//! lookups — ~16 ms for the same raw hub lookup, ~25 ms end-to-end for the
+//! same 150-id frontier batch (release, kv-mem; see
+//! `docs/benchmarks/2026-07-phase1-db-gate.md` for the probe table). Graph pointers
+//! are populated by `INSERT RELATION` exactly as by `RELATE`
+//! (`surrealdb-core` 3.2.1 `doc/insert.rs` runs `store_edges_data` on both
+//! paths), so no extra index is needed to serve these reads.
 //!
 //! ## Record id ↔ edge endpoint mapping
 //!
 //! An edge's `in`/`out` fields are SurrealDB-reserved `record<node>` links,
-//! populated automatically by `RELATE $from->kind->$to`, never sent as
-//! content. Reading them back uses the same `record::id(..)` bridge
+//! sent as explicit `RecordId` values on each `INSERT RELATION` batch item
+//! ([`edge_item`]), never as string content. Reading them back uses the same
+//! `record::id(..)` bridge
 //! `src/nodes.rs` uses for `Node.id`: `record::id(in) AS source,
 //! record::id(out) AS target` yields the raw `Node.id` strings, not
 //! SurrealDB's backtick-escaped display form.
 //!
 //! `selene_core::Edge` has no id of its own — an edge's SurrealDB record id
-//! (table-generated, e.g. `calls:8ok96p…`) is never read back; identity is
+//! is never read back through the trait surface; identity is
 //! `(source, target, kind, line, col)`, enforced by the schema's unique index
-//! (`src/schema.rs`), not by the record key.
+//! (`src/schema.rs`). Since the Task 9b perf pass the record key *encodes*
+//! that identity deterministically ([`edge_record_id`]): an array key
+//! `[source, target, line ?? -1, col ?? -1]` in the kind's table. The key
+//! being derived from the identity is what makes duplicate detection a pure
+//! point lookup (below); the unique index stays as the schema-level backstop.
 //!
-//! ## `RELATE ... CONTENT`, not `SET`
+//! ## Bulk `INSERT RELATION`, not per-edge `RELATE`
 //!
-//! Endpoints bind as `$from`/`$to` **`RecordId`** parameters directly in the
-//! relate-arrow position (`RELATE $from->calls->$to`) — a bare `$param` is a
-//! valid relate-expr, but `type::record('node', $id)` is **not** (verified: a
-//! parse error, "Unexpected token `::`, expected :"; the relate-expr grammar
-//! only accepts `$param`, an array literal, a few statement keywords, or a
-//! literal record id, never a general function-call expression).
-//!
-//! The edge's own fields are written via `CONTENT $content`, not `SET
-//! field = $val, ...`: [`edge_content`] serializes `Edge` and *omits* every
-//! `None` field (mirrors `src/nodes.rs`'s `node_content` — SCHEMAFULL
-//! `option<T>` columns accept only absent/`NONE`, never JSON `null`), which
-//! sidesteps binding an `Option<T>` through the driver entirely. `Edge`
-//! serializes its position field as `column`; the schema's edge tables store
-//! it as `col` (`src/schema.rs`'s field-naming note) — `edge_content` renames
+//! Edges are written with SurrealDB's native bulk relation insert:
+//! `INSERT RELATION INTO <kind> $batch RETURN VALUE 1`, one statement per
+//! kind present in the chunk, each `$batch` element carrying `id` (the
+//! deterministic record id), `in`/`out` (endpoint `RecordId`s) and the edge's
+//! own fields ([`edge_item`]). Optional fields are *omitted* when `None`
+//! (mirrors `src/nodes.rs`'s `node_content` — SCHEMAFULL `option<T>` columns
+//! accept only absent/`NONE`, never JSON `null`). `Edge` serializes its
+//! position field as `column`; the schema's edge tables store it as `col`
+//! (`src/schema.rs`'s field-naming note) — [`edge_content`] renames
 //! `column` → `col` after serializing.
+//!
+//! This replaced one-`RELATE`-statement-per-edge multi-statement queries in
+//! the Task 9b perf pass (~1.4k edges/s in the pre-rewrite probe; the bulk
+//! path measured ~10.5k edges/s end-to-end — endpoint validation and both
+//! dedup layers included — loading 102k edges on the same corpus, release,
+//! kv-mem — see `docs/benchmarks/2026-07-phase1-db-gate.md`). `INSERT
+//! RELATION` populates the
+//! same record graph pointers `RELATE` does (`surrealdb-core` 3.2.1
+//! `doc/insert.rs` calls `store_edges_data` on this path), so every
+//! traversal read is unaffected.
 //!
 //! ## Duplicate insert = skip, not error
 //!
 //! `insert_edges`' contract: a duplicate per the storage identity
 //! `(source, target, kind, line ?? -1, col ?? -1)` is **silently skipped**,
-//! not an error, and does not count toward the returned insert count. This is
-//! implemented by issuing **one `RELATE ... CONTENT` statement per surviving
-//! edge**, all statements combined into a single multi-statement query per
-//! [`CHUNK`], and inspecting each statement's result individually via
-//! `Response::take(idx)` (per the Task 1 spike: a unique-index violation
-//! resolves the outer `query().await` as `Ok`, the violation only surfaces at
-//! `take`). This was verified against the real embedded engine before relying
-//! on it: a failing statement does **not** abort later statements in the same
-//! multi-statement query (`take` on a later index still succeeds), and two
-//! RELATEs that duplicate each other **within the same query** correctly see
-//! each other (the second is rejected) — sequential-visibility, not
-//! per-statement snapshot isolation. [`is_unique_violation`] recognizes the
-//! violation by matching the error text (`"already contains"`): the public
-//! `surrealdb::Error` wire type does not carry a structured
-//! `IndexExists`-shaped variant for this case (verified against the crate
-//! source — it falls into the generic `Internal` catch-all), only a message
-//! string, same as the Task 1/3 spikes found. A `FOR $item IN $batch { RELATE
-//! ... }` single-statement loop (the pattern `insert_nodes` uses for `UPSERT`)
-//! was deliberately **not** used here: `UPSERT` never conflicts, so per-item
-//! success/failure isn't observable that way, and this store needs exactly
-//! that per-edge observability to skip duplicates without losing the rest of
-//! the chunk.
+//! not an error, and does not count toward the returned insert count.
+//! Duplicates are eliminated *before* the bulk insert, in two steps:
+//!
+//! 1. **Within the call**: a Rust-side identity-key set keeps the first
+//!    occurrence of each identity ([`edge_identity_key`]), matching the old
+//!    per-statement behavior where the first `RELATE` won and the second hit
+//!    the unique index.
+//! 2. **Against the store**: one point-lookup statement per chunk
+//!    (`SELECT VALUE id FROM $eids` over the chunk's deterministic record
+//!    ids — misses simply yield no row) filters out edges that already
+//!    exist. This is only possible because the record key *is* the identity
+//!    key (see above).
+//!
+//! The bulk insert therefore only ever writes brand-new identities, and any
+//! error it reports is a genuine store malfunction that must propagate —
+//! unlike an `INSERT IGNORE`-based variant, which would silently swallow
+//! *every* per-row failure (verified in `surrealdb-core` 3.2.1
+//! `doc/insert.rs`: with `IGNORE` and no `ON DUPLICATE KEY UPDATE` clause,
+//! **any** row error — not just conflicts — becomes a silent skip). That
+//! error-masking is why `IGNORE` was rejected despite being one round trip
+//! cheaper. Failure semantics: a malformed edge fails its kind's statement
+//! within the chunk; earlier statements/chunks are already committed (same
+//! contract as `insert_nodes`).
 //!
 //! ## `SELECT DISTINCT in.field` / `out.field` does not parse
 //!
@@ -96,18 +123,20 @@
 //!
 //! ## Chunking
 //!
-//! `insert_edges` batches the *validated* edges at [`CHUNK`] per round trip,
-//! mirroring `src/nodes.rs`'s `insert_nodes`. Endpoint pre-validation
-//! ([`SurrealStore::existing_node_ids`]) is chunked independently at the same
-//! size for the `IN`-list lookup.
+//! `insert_edges` batches the *validated, deduplicated* edges at [`CHUNK`]
+//! per round trip, mirroring `src/nodes.rs`'s `insert_nodes`. Endpoint
+//! pre-validation ([`SurrealStore::existing_node_ids`]) is chunked
+//! independently at the same size for its `FROM $ids` point lookup.
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 
 use selene_core::{Edge, EdgeKind, NodeKind, Provenance};
-use surrealdb::types::RecordId;
+use surrealdb::types::{
+    Array as SqlArray, Number as SqlNumber, RecordId, RecordIdKey, SurrealValue, Value as SqlValue,
+};
 
-use crate::{NeighborEntry, Result, SurrealStore};
+use crate::{Error, NeighborEntry, Result, SurrealStore};
 
 /// Edges written per [`SurrealStore::insert_edges`] round trip, and node ids
 /// checked per [`SurrealStore::existing_node_ids`] round trip. Mirrors
@@ -118,8 +147,9 @@ const CHUNK: usize = 500;
 /// record-link fields to raw `Node.id` strings via `record::id(..)` (same
 /// pattern `src/nodes.rs` uses for `Node.id` itself), and recovers the
 /// [`EdgeKind`] wire string from the table the row came from via
-/// `record::tb(id)` — required because a query can span a multi-table `FROM`
-/// union (see the module docs).
+/// `record::tb(id)` — required because one query's rows can span several
+/// kind tables, whether point-fetched from a mixed `$eids` array or read
+/// through a multi-table `FROM` union (see the module docs).
 const EDGE_FIELDS: &str = "record::id(in) AS source, record::id(out) AS target, record::tb(id) AS kind, \
      line, col, provenance, metadata";
 
@@ -201,10 +231,11 @@ struct FilePathRow {
     fp: String,
 }
 
-/// Serializes `edge` into its stored content object for `RELATE ... CONTENT`:
-/// `Edge`'s own camelCase JSON shape minus `source`/`target`/`kind` (not
-/// stored fields — they become the RELATE endpoints and the table name), with
-/// `column` renamed to `col` (see the module docs' field-naming note).
+/// Serializes `edge` into its stored content object — the field part of an
+/// `INSERT RELATION` batch item ([`edge_item`]): `Edge`'s own camelCase JSON
+/// shape minus `source`/`target`/`kind` (not stored fields — they become the
+/// `in`/`out` endpoints and the table name), with `column` renamed to `col`
+/// (see the module docs' field-naming note).
 /// `#[serde(skip_serializing_if = "Option::is_none")]` on `Edge`'s optional
 /// fields means an absent `Option` is omitted entirely, never sent as JSON
 /// `null` (SCHEMAFULL `option<T>` columns accept only absent/`NONE`).
@@ -221,12 +252,59 @@ fn edge_content(edge: &Edge) -> Result<serde_json::Value> {
     Ok(value)
 }
 
-/// True if `err` is the edge identity unique-index violation (`"already
-/// contains"` — see the module docs for why this is a text match rather than
-/// a structured error variant). Any other error is a genuine store
-/// malfunction and must propagate.
-fn is_unique_violation(err: &surrealdb::Error) -> bool {
-    err.to_string().contains("already contains")
+/// The deterministic SurrealDB record id of `edge`: an array key
+/// `[source, target, line ?? -1, col ?? -1]` in the edge's kind table. The
+/// key encodes the storage identity (the kind is the table), so an edge's
+/// existence can be probed by a pure point lookup — see the module docs'
+/// record-id section. The `-1` fold matches the schema's `lineKey`/`colKey`
+/// computed columns (`src/schema.rs`).
+fn edge_record_id(edge: &Edge) -> RecordId {
+    let key = RecordIdKey::Array(SqlArray::from(vec![
+        SqlValue::String(edge.source.clone()),
+        SqlValue::String(edge.target.clone()),
+        SqlValue::Number(SqlNumber::Int(edge.line.map_or(-1, i64::from))),
+        SqlValue::Number(SqlNumber::Int(edge.column.map_or(-1, i64::from))),
+    ]));
+    RecordId::new(edge.kind.as_str(), key)
+}
+
+/// The storage-identity key of `edge` —
+/// `(source, target, kind, line ?? -1, col ?? -1)` — used for the Rust-side
+/// within-call dedup (first occurrence wins; see the module docs' duplicate
+/// section). Same identity [`edge_record_id`] encodes, as a hashable tuple.
+fn edge_identity_key(edge: &Edge) -> (String, String, EdgeKind, i64, i64) {
+    (
+        edge.source.clone(),
+        edge.target.clone(),
+        edge.kind,
+        edge.line.map_or(-1, i64::from),
+        edge.column.map_or(-1, i64::from),
+    )
+}
+
+/// One element of the `insert_edges` bulk-`INSERT RELATION` batch bound to a
+/// `$batch<i>` parameter: the [`edge_content`] fields plus `id` (the
+/// deterministic [`edge_record_id`]) and the `in`/`out` endpoint `RecordId`s.
+/// Same `serde_json::Value` → [`SqlValue`] bridge as `src/nodes.rs`'s
+/// `node_item` — the record ids must be real [`RecordId`] values, which
+/// serde-JSON content cannot carry.
+fn edge_item(edge: &Edge) -> Result<SqlValue> {
+    let SqlValue::Object(mut obj) = edge_content(edge)?.into_value() else {
+        return Err(Error::Decode(format!(
+            "edge '{}' -> '{}' did not serialize to an object",
+            edge.source, edge.target
+        )));
+    };
+    obj.insert("id".to_string(), SqlValue::RecordId(edge_record_id(edge)));
+    obj.insert(
+        "in".to_string(),
+        SqlValue::RecordId(RecordId::new("node", edge.source.as_str())),
+    );
+    obj.insert(
+        "out".to_string(),
+        SqlValue::RecordId(RecordId::new("node", edge.target.as_str())),
+    );
+    Ok(SqlValue::Object(obj))
 }
 
 /// The `FROM` table list for `kinds`: the kinds verbatim if non-empty, else
@@ -240,11 +318,6 @@ fn table_list(kinds: &[EdgeKind]) -> Vec<&'static str> {
     }
 }
 
-/// `table_list(kinds)` joined into a `FROM`-clause-ready string.
-fn from_clause(kinds: &[EdgeKind]) -> String {
-    table_list(kinds).join(", ")
-}
-
 /// The `FROM` clause for every [`EdgeKind`] except `contains` — the fixed
 /// kind-set the three file-projection methods use (see their docs).
 fn non_contains_from_clause() -> String {
@@ -256,13 +329,63 @@ fn non_contains_from_clause() -> String {
         .join(", ")
 }
 
+/// Builds the two-statement record-anchored adjacency query the module docs
+/// describe: `LET $eids = array::flatten(array::flatten([(SELECT VALUE
+/// {arrow}{kind} FROM $rids), ...]))` — one graph-pointer subquery per kind
+/// (empty `kinds` = all 12) — then `SELECT {EDGE_FIELDS} FROM $eids`
+/// point-fetching the collected edge records, with an optional extra `WHERE`
+/// filter on that (frontier-sized) row set. `arrow` is `"->"` for outgoing
+/// (the queried records are the edges' `in`) or `"<-"` for incoming (the
+/// edges' `out`). Callers bind `$rids` and take result index 1 — the `LET`
+/// occupies index 0.
+///
+/// The **double** `array::flatten` is load-bearing (verified against the
+/// embedded engine — `array::flatten` strips exactly one level per call):
+/// each subquery yields one edge-id *array per queried record*, and the
+/// bracketed kind-list wraps those in one more level. One flatten pass
+/// leaves nested (and, for edge-less kinds, empty `[]`) elements that make
+/// the point-fetch's `record::tb(id)` projection throw ("Expected `record`
+/// but found `[]`"); the second pass concatenates them into a flat edge-id
+/// list, dropping the empties.
+fn anchored_adjacency_sql(kinds: &[EdgeKind], arrow: &str, extra_where: Option<&str>) -> String {
+    let subqueries = table_list(kinds)
+        .iter()
+        .map(|k| format!("(SELECT VALUE {arrow}{k} FROM $rids)"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut sql = format!(
+        "LET $eids = array::flatten(array::flatten([{subqueries}])); \
+         SELECT {EDGE_FIELDS} FROM $eids"
+    );
+    if let Some(filter) = extra_where {
+        sql.push_str(" WHERE ");
+        sql.push_str(filter);
+    }
+    sql.push(';');
+    sql
+}
+
+/// `ids` as deduplicated `node` [`RecordId`]s, ready to bind as `$rids`. The
+/// dedup matters for the record-anchored reads: a repeated queried id would
+/// repeat every one of its graph-pointer subquery rows, duplicating edges in
+/// `$eids` (the old `WHERE ... IN $rids` scans were naturally immune).
+fn node_rids(ids: &[String]) -> Vec<RecordId> {
+    let mut rids: Vec<RecordId> = ids
+        .iter()
+        .map(|id| RecordId::new("node", id.as_str()))
+        .collect();
+    rids.sort_unstable();
+    rids.dedup();
+    rids
+}
+
 impl SurrealStore {
-    /// Insert `edges`. See the module docs for the CONTENT-write shape, the
-    /// per-statement duplicate-as-skip mechanism, and the chunking. Endpoints
-    /// are pre-validated ([`Self::existing_node_ids`]): an edge whose source
-    /// or target is not a known node id is silently skipped, not an error.
-    /// Returns the number of edges actually inserted (excludes skipped
-    /// missing-endpoint edges and deduped/duplicate edges).
+    /// Insert `edges`. See the module docs for the bulk `INSERT RELATION`
+    /// write shape, the two-layer duplicate-as-skip mechanism, and the
+    /// chunking. Endpoints are pre-validated ([`Self::existing_node_ids`]):
+    /// an edge whose source or target is not a known node id is silently
+    /// skipped, not an error. Returns the number of edges actually inserted
+    /// (excludes skipped missing-endpoint edges and deduped/duplicate edges).
     pub async fn insert_edges(&self, edges: &[Edge]) -> Result<u64> {
         if edges.is_empty() {
             return Ok(0);
@@ -277,114 +400,136 @@ impl SurrealStore {
         referenced_ids.dedup();
         let existing = self.existing_node_ids(&referenced_ids).await?;
 
+        // Endpoint validation first, then within-call dedup: an
+        // invalid-endpoint edge must not claim an identity slot away from a
+        // later valid edge with the same identity.
+        let mut seen = HashSet::new();
         let valid: Vec<&Edge> = edges
             .iter()
             .filter(|e| existing.contains(&e.source) && existing.contains(&e.target))
+            .filter(|e| seen.insert(edge_identity_key(e)))
             .collect();
 
         let mut inserted: u64 = 0;
         for chunk in valid.chunks(CHUNK) {
-            inserted += self.relate_chunk(chunk).await?;
+            inserted += self.insert_edge_chunk(chunk).await?;
         }
         Ok(inserted)
     }
 
-    /// One chunk of [`Self::insert_edges`]: a multi-statement query, one
-    /// `RELATE ... CONTENT` per edge, each statement's result inspected
-    /// individually so a unique-index violation skips only that edge.
-    async fn relate_chunk(&self, chunk: &[&Edge]) -> Result<u64> {
+    /// One chunk of [`Self::insert_edges`]: (1) one `SELECT VALUE id FROM
+    /// $eids` point lookup over the chunk's deterministic record ids filters
+    /// out identities already in the store (misses simply yield no row), then
+    /// (2) one `INSERT RELATION INTO <kind> $batch<i> RETURN VALUE 1`
+    /// statement per kind present writes the brand-new edges in a single
+    /// round trip. Any insert error is a genuine malfunction and propagates —
+    /// duplicates were already eliminated (see the module docs).
+    async fn insert_edge_chunk(&self, chunk: &[&Edge]) -> Result<u64> {
         if chunk.is_empty() {
             return Ok(0);
         }
 
-        let mut sql = String::with_capacity(chunk.len() * 48);
-        for (i, edge) in chunk.iter().enumerate() {
-            sql.push_str(&format!(
-                "RELATE $from{i}->{}->$to{i} CONTENT $content{i};",
-                edge.kind.as_str()
-            ));
+        let eids: Vec<RecordId> = chunk.iter().map(|e| edge_record_id(e)).collect();
+        let mut resp = self
+            .db()
+            .query("SELECT VALUE id FROM $eids")
+            .bind(("eids", eids))
+            .await?;
+        let already: Vec<RecordId> = resp.take(0)?;
+        // mutable_key_type false positive: RecordId transitively reaches a
+        // Regex (interior mutability) through the Value enum, but our keys
+        // are plain string/int array keys and are never mutated.
+        #[allow(clippy::mutable_key_type)]
+        let already: HashSet<RecordId> = already.into_iter().collect();
+
+        let mut by_kind: HashMap<&'static str, Vec<SqlValue>> = HashMap::new();
+        for edge in chunk {
+            if already.contains(&edge_record_id(edge)) {
+                continue;
+            }
+            by_kind
+                .entry(edge.kind.as_str())
+                .or_default()
+                .push(edge_item(edge)?);
+        }
+        if by_kind.is_empty() {
+            return Ok(0);
         }
 
+        // Iterate kinds in EdgeKind::ALL order so the statement layout is
+        // deterministic (HashMap order is not).
+        let mut sql = String::new();
+        let mut batches: Vec<Vec<SqlValue>> = Vec::with_capacity(by_kind.len());
+        for kind in EdgeKind::ALL {
+            if let Some(batch) = by_kind.remove(kind.as_str()) {
+                sql.push_str(&format!(
+                    "INSERT RELATION INTO {} $batch{} RETURN VALUE 1;",
+                    kind.as_str(),
+                    batches.len()
+                ));
+                batches.push(batch);
+            }
+        }
+        let statements = batches.len();
         let mut q = self.db().query(sql);
-        for (i, edge) in chunk.iter().enumerate() {
-            q = q
-                .bind((
-                    format!("from{i}"),
-                    RecordId::new("node", edge.source.as_str()),
-                ))
-                .bind((
-                    format!("to{i}"),
-                    RecordId::new("node", edge.target.as_str()),
-                ))
-                .bind((format!("content{i}"), edge_content(edge)?));
+        for (i, batch) in batches.into_iter().enumerate() {
+            q = q.bind((format!("batch{i}"), batch));
         }
-
         let mut resp = q.await?;
         let mut inserted: u64 = 0;
-        for i in 0..chunk.len() {
-            let result: std::result::Result<Vec<serde_json::Value>, surrealdb::Error> =
-                resp.take(i);
-            match result {
-                Ok(_) => inserted += 1,
-                Err(e) if is_unique_violation(&e) => {}
-                Err(e) => return Err(e.into()),
-            }
+        for i in 0..statements {
+            let rows: Vec<i64> = resp.take(i)?;
+            inserted += rows.len() as u64;
         }
         Ok(inserted)
     }
 
     /// The subset of `ids` that are known node ids, chunked at [`CHUNK`] per
     /// round trip. Used by [`Self::insert_edges`] to pre-validate endpoints
-    /// against the ENFORCED edge tables (which reject a `RELATE` to a missing
-    /// endpoint outright).
+    /// against the ENFORCED edge tables (which reject an insert relating a
+    /// missing endpoint outright).
+    ///
+    /// Selects `FROM $ids` (bound record ids — direct point lookups; a
+    /// missing record simply yields no row), **not** `FROM node WHERE id IN
+    /// $ids`: the `IN`-list form is a full table scan with a per-row linear
+    /// membership test (same trap `src/nodes.rs`'s `get_nodes` documents).
+    /// Input ids are deduped so a repeated id cannot fetch twice.
     async fn existing_node_ids(&self, ids: &[String]) -> Result<HashSet<String>> {
-        let mut out = HashSet::with_capacity(ids.len());
-        for chunk in ids.chunks(CHUNK) {
-            let rids: Vec<RecordId> = chunk
-                .iter()
-                .map(|id| RecordId::new("node", id.as_str()))
-                .collect();
+        let rids = node_rids(ids);
+        let mut out = HashSet::with_capacity(rids.len());
+        for chunk in rids.chunks(CHUNK) {
             let mut resp = self
                 .db()
-                .query("SELECT record::id(id) AS id FROM node WHERE id IN $ids")
-                .bind(("ids", rids))
+                .query("SELECT VALUE record::id(id) FROM $ids")
+                .bind(("ids", chunk.to_vec()))
                 .await?;
-            let rows: Vec<serde_json::Value> = resp.take(0)?;
-            for row in rows {
-                if let Some(id) = row.get("id").and_then(serde_json::Value::as_str) {
-                    out.insert(id.to_string());
-                }
-            }
+            let found: Vec<String> = resp.take(0)?;
+            out.extend(found);
         }
         Ok(out)
     }
 
     /// Outgoing neighbors of `id`. `kinds` empty means every edge kind;
     /// `provenance`, when `Some`, restricts to edges with exactly that
-    /// provenance. `NeighborEntry.node` is the **target** of each edge.
+    /// provenance (a `WHERE` on the record-anchored point-fetch, not a
+    /// scan filter). `NeighborEntry.node` is the **target** of each edge.
     pub async fn outgoing(
         &self,
         id: &str,
         kinds: &[EdgeKind],
         provenance: Option<Provenance>,
     ) -> Result<Vec<NeighborEntry>> {
-        let mut sql = format!(
-            "SELECT {EDGE_FIELDS} FROM {} WHERE in = $rid",
-            from_clause(kinds)
-        );
-        if provenance.is_some() {
-            sql.push_str(" AND provenance = $prov");
-        }
-
+        let extra_where = provenance.is_some().then_some("provenance = $prov");
+        let sql = anchored_adjacency_sql(kinds, "->", extra_where);
         let mut q = self
             .db()
             .query(sql)
-            .bind(("rid", RecordId::new("node", id)));
+            .bind(("rids", vec![RecordId::new("node", id)]));
         if let Some(prov) = provenance {
             q = q.bind(("prov", serde_json::to_value(prov)?));
         }
         let mut resp = q.await?;
-        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
         let edges = decode_edges(rows)?;
         self.attach_neighbors(edges, EdgeEndpoint::Target).await
     }
@@ -394,16 +539,13 @@ impl SurrealStore {
     /// carried over from the CodeGraph query surface). `NeighborEntry.node`
     /// is the **source** of each edge.
     pub async fn incoming(&self, id: &str, kinds: &[EdgeKind]) -> Result<Vec<NeighborEntry>> {
-        let sql = format!(
-            "SELECT {EDGE_FIELDS} FROM {} WHERE out = $rid",
-            from_clause(kinds)
-        );
+        let sql = anchored_adjacency_sql(kinds, "<-", None);
         let mut resp = self
             .db()
             .query(sql)
-            .bind(("rid", RecordId::new("node", id)))
+            .bind(("rids", vec![RecordId::new("node", id)]))
             .await?;
-        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
         let edges = decode_edges(rows)?;
         self.attach_neighbors(edges, EdgeEndpoint::Source).await
     }
@@ -421,16 +563,9 @@ impl SurrealStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let sql = format!(
-            "SELECT {EDGE_FIELDS} FROM {} WHERE in IN $rids",
-            from_clause(kinds)
-        );
-        let rids: Vec<RecordId> = ids
-            .iter()
-            .map(|id| RecordId::new("node", id.as_str()))
-            .collect();
-        let mut resp = self.db().query(sql).bind(("rids", rids)).await?;
-        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        let sql = anchored_adjacency_sql(kinds, "->", None);
+        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
         let edges = decode_edges(rows)?;
         self.group_neighbors(edges, EdgeEndpoint::Target).await
     }
@@ -444,16 +579,9 @@ impl SurrealStore {
         if ids.is_empty() {
             return Ok(HashMap::new());
         }
-        let sql = format!(
-            "SELECT {EDGE_FIELDS} FROM {} WHERE out IN $rids",
-            from_clause(kinds)
-        );
-        let rids: Vec<RecordId> = ids
-            .iter()
-            .map(|id| RecordId::new("node", id.as_str()))
-            .collect();
-        let mut resp = self.db().query(sql).bind(("rids", rids)).await?;
-        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        let sql = anchored_adjacency_sql(kinds, "<-", None);
+        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
         let edges = decode_edges(rows)?;
         self.group_neighbors(edges, EdgeEndpoint::Source).await
     }
@@ -461,20 +589,18 @@ impl SurrealStore {
     /// Every edge of `kinds` (empty = all) with both endpoints in `ids`, as
     /// one query. Used to recover connectivity among an already-known node
     /// set (e.g. after a BFS visit set is fixed).
+    ///
+    /// Anchors on the outgoing pointers of `ids` and applies `out IN $rids`
+    /// as a `WHERE` on that (frontier-sized) point-fetched row set — the
+    /// `IN`-list test runs over the ids' own edges only, never as a
+    /// whole-table scan predicate.
     pub async fn edges_between(&self, ids: &[String], kinds: &[EdgeKind]) -> Result<Vec<Edge>> {
         if ids.is_empty() {
             return Ok(Vec::new());
         }
-        let sql = format!(
-            "SELECT {EDGE_FIELDS} FROM {} WHERE in IN $rids AND out IN $rids",
-            from_clause(kinds)
-        );
-        let rids: Vec<RecordId> = ids
-            .iter()
-            .map(|id| RecordId::new("node", id.as_str()))
-            .collect();
-        let mut resp = self.db().query(sql).bind(("rids", rids)).await?;
-        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        let sql = anchored_adjacency_sql(kinds, "->", Some("out IN $rids"));
+        let mut resp = self.db().query(sql).bind(("rids", node_rids(ids))).await?;
+        let rows: Vec<serde_json::Value> = resp.take(1)?;
         decode_edges(rows)
     }
 

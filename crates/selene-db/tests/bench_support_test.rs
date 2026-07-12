@@ -43,8 +43,16 @@ fn edge_endpoints_all_exist() {
     let (nodes, edges) = SyntheticGraph::generate(9, 8_000);
     let ids: HashSet<&str> = nodes.iter().map(|n| n.id.as_str()).collect();
     for e in &edges {
-        assert!(ids.contains(e.source.as_str()), "dangling source {}", e.source);
-        assert!(ids.contains(e.target.as_str()), "dangling target {}", e.target);
+        assert!(
+            ids.contains(e.source.as_str()),
+            "dangling source {}",
+            e.source
+        );
+        assert!(
+            ids.contains(e.target.as_str()),
+            "dangling target {}",
+            e.target
+        );
     }
 }
 
@@ -60,7 +68,10 @@ fn shape_counts_are_realistic() {
 
     // ~5 edges/node (accept 3..8 to leave headroom for the RNG mix).
     let ratio = edges.len() as f64 / nodes.len() as f64;
-    assert!(ratio >= 3.0 && ratio <= 9.0, "edges/node = {ratio:.2}, want ~5");
+    assert!(
+        ratio >= 3.0 && ratio <= 9.0,
+        "edges/node = {ratio:.2}, want ~5"
+    );
 
     // All four languages appear.
     let langs: HashSet<&str> = nodes.iter().map(|n| n.language.as_str()).collect();
@@ -71,7 +82,10 @@ fn shape_counts_are_realistic() {
     // ~30% docstrings (accept a wide band).
     let with_doc = nodes.iter().filter(|n| n.docstring.is_some()).count();
     let doc_frac = with_doc as f64 / nodes.len() as f64;
-    assert!(doc_frac >= 0.15 && doc_frac <= 0.45, "docstring frac = {doc_frac:.2}");
+    assert!(
+        doc_frac >= 0.15 && doc_frac <= 0.45,
+        "docstring frac = {doc_frac:.2}"
+    );
 
     // FTS term is present in many node names (analyzer splits camelCase).
     let term = landmarks.fts_term.to_lowercase();
@@ -79,7 +93,10 @@ fn shape_counts_are_realistic() {
         .iter()
         .filter(|n| n.name.to_lowercase().contains(&term))
         .count();
-    assert!(hits > 50, "FTS term '{term}' only in {hits} names, want broad overlap");
+    assert!(
+        hits > 50,
+        "FTS term '{term}' only in {hits} names, want broad overlap"
+    );
 }
 
 /// The reserved clean corridor is a genuine deep chain: head reaches tail in
@@ -96,7 +113,10 @@ fn deep_chain_exists_and_is_clean() {
     let mut calls_out: HashMap<&str, Vec<&str>> = HashMap::new();
     for e in &edges {
         if e.kind == EdgeKind::Calls {
-            calls_out.entry(e.source.as_str()).or_default().push(e.target.as_str());
+            calls_out
+                .entry(e.source.as_str())
+                .or_default()
+                .push(e.target.as_str());
         }
     }
     let hops = shortest_calls_hops(&calls_out, &landmarks.deep_head_id, &landmarks.deep_tail_id);
@@ -130,11 +150,7 @@ fn call_like(e: &Edge) -> bool {
 }
 
 /// BFS shortest-hop over a `calls` adjacency (small, corridor-scoped).
-fn shortest_calls_hops(
-    calls_out: &HashMap<&str, Vec<&str>>,
-    from: &str,
-    to: &str,
-) -> Option<u32> {
+fn shortest_calls_hops(calls_out: &HashMap<&str, Vec<&str>>, from: &str, to: &str) -> Option<u32> {
     let mut frontier = vec![from];
     let mut seen: HashSet<&str> = HashSet::from([from]);
     let mut depth = 0u32;

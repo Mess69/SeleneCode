@@ -100,9 +100,8 @@
 //!
 //! One `SELECT ... WHERE nameLower = $nN LIMIT $capN;` statement per (deduped)
 //! name, all combined into a single query per [`CHUNK`] — the same
-//! multi-statement-batch shape `src/edges.rs`'s `relate_chunk` and
-//! `src/unresolved.rs`'s keyed-statement helpers use, since SurrealQL has no
-//! per-key-capped composite batch primitive. Results are deduped by node id
+//! multi-statement-batch shape `src/unresolved.rs`'s keyed-statement helpers
+//! use, since SurrealQL has no per-key-capped composite batch primitive. Results are deduped by node id
 //! across per-name statements (two queried names can both match the same
 //! node only if names collide case-insensitively, but the dedup is cheap
 //! insurance either way).

@@ -170,8 +170,8 @@ impl SurrealStore {
     /// Delete refs matching `(from_node_id, reference_name)` keys, chunked at
     /// [`CHUNK`]. One `DELETE ... WHERE fromNodeId = $fromN AND
     /// referenceName = $nameN` statement per key, combined into a single
-    /// multi-statement query per chunk (mirrors `src/edges.rs`'s
-    /// `relate_chunk` — SurrealQL has no composite-tuple `IN` list).
+    /// multi-statement query per chunk (SurrealQL has no composite-tuple
+    /// `IN` list).
     pub async fn delete_resolved(&self, keys: &[(String, String)]) -> Result<()> {
         self.run_keyed_statements(
             keys,
