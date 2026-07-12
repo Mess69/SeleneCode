@@ -34,7 +34,7 @@ selene-cli       = { path = "crates/selene-cli" }
 # NOT fetch entries no crate references, so the heavier ones below sit here as
 # documented intent until a crate adopts them. Versions follow
 # docs/reference/rust-ecosystem-2026-07.md (verified 2026-07-12); grammar crates
-# are pinned exact (=x.y.z) in selene-extract when adopted.
+# are pinned exact (=x.y.z) below (Phase 2 Task 1), adopted by selene-extract.
 serde        = { version = "1", features = ["derive"] }
 serde_json   = "1"
 thiserror    = "2"
@@ -51,6 +51,24 @@ tokio        = { version = "1", features = ["macros", "rt-multi-thread", "sync",
 rayon        = "1"
 # Parsing / extraction  (PRD §3: selene-extract)
 tree-sitter  = "0.26"
+# v0 grammar crates — pinned EXACT (=x.y.z) per rust-ecosystem-2026-07.md §3:
+# node-type names are extraction contracts, so a silent grammar bump would
+# drift every language config. Only selene-extract opts in. All depend on
+# `tree-sitter-language` (LanguageFn) at runtime, not on a core version, so
+# they load on core 0.26 (ABI 13–15). kotlin uses the -ng lineage (the legacy
+# tree-sitter-kotlin crate pins core <0.23 — dead end, §3).
+tree-sitter-typescript = "=0.23.2"   # TS + TSX (one crate, two LanguageFns)
+tree-sitter-javascript = "=0.25.0"
+tree-sitter-python     = "=0.25.0"
+tree-sitter-rust       = "=0.24.2"
+tree-sitter-go         = "=0.25.0"
+tree-sitter-java       = "=0.23.5"
+tree-sitter-kotlin-ng  = "=1.1.0"
+tree-sitter-c          = "=0.24.2"
+tree-sitter-cpp        = "=0.23.4"
+tree-sitter-c-sharp    = "=0.23.5"
+tree-sitter-php        = "=0.24.2"   # use the `php` fn (mixed HTML/PHP), not `php_only`
+tree-sitter-ruby       = "=0.23.1"
 # Storage + search  (PRD §5): SurrealDB embedded behind the GraphStore trait.
 # Decision 2026-07-12: sole backend, SurrealQL-max, no permissive fallback.
 # kv backends (kv-surrealkv / kv-rocksdb) are selected by selene-db features.
