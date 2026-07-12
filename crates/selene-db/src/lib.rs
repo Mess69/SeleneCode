@@ -19,6 +19,7 @@
 //! (PRD §4 data model, §5 storage). Ported-knowledge reference:
 //! `docs/reference/from-codegraph/maps/db-graph-search.md`.
 
+mod edges;
 mod error;
 mod nodes;
 mod schema;

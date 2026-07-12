@@ -1,6 +1,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
-//! `SurrealStore` open/init + schema DDL contract tests (Task 3), plus node
-//! CRUD + lookups (Task 4, see the `node_*` tests below).
+//! `SurrealStore` open/init + schema DDL contract tests (Task 3), node CRUD +
+//! lookups (Task 4), plus edge operations + file projections (Task 5, see the
+//! `edge_*`/`cross_file_*`/`dependent_*`/`dependency_*` tests below).
 //!
 //! Proves the four load-bearing guarantees of the schema layer:
 //! 1. a fresh in-memory store applies the schema and reports version 1;
@@ -15,7 +16,7 @@
 //! rephrased against the typed API.
 
 #[cfg(feature = "kv-mem")]
-use selene_core::{Node, NodeKind, Visibility};
+use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance, Visibility};
 use selene_db::SurrealStore;
 
 /// A minimal SCHEMAFULL-valid `node` record body for a given key, used to give
@@ -454,4 +455,451 @@ async fn get_nodes_empty_ids_short_circuits_to_empty_map() {
         found.is_empty(),
         "empty input must yield an empty map (short-circuit, no query)"
     );
+}
+
+// =============================================================================
+// Edge operations + file projections (Task 5)
+// =============================================================================
+
+/// A minimal `Edge`: `kind` given, every optional field `None`.
+#[cfg(feature = "kv-mem")]
+fn edge(source: &str, target: &str, kind: EdgeKind) -> Edge {
+    Edge {
+        source: source.to_string(),
+        target: target.to_string(),
+        kind,
+        metadata: None,
+        line: None,
+        column: None,
+        provenance: None,
+    }
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_edges_byte_identical_dedups_same_call_and_across_calls() {
+    let store = fresh_store().await;
+    store
+        .insert_nodes(&[node("a", "src/a.rs"), node("b", "src/a.rs")])
+        .await
+        .unwrap();
+
+    let e = Edge {
+        line: Some(10),
+        column: Some(2),
+        ..edge("function:a", "function:b", EdgeKind::Calls)
+    };
+
+    // Same call: two byte-identical edges collapse to one insert.
+    let inserted = store.insert_edges(&[e.clone(), e.clone()]).await.unwrap();
+    assert_eq!(
+        inserted, 1,
+        "byte-identical edges in one call must dedup to 1"
+    );
+
+    // Across calls: re-submitting the same edge inserts zero more.
+    let inserted_again = store.insert_edges(std::slice::from_ref(&e)).await.unwrap();
+    assert_eq!(
+        inserted_again, 0,
+        "re-submitting the same edge must insert 0"
+    );
+
+    let out = store.outgoing("function:a", &[], None).await.unwrap();
+    assert_eq!(out.len(), 1, "exactly one edge must persist");
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_edges_metadata_difference_does_not_break_dedup() {
+    let store = fresh_store().await;
+    store
+        .insert_nodes(&[node("a", "src/a.rs"), node("b", "src/a.rs")])
+        .await
+        .unwrap();
+
+    let base = Edge {
+        line: Some(5),
+        column: Some(1),
+        ..edge("function:a", "function:b", EdgeKind::References)
+    };
+    let e1 = Edge {
+        metadata: Some(serde_json::json!({ "resolvedBy": "exact-match" })),
+        ..base.clone()
+    };
+    let e2 = Edge {
+        metadata: Some(serde_json::json!({ "resolvedBy": "import" })),
+        ..base
+    };
+
+    let inserted = store.insert_edges(&[e1, e2]).await.unwrap();
+    assert_eq!(
+        inserted, 1,
+        "metadata is not part of the identity key — still dedups"
+    );
+
+    let out = store.outgoing("function:a", &[], None).await.unwrap();
+    assert_eq!(out.len(), 1);
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_edges_distinct_line_keeps_both() {
+    let store = fresh_store().await;
+    store
+        .insert_nodes(&[node("a", "src/a.rs"), node("b", "src/a.rs")])
+        .await
+        .unwrap();
+
+    let e1 = Edge {
+        line: Some(1),
+        column: Some(1),
+        ..edge("function:a", "function:b", EdgeKind::Calls)
+    };
+    let e2 = Edge {
+        line: Some(2),
+        column: Some(1),
+        ..edge("function:a", "function:b", EdgeKind::Calls)
+    };
+
+    let inserted = store.insert_edges(&[e1, e2]).await.unwrap();
+    assert_eq!(inserted, 2, "distinct call sites are not duplicates");
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_edges_no_line_col_dedups_via_null_fold() {
+    let store = fresh_store().await;
+    store
+        .insert_nodes(&[node("a", "src/a.rs"), node("b", "src/a.rs")])
+        .await
+        .unwrap();
+
+    let e = edge("function:a", "function:b", EdgeKind::Imports);
+    let inserted = store.insert_edges(&[e.clone(), e]).await.unwrap();
+    assert_eq!(
+        inserted, 1,
+        "two positionless edges between the same endpoints must fold to one"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_edges_skips_missing_endpoints_but_keeps_valid_ones() {
+    let store = fresh_store().await;
+    store
+        .insert_nodes(&[
+            node("source", "src/a.rs"),
+            node("target", "src/a.rs"),
+            node("other", "src/a.rs"),
+        ])
+        .await
+        .unwrap();
+
+    let inserted = store
+        .insert_edges(&[
+            edge("function:source", "function:target", EdgeKind::Calls),
+            edge(
+                "function:source",
+                "function:missing-target",
+                EdgeKind::Calls,
+            ),
+            edge(
+                "function:missing-source",
+                "function:other",
+                EdgeKind::References,
+            ),
+        ])
+        .await
+        .unwrap();
+    assert_eq!(inserted, 1, "only the valid edge must be counted");
+
+    let out = store.outgoing("function:source", &[], None).await.unwrap();
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].edge.target, "function:target");
+    assert_eq!(out[0].node.id, "function:target");
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn outgoing_incoming_round_trip_kinds_and_provenance() {
+    let store = fresh_store().await;
+    let a = node("a", "src/a.rs");
+    let b = node("b", "src/a.rs");
+    let c = node("c", "src/a.rs");
+    store
+        .insert_nodes(&[a.clone(), b.clone(), c.clone()])
+        .await
+        .unwrap();
+
+    let calls_ab = Edge {
+        line: Some(1),
+        column: Some(2),
+        provenance: Some(Provenance::TreeSitter),
+        ..edge(&a.id, &b.id, EdgeKind::Calls)
+    };
+    let refs_ab = Edge {
+        provenance: Some(Provenance::Heuristic),
+        metadata: Some(serde_json::json!({ "synthesizedBy": "callback" })),
+        ..edge(&a.id, &b.id, EdgeKind::References)
+    };
+    let imports_ac = edge(&a.id, &c.id, EdgeKind::Imports);
+
+    let inserted = store
+        .insert_edges(&[calls_ab.clone(), refs_ab.clone(), imports_ac.clone()])
+        .await
+        .unwrap();
+    assert_eq!(inserted, 3);
+
+    // empty kinds = all kinds.
+    let mut all_out = store.outgoing(&a.id, &[], None).await.unwrap();
+    assert_eq!(all_out.len(), 3);
+    all_out.sort_by(|x, y| {
+        x.edge
+            .target
+            .cmp(&y.edge.target)
+            .then(x.edge.kind.as_str().cmp(y.edge.kind.as_str()))
+    });
+
+    // subset kinds filter.
+    let calls_only = store
+        .outgoing(&a.id, &[EdgeKind::Calls], None)
+        .await
+        .unwrap();
+    assert_eq!(calls_only.len(), 1);
+    assert_eq!(calls_only[0].edge, calls_ab);
+    assert_eq!(
+        calls_only[0].node, b,
+        "outgoing neighbor node is the TARGET"
+    );
+
+    // provenance filter, outgoing only.
+    let heuristic_only = store
+        .outgoing(&a.id, &[], Some(Provenance::Heuristic))
+        .await
+        .unwrap();
+    assert_eq!(heuristic_only.len(), 1);
+    assert_eq!(heuristic_only[0].edge, refs_ab);
+
+    // incoming has no provenance param; b receives both calls_ab and refs_ab.
+    let mut into_b = store.incoming(&b.id, &[]).await.unwrap();
+    assert_eq!(into_b.len(), 2);
+    into_b.sort_by(|x, y| x.edge.kind.as_str().cmp(y.edge.kind.as_str()));
+    assert!(
+        into_b.iter().all(|n| n.node == a),
+        "incoming neighbor node is the SOURCE"
+    );
+    assert!(into_b.iter().any(|n| n.edge == calls_ab));
+    assert!(into_b.iter().any(|n| n.edge == refs_ab));
+
+    let into_c = store.incoming(&c.id, &[EdgeKind::Imports]).await.unwrap();
+    assert_eq!(into_c.len(), 1);
+    assert_eq!(into_c[0].edge, imports_ac);
+    assert_eq!(into_c[0].node, a);
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn outgoing_batch_and_incoming_batch_match_single_id_calls() {
+    let store = fresh_store().await;
+    let a = node("a", "src/a.rs");
+    let b = node("b", "src/a.rs");
+    let c = node("c", "src/a.rs");
+    store
+        .insert_nodes(&[a.clone(), b.clone(), c.clone()])
+        .await
+        .unwrap();
+
+    let ab = edge(&a.id, &b.id, EdgeKind::Calls);
+    let bc = edge(&b.id, &c.id, EdgeKind::Calls);
+    store.insert_edges(&[ab.clone(), bc.clone()]).await.unwrap();
+
+    let batch = store
+        .outgoing_batch(&[a.id.clone(), b.id.clone()], &[])
+        .await
+        .unwrap();
+    assert_eq!(batch.len(), 2, "one entry per queried id with results");
+    assert_eq!(
+        batch.get(&a.id).unwrap(),
+        &store.outgoing(&a.id, &[], None).await.unwrap()
+    );
+    assert_eq!(
+        batch.get(&b.id).unwrap(),
+        &store.outgoing(&b.id, &[], None).await.unwrap()
+    );
+
+    let in_batch = store
+        .incoming_batch(&[b.id.clone(), c.id.clone()], &[])
+        .await
+        .unwrap();
+    assert_eq!(in_batch.len(), 2);
+    assert_eq!(
+        in_batch.get(&b.id).unwrap(),
+        &store.incoming(&b.id, &[]).await.unwrap()
+    );
+    assert_eq!(
+        in_batch.get(&c.id).unwrap(),
+        &store.incoming(&c.id, &[]).await.unwrap()
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn edges_between_only_returns_edges_with_both_endpoints_in_set() {
+    let store = fresh_store().await;
+    let a = node("a", "src/a.rs");
+    let b = node("b", "src/a.rs");
+    let c = node("c", "src/a.rs");
+    let d = node("d", "src/a.rs");
+    store
+        .insert_nodes(&[a.clone(), b.clone(), c.clone(), d.clone()])
+        .await
+        .unwrap();
+
+    let ab = edge(&a.id, &b.id, EdgeKind::Calls);
+    let bc = edge(&b.id, &c.id, EdgeKind::Calls);
+    let cd = edge(&c.id, &d.id, EdgeKind::Calls);
+    let ad = edge(&a.id, &d.id, EdgeKind::References);
+    store
+        .insert_edges(&[ab.clone(), bc.clone(), cd.clone(), ad.clone()])
+        .await
+        .unwrap();
+
+    let mut between = store
+        .edges_between(&[a.id.clone(), b.id.clone(), c.id.clone()], &[])
+        .await
+        .unwrap();
+    between.sort_by(|x, y| x.source.cmp(&y.source));
+    assert_eq!(
+        between,
+        vec![ab, bc],
+        "only edges fully inside {{a,b,c}} qualify"
+    );
+}
+
+/// Shared 2-file fixture for the cross-file/dependency-projection tests:
+/// f1 has a container `f1Parent` containing method `f1fn`, plus a same-file
+/// `f1Other` function that calls `f1fn` (same-file, must be excluded from
+/// cross-file results even though its kind isn't `contains`). f2 has two
+/// functions that each reach into f1: `f2fn1` --calls--> `f1fn` and `f2fn2`
+/// --references--> `f1fn` (both cross-file).
+#[cfg(feature = "kv-mem")]
+async fn cross_file_fixture(store: &SurrealStore) -> (Node, Node) {
+    let mut f1_parent = node("f1Parent", "src/f1.rs");
+    f1_parent.id = "class:f1Parent".to_string();
+    f1_parent.kind = NodeKind::Class;
+    let mut f1_fn = node("f1fn", "src/f1.rs");
+    f1_fn.id = "method:f1fn".to_string();
+    f1_fn.kind = NodeKind::Method;
+    let mut f1_other = node("f1Other", "src/f1.rs");
+    f1_other.id = "function:f1Other".to_string();
+    let mut f2_fn1 = node("f2fn1", "src/f2.rs");
+    f2_fn1.id = "function:f2fn1".to_string();
+    let mut f2_fn2 = node("f2fn2", "src/f2.rs");
+    f2_fn2.id = "function:f2fn2".to_string();
+
+    store
+        .insert_nodes(&[
+            f1_parent.clone(),
+            f1_fn.clone(),
+            f1_other.clone(),
+            f2_fn1.clone(),
+            f2_fn2.clone(),
+        ])
+        .await
+        .unwrap();
+
+    store
+        .insert_edges(&[
+            edge(&f1_parent.id, &f1_fn.id, EdgeKind::Contains), // same-file, contains
+            edge(&f1_other.id, &f1_fn.id, EdgeKind::Calls),     // same-file, non-contains
+            edge(&f2_fn1.id, &f1_fn.id, EdgeKind::Calls),       // cross-file
+            edge(&f2_fn2.id, &f1_fn.id, EdgeKind::References),  // cross-file
+        ])
+        .await
+        .unwrap();
+
+    (f1_fn, f2_fn1)
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn cross_file_incoming_with_target_excludes_same_file_and_contains() {
+    let store = fresh_store().await;
+    let (f1_fn, _) = cross_file_fixture(&store).await;
+
+    let mut result = store
+        .cross_file_incoming_with_target("src/f1.rs")
+        .await
+        .unwrap();
+    assert_eq!(
+        result.len(),
+        2,
+        "only the two cross-file, non-contains edges qualify"
+    );
+    result.sort_by(|x, y| x.0.source.cmp(&y.0.source));
+
+    assert_eq!(result[0].0.source, "function:f2fn1");
+    assert_eq!(result[0].0.kind, EdgeKind::Calls);
+    assert_eq!(result[0].1, f1_fn.name);
+    assert_eq!(result[0].2, f1_fn.kind);
+
+    assert_eq!(result[1].0.source, "function:f2fn2");
+    assert_eq!(result[1].0.kind, EdgeKind::References);
+    assert_eq!(result[1].1, f1_fn.name);
+    assert_eq!(result[1].2, f1_fn.kind);
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn dependent_and_dependency_file_paths_are_sorted_deduped_and_never_self() {
+    let store = fresh_store().await;
+    cross_file_fixture(&store).await;
+
+    let dependents = store.dependent_file_paths("src/f1.rs").await.unwrap();
+    assert_eq!(
+        dependents,
+        vec!["src/f2.rs".to_string()],
+        "two edges from src/f2.rs collapse to one deduped path; src/f1.rs itself is excluded"
+    );
+
+    let dependencies = store.dependency_file_paths("src/f2.rs").await.unwrap();
+    assert_eq!(dependencies, vec!["src/f1.rs".to_string()]);
+
+    // A file with no cross-file relationships yields an empty (not missing) list.
+    assert!(
+        store
+            .dependent_file_paths("src/nope.rs")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .dependency_file_paths("src/f1.rs")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn relate_smoke_over_every_edge_kind() {
+    let store = fresh_store().await;
+    let a = node("smokeA", "src/a.rs");
+    let b = node("smokeB", "src/a.rs");
+    store.insert_nodes(&[a.clone(), b.clone()]).await.unwrap();
+
+    for kind in EdgeKind::ALL {
+        let inserted = store
+            .insert_edges(&[edge(&a.id, &b.id, kind)])
+            .await
+            .unwrap();
+        assert_eq!(inserted, 1, "RELATE into the {kind:?} table must succeed");
+
+        let out = store.outgoing(&a.id, &[kind], None).await.unwrap();
+        assert_eq!(out.len(), 1, "{kind:?} must round-trip via outgoing");
+        assert_eq!(out[0].edge.kind, kind);
+        assert_eq!(out[0].node.id, b.id);
+    }
 }
