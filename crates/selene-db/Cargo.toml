@@ -27,17 +27,37 @@ tokio = { workspace = true, optional = true }
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = { workspace = true }
+# Bench harness (PRD §5.3 gate — `benches/bulk_and_traverse.rs`). Default
+# features off drops the heavy `plotters`/`rayon` pull-ins; `async_tokio` gives
+# criterion's `to_async`/`iter_custom` a tokio `Runtime`, `cargo_bench_support`
+# is the `cargo bench` CLI harness (`[[bench]] harness = false`).
+criterion = { version = "0.8", default-features = false, features = [
+    "async_tokio",
+    "cargo_bench_support",
+] }
 
 # kv backends forward 1:1 to surrealdb's same-named features.
 #   kv-mem       — embedded in-memory engine (`Mem`); `SurrealStore::in_memory`.
 #   kv-surrealkv — on-disk SurrealKV engine (preferred by `open`).
 #   kv-rocksdb   — on-disk RocksDB engine (fallback for `open` when surrealkv off).
 # `open()` is only compiled when at least one disk backend is enabled.
+#   bench-support — compiles the deterministic synthetic-graph generator
+#                   (`src/bench_support.rs`) used by the criterion benches and
+#                   their determinism/shape test. Pure Rust (no extra deps); off
+#                   by default so it never ships in a normal build.
 [features]
 default = ["kv-mem", "kv-surrealkv"]
 kv-mem = ["surrealdb/kv-mem"]
 kv-surrealkv = ["surrealdb/kv-surrealkv", "dep:tokio"]
 kv-rocksdb = ["surrealdb/kv-rocksdb", "dep:tokio"]
+bench-support = []
+
+# One criterion bench target. `harness = false` hands `fn main` to
+# `criterion_main!`; run with the generator feature on:
+#   cargo bench -p selene-db --features bench-support
+[[bench]]
+name = "bulk_and_traverse"
+harness = false
 
 [lints]
 workspace = true

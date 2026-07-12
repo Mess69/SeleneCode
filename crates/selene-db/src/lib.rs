@@ -19,6 +19,8 @@
 //! (PRD §4 data model, §5 storage). Ported-knowledge reference:
 //! `docs/reference/from-codegraph/maps/db-graph-search.md`.
 
+#[cfg(feature = "bench-support")]
+pub mod bench_support;
 mod edges;
 mod error;
 mod files;
