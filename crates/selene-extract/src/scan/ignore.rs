@@ -168,7 +168,7 @@ fn default_ignore_patterns() -> Vec<String> {
 /// [`read_gitignore_lines`], which pre-filters real `.gitignore` files the
 /// same way). The builder is rooted at `""` so relative paths are matched
 /// as-is.
-fn matcher_from_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Gitignore {
+pub(crate) fn matcher_from_lines<'a>(lines: impl IntoIterator<Item = &'a str>) -> Gitignore {
     let mut builder = GitignoreBuilder::new("");
     for line in lines {
         // An uncompilable line is dropped; the rest are kept (#682). The

@@ -29,4 +29,7 @@ pub use helpers::{
 };
 pub use language::{Language, detect_language, is_file_level_only, is_source_file};
 pub use scan::ignore::{ScopeIgnore, ScopeOverrides};
+pub use scan::{
+    ScanOverrides, discover_embedded_repo_roots, find_unindexed_ignored_repos, scan_directory,
+};
 pub use types::{ExtractionResult, MAX_FILE_SIZE, UnresolvedReference};
