@@ -10,6 +10,7 @@
 
 pub(crate) mod go;
 pub(crate) mod java;
+pub(crate) mod kotlin;
 pub(crate) mod python;
 pub(crate) mod rust_lang;
 
@@ -213,6 +214,7 @@ pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
         Language::Go => Some(&go::GoRules),
         Language::Rust => Some(&rust_lang::RustRules),
         Language::Java => Some(&java::JavaRules),
+        Language::Kotlin => Some(&kotlin::KotlinRules),
         _ => None,
     }
 }

@@ -1,0 +1,182 @@
+---
+source: crates/selene-extract/tests/lang_kotlin_test.rs
+expression: r
+---
+nodes:
+  - id: "file:Repo.kt"
+    kind: file
+    name: Repo.kt
+    qualifiedName: Repo.kt
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 1
+    endLine: 23
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "namespace:a06936c057209ab1fc29a88c41c52987"
+    kind: namespace
+    name: demo.repo
+    qualifiedName: demo.repo
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 1
+    endLine: 1
+    startColumn: 0
+    endColumn: 17
+    updatedAt: "[ts]"
+  - id: "import:1da92b027537879197572d795848c48c"
+    kind: import
+    name: kotlin.collections.List
+    qualifiedName: "demo.repo::kotlin.collections.List"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 3
+    endLine: 3
+    startColumn: 0
+    endColumn: 30
+    signature: import kotlin.collections.List
+    updatedAt: "[ts]"
+  - id: "class:86708e9031ff4d933d979615e063667a"
+    kind: class
+    name: Repo
+    qualifiedName: "demo.repo::Repo"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 6
+    endLine: 16
+    startColumn: 0
+    endColumn: 1
+    docstring: Repo doc
+    visibility: public
+    updatedAt: "[ts]"
+  - id: "constant:9bdd354d204eb4a485ac70a767acc189"
+    kind: constant
+    name: DEFAULT
+    qualifiedName: "demo.repo::Repo::DEFAULT"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 8
+    endLine: 8
+    startColumn: 8
+    endColumn: 23
+    updatedAt: "[ts]"
+  - id: "field:9ab7eb1114c6d4921c2d303e748940ac"
+    kind: field
+    name: label
+    qualifiedName: "demo.repo::Repo::label"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 11
+    endLine: 11
+    startColumn: 4
+    endColumn: 27
+    signature: "val label: String"
+    updatedAt: "[ts]"
+  - id: "method:30dd09d142d59519876eaae0f0e7cb18"
+    kind: method
+    name: fetch
+    qualifiedName: "demo.repo::Repo::fetch"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 13
+    endLine: 15
+    startColumn: 4
+    endColumn: 5
+    signature: "(id: Int): Repo?"
+    visibility: public
+    isAsync: true
+    isStatic: false
+    returnType: Repo
+    updatedAt: "[ts]"
+  - id: "interface:97ec8a6366e063acc3fbe3d88879badd"
+    kind: interface
+    name: Transformer
+    qualifiedName: "demo.repo::Transformer"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 18
+    endLine: 20
+    startColumn: 0
+    endColumn: 1
+    updatedAt: "[ts]"
+  - id: "method:fc28a60fbf5dbc9bdd9ff3af247002cf"
+    kind: method
+    name: transform
+    qualifiedName: "demo.repo::Transformer::transform"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 19
+    endLine: 19
+    startColumn: 4
+    endColumn: 30
+    signature: "(x: Int): Int"
+    visibility: public
+    isAsync: false
+    isStatic: false
+    returnType: Int
+    updatedAt: "[ts]"
+  - id: "function:beebaac0be88ab662dcb194af80cee31"
+    kind: function
+    name: platform
+    qualifiedName: "demo.repo::platform"
+    filePath: Repo.kt
+    language: kotlin
+    startLine: 22
+    endLine: 22
+    startColumn: 0
+    endColumn: 29
+    signature: "(): String"
+    visibility: public
+    isAsync: false
+    isStatic: false
+    decorators:
+      - expect
+    returnType: String
+    updatedAt: "[ts]"
+edges:
+  - source: "file:Repo.kt"
+    target: "namespace:a06936c057209ab1fc29a88c41c52987"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:a06936c057209ab1fc29a88c41c52987"
+    target: "import:1da92b027537879197572d795848c48c"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:a06936c057209ab1fc29a88c41c52987"
+    target: "class:86708e9031ff4d933d979615e063667a"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:86708e9031ff4d933d979615e063667a"
+    target: "constant:9bdd354d204eb4a485ac70a767acc189"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:86708e9031ff4d933d979615e063667a"
+    target: "field:9ab7eb1114c6d4921c2d303e748940ac"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:86708e9031ff4d933d979615e063667a"
+    target: "method:30dd09d142d59519876eaae0f0e7cb18"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:a06936c057209ab1fc29a88c41c52987"
+    target: "interface:97ec8a6366e063acc3fbe3d88879badd"
+    kind: contains
+    provenance: tree-sitter
+  - source: "interface:97ec8a6366e063acc3fbe3d88879badd"
+    target: "method:fc28a60fbf5dbc9bdd9ff3af247002cf"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:a06936c057209ab1fc29a88c41c52987"
+    target: "function:beebaac0be88ab662dcb194af80cee31"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "namespace:a06936c057209ab1fc29a88c41c52987"
+    referenceName: kotlin.collections.List
+    referenceKind: imports
+    line: 3
+    column: 0
+errors: []
+durationMs: "[ms]"
