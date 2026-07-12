@@ -17,6 +17,8 @@
 
 #[cfg(feature = "kv-mem")]
 use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance, Visibility};
+#[cfg(feature = "kv-mem")]
+use selene_db::FileRecord;
 use selene_db::SurrealStore;
 
 /// A minimal SCHEMAFULL-valid `node` record body for a given key, used to give
@@ -902,4 +904,405 @@ async fn relate_smoke_over_every_edge_kind() {
         assert_eq!(out[0].edge.kind, kind);
         assert_eq!(out[0].node.id, b.id);
     }
+}
+
+// =============================================================================
+// File records + single-file re-index protocol (Task 6)
+// =============================================================================
+
+/// A `FileRecord` with the given path, hash, timestamp, node count and
+/// language; `size`/`modified_at` are fixed and `errors` empty.
+#[cfg(feature = "kv-mem")]
+fn file_record(
+    path: &str,
+    hash: &str,
+    language: &str,
+    indexed_at: i64,
+    node_count: u32,
+) -> FileRecord {
+    FileRecord {
+        path: path.to_string(),
+        content_hash: hash.to_string(),
+        language: language.to_string(),
+        size: 128,
+        modified_at: indexed_at,
+        indexed_at,
+        node_count,
+        errors: vec![],
+    }
+}
+
+/// Every `unresolved_ref` row, projected to its fields (bypasses the not-yet-
+/// built Task 7 read API via the raw `db()` handle).
+#[cfg(feature = "kv-mem")]
+async fn read_unresolved(store: &SurrealStore) -> Vec<serde_json::Value> {
+    let mut resp = store
+        .db()
+        .query(
+            "SELECT fromNodeId, referenceName, referenceKind, line, column, \
+             filePath, language, status, nameTail FROM unresolved_ref",
+        )
+        .await
+        .unwrap();
+    resp.take(0).unwrap()
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn upsert_file_round_trips_and_replaces_same_path() {
+    let store = fresh_store().await;
+
+    // A non-empty `errors` array exercises the FLEXIBLE `array<object>` column
+    // as part of the whole-struct round trip.
+    let mut f = file_record("src/a.rs", "hash-v1", "rust", 1000, 3);
+    f.errors = vec![serde_json::json!({ "line": 4, "message": "unterminated string" })];
+    store.upsert_file(&f).await.unwrap();
+    assert_eq!(
+        store.get_file("src/a.rs").await.unwrap(),
+        Some(f),
+        "whole-struct round trip, including the FLEXIBLE errors column"
+    );
+
+    // Upsert the same path with a newer hash/timestamp → replace, not duplicate.
+    let f2 = file_record("src/a.rs", "hash-v2", "rust", 2000, 5);
+    store.upsert_file(&f2).await.unwrap();
+    assert_eq!(
+        store.get_file("src/a.rs").await.unwrap(),
+        Some(f2),
+        "newer content must win"
+    );
+    assert_eq!(
+        store.all_files().await.unwrap().len(),
+        1,
+        "same-path upsert replaces, never duplicates"
+    );
+
+    assert_eq!(store.get_file("src/missing.rs").await.unwrap(), None);
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn all_files_last_indexed_and_distinct_languages() {
+    let store = fresh_store().await;
+
+    // Empty store: no rows, no last-indexed, no languages.
+    assert!(store.all_files().await.unwrap().is_empty());
+    assert_eq!(store.last_indexed_at().await.unwrap(), None);
+    assert!(store.distinct_file_languages().await.unwrap().is_empty());
+
+    store
+        .upsert_file(&file_record("src/a.rs", "h1", "rust", 1000, 1))
+        .await
+        .unwrap();
+    store
+        .upsert_file(&file_record("src/b.ts", "h2", "typescript", 3000, 1))
+        .await
+        .unwrap();
+    store
+        .upsert_file(&file_record("src/c.rs", "h3", "rust", 2000, 1))
+        .await
+        .unwrap();
+
+    assert_eq!(store.all_files().await.unwrap().len(), 3);
+    assert_eq!(
+        store.last_indexed_at().await.unwrap(),
+        Some(3000),
+        "the max indexedAt across files"
+    );
+
+    let langs = store.distinct_file_languages().await.unwrap();
+    let expected: std::collections::BTreeSet<String> =
+        ["rust".to_string(), "typescript".to_string()].into();
+    assert_eq!(langs, expected, "distinct, sorted language set");
+}
+
+/// Builds the delete-cascade fixture: file `src/f1.rs` with two nodes
+/// (`class:P` contains `method:M`), a same-file internal `contains` edge, a
+/// cross-file `calls` edge from `src/f2.rs`'s `function:C` into `method:M`,
+/// and an `unresolved_ref` rooted at `method:M`. Returns nothing; the caller
+/// re-derives ids by their literal strings.
+#[cfg(feature = "kv-mem")]
+async fn delete_cascade_fixture(store: &SurrealStore) {
+    let mut parent = node("P", "src/f1.rs");
+    parent.id = "class:P".to_string();
+    parent.kind = NodeKind::Class;
+    let mut method = node("M", "src/f1.rs");
+    method.id = "method:M".to_string();
+    method.kind = NodeKind::Method;
+    let mut caller = node("C", "src/f2.rs");
+    caller.id = "function:C".to_string();
+
+    store
+        .insert_nodes(&[parent.clone(), method.clone(), caller.clone()])
+        .await
+        .unwrap();
+    store
+        .insert_edges(&[
+            edge("class:P", "method:M", EdgeKind::Contains), // internal
+            edge("function:C", "method:M", EdgeKind::Calls), // cross-file incoming
+        ])
+        .await
+        .unwrap();
+    store
+        .db()
+        .query(
+            "CREATE unresolved_ref CONTENT { fromNodeId: 'method:M', \
+             referenceName: 'Foo.bar', referenceKind: 'call', candidates: [], \
+             filePath: 'src/f1.rs', language: 'rust', status: 'pending', nameTail: 'bar' }",
+        )
+        .await
+        .unwrap()
+        .check()
+        .unwrap();
+    store
+        .upsert_file(&file_record("src/f1.rs", "h", "rust", 1, 2))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_file_cascades_nodes_edges_and_unresolved() {
+    let store = fresh_store().await;
+    delete_cascade_fixture(&store).await;
+
+    store.delete_file("src/f1.rs").await.unwrap();
+
+    // f1's nodes are gone; f2's node survives.
+    assert!(store.get_node("class:P").await.unwrap().is_none());
+    assert!(store.get_node("method:M").await.unwrap().is_none());
+    assert!(store.get_node("function:C").await.unwrap().is_some());
+
+    // No dangling edges readable from the surviving f2 node.
+    assert!(
+        store
+            .outgoing("function:C", &[], None)
+            .await
+            .unwrap()
+            .is_empty(),
+        "the cross-file calls edge must be cascaded away with its target"
+    );
+
+    // f1's unresolved ref is gone; the file row is gone.
+    assert!(read_unresolved(&store).await.is_empty());
+    assert!(store.get_file("src/f1.rs").await.unwrap().is_none());
+
+    // Deleting a missing path is a no-op, not an error.
+    store.delete_file("src/never.rs").await.unwrap();
+}
+
+/// Establishes an initial graph where `src/f2.rs`'s `function:C` reaches into
+/// `src/f1.rs`'s `method:M` (id `method:M@10`, line 10) via a `calls` edge with
+/// the given `metadata`. Returns the caller node so tests can assert incoming.
+#[cfg(feature = "kv-mem")]
+async fn reindex_fixture(store: &SurrealStore, edge_metadata: Option<serde_json::Value>) {
+    let mut method = node("M", "src/f1.rs");
+    method.id = "method:M@10".to_string();
+    method.kind = NodeKind::Method;
+    method.start_line = 10;
+    let mut caller = node("C", "src/f2.rs");
+    caller.id = "function:C".to_string();
+
+    store
+        .insert_nodes(&[method.clone(), caller.clone()])
+        .await
+        .unwrap();
+    let cross = Edge {
+        line: Some(7),
+        column: Some(3),
+        metadata: edge_metadata,
+        ..edge("function:C", "method:M@10", EdgeKind::Calls)
+    };
+    store.insert_edges(&[cross]).await.unwrap();
+    store
+        .upsert_file(&file_record("src/f1.rs", "old", "rust", 1, 1))
+        .await
+        .unwrap();
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_file_extraction_reattaches_cross_file_incoming_to_new_id() {
+    let store = fresh_store().await;
+    reindex_fixture(&store, None).await;
+
+    // Re-extract f1: the same method M, but shifted to line 20 → a NEW node id.
+    let mut method_v2 = node("M", "src/f1.rs");
+    method_v2.id = "method:M@20".to_string();
+    method_v2.kind = NodeKind::Method;
+    method_v2.start_line = 20;
+
+    let stats = store
+        .replace_file_extraction(
+            "src/f1.rs",
+            &[method_v2],
+            &[],
+            &[],
+            &file_record("src/f1.rs", "new", "rust", 2, 1),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats.incoming_reattached, 1);
+    assert_eq!(stats.incoming_resurrected, 0);
+    assert_eq!(stats.incoming_dropped, 0);
+    assert_eq!(stats.nodes_inserted, 1);
+
+    // The cross-file edge now lands on the NEW node id.
+    assert!(store.get_node("method:M@10").await.unwrap().is_none());
+    let into_new = store.incoming("method:M@20", &[]).await.unwrap();
+    assert_eq!(into_new.len(), 1, "edge re-attached to the new node id");
+    assert_eq!(into_new[0].node.id, "function:C");
+    assert_eq!(into_new[0].edge.kind, EdgeKind::Calls);
+    assert_eq!(
+        into_new[0].edge.line,
+        Some(7),
+        "original line/col preserved on re-attach"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_file_extraction_resurrects_unmatched_stamped_edge() {
+    let store = fresh_store().await;
+    reindex_fixture(
+        &store,
+        Some(serde_json::json!({ "refName": "Helper.M", "refKind": "call" })),
+    )
+    .await;
+
+    // Re-extract f1 WITHOUT method M → the incoming edge cannot re-attach.
+    let mut other = node("Other", "src/f1.rs");
+    other.id = "function:Other".to_string();
+
+    let stats = store
+        .replace_file_extraction(
+            "src/f1.rs",
+            &[other],
+            &[],
+            &[],
+            &file_record("src/f1.rs", "new", "rust", 2, 1),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats.incoming_resurrected, 1);
+    assert_eq!(stats.incoming_reattached, 0);
+    assert_eq!(stats.incoming_dropped, 0);
+
+    let refs = read_unresolved(&store).await;
+    assert_eq!(refs.len(), 1, "one resurrected unresolved ref");
+    let r = &refs[0];
+    assert_eq!(r["fromNodeId"], "function:C");
+    assert_eq!(r["referenceName"], "Helper.M");
+    assert_eq!(r["referenceKind"], "call");
+    assert_eq!(r["status"], "pending");
+    assert_eq!(r["nameTail"], "M", "last '.'-separated segment");
+    assert_eq!(r["line"], 7);
+    assert_eq!(
+        r["filePath"], "src/f2.rs",
+        "denormalized from the source node's file"
+    );
+    assert_eq!(r["language"], "rust");
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_file_extraction_drops_unmatched_unstamped_edge() {
+    let store = fresh_store().await;
+    // Edge carries metadata but NOT the refName/refKind stamp.
+    reindex_fixture(
+        &store,
+        Some(serde_json::json!({ "synthesizedBy": "callback" })),
+    )
+    .await;
+
+    let mut other = node("Other", "src/f1.rs");
+    other.id = "function:Other".to_string();
+
+    let stats = store
+        .replace_file_extraction(
+            "src/f1.rs",
+            &[other],
+            &[],
+            &[],
+            &file_record("src/f1.rs", "new", "rust", 2, 1),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(stats.incoming_dropped, 1);
+    assert_eq!(stats.incoming_resurrected, 0);
+    assert_eq!(stats.incoming_reattached, 0);
+    assert!(
+        read_unresolved(&store).await.is_empty(),
+        "an unstamped unmatched edge is dropped, not resurrected"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_file_extraction_writes_file_row_last_with_node_count() {
+    let store = fresh_store().await;
+    reindex_fixture(&store, None).await;
+
+    let mut method_v2 = node("M", "src/f1.rs");
+    method_v2.id = "method:M@20".to_string();
+    method_v2.kind = NodeKind::Method;
+    method_v2.start_line = 20;
+    let mut helper = node("H", "src/f1.rs");
+    helper.id = "function:H".to_string();
+
+    let file = file_record("src/f1.rs", "new-hash", "rust", 5000, 2);
+    let stats = store
+        .replace_file_extraction("src/f1.rs", &[method_v2, helper], &[], &[], &file)
+        .await
+        .unwrap();
+    assert_eq!(stats.nodes_inserted, 2);
+
+    // The file row is present after the protocol, carrying the new metadata.
+    let stored = store.get_file("src/f1.rs").await.unwrap().unwrap();
+    assert_eq!(stored.content_hash, "new-hash");
+    assert_eq!(stored.node_count, 2);
+    assert_eq!(stored.indexed_at, 5000);
+    assert_eq!(store.last_indexed_at().await.unwrap(), Some(5000));
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn replace_file_extraction_ambiguous_match_picks_earliest_start_line() {
+    let store = fresh_store().await;
+    reindex_fixture(&store, None).await;
+
+    // Two re-extracted nodes share (name "M", kind Method) at different lines.
+    // The re-attach must deterministically pick the EARLIER start line.
+    let mut early = node("M", "src/f1.rs");
+    early.id = "method:M@15".to_string();
+    early.kind = NodeKind::Method;
+    early.start_line = 15;
+    let mut late = node("M", "src/f1.rs");
+    late.id = "method:M@40".to_string();
+    late.kind = NodeKind::Method;
+    late.start_line = 40;
+
+    // Insert in "late first" order to prove ordering isn't insertion order.
+    let stats = store
+        .replace_file_extraction(
+            "src/f1.rs",
+            &[late, early],
+            &[],
+            &[],
+            &file_record("src/f1.rs", "new", "rust", 2, 2),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stats.incoming_reattached, 1);
+
+    let into_early = store.incoming("method:M@15", &[]).await.unwrap();
+    assert_eq!(into_early.len(), 1, "attached to the earliest-line node");
+    assert_eq!(into_early[0].node.id, "function:C");
+    assert!(
+        store.incoming("method:M@40", &[]).await.unwrap().is_empty(),
+        "the later-line node receives nothing"
+    );
 }

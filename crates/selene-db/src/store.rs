@@ -132,6 +132,47 @@ pub struct GraphStats {
     pub languages: BTreeMap<String, u64>,
 }
 
+/// Outcome counts from the single-file re-index protocol
+/// (`SurrealStore::replace_file_extraction`, a port of CodeGraph's
+/// `storeExtractionResult`).
+///
+/// `nodes_inserted`/`edges_inserted` are the fresh rows written for the
+/// re-extracted file. The three `incoming_*` counters partition the
+/// **cross-file incoming** edges that were snapshotted before the file's old
+/// nodes were deleted — deleting those nodes cascades their edges away, so
+/// each snapshotted edge is afterwards either:
+/// - **reattached** — a re-extracted node with the same `(name, kind)` was
+///   found and the edge was re-`RELATE`d onto its new id;
+/// - **resurrected** — no match, but the edge's `metadata` carried a stamped
+///   `refName`/`refKind`, so it becomes a `pending` [`UnresolvedRef`] for the
+///   cross-file resolver (`#899`/`#1240`); or
+/// - **dropped** — no match and no stamp, so it is discarded.
+///
+/// `incoming_reattached + incoming_resurrected + incoming_dropped` equals the
+/// snapshot size, except that a reattached edge which duplicates an existing
+/// one is deduped away by `insert_edges` and therefore not counted in
+/// `incoming_reattached`.
+///
+/// This struct is **not yet** on the [`GraphStore`] trait — the protocol is an
+/// inherent method on the SurrealDB backend; Task 10 may lift both onto the
+/// trait.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReplaceStats {
+    /// Nodes written for the re-extracted file (valid, required-field-complete).
+    pub nodes_inserted: u64,
+    /// Edges written for the re-extracted file (after endpoint validation and
+    /// identity dedup — see [`GraphStore::insert_edges`]).
+    pub edges_inserted: u64,
+    /// Snapshotted cross-file incoming edges re-attached to a re-extracted node.
+    pub incoming_reattached: u64,
+    /// Snapshotted cross-file incoming edges resurrected as pending
+    /// [`UnresolvedRef`]s (unmatched, but carrying a stamped `refName`/`refKind`).
+    pub incoming_resurrected: u64,
+    /// Snapshotted cross-file incoming edges dropped (unmatched and unstamped).
+    pub incoming_dropped: u64,
+}
+
 // =============================================================================
 // Traversal results
 // =============================================================================

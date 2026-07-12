@@ -21,6 +21,7 @@
 
 mod edges;
 mod error;
+mod files;
 mod nodes;
 mod schema;
 mod store;
@@ -29,7 +30,7 @@ mod surreal;
 pub use error::{Error, Result};
 pub use schema::SCHEMA_VERSION;
 pub use store::{
-    Direction, FileRecord, GraphStats, GraphStore, NeighborEntry, RefStatus, SearchCandidate,
-    Subgraph, TraversalOptions, UnresolvedRef,
+    Direction, FileRecord, GraphStats, GraphStore, NeighborEntry, RefStatus, ReplaceStats,
+    SearchCandidate, Subgraph, TraversalOptions, UnresolvedRef,
 };
 pub use surreal::{DATABASE_DIRNAME, SurrealStore};
