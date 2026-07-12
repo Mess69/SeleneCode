@@ -88,8 +88,12 @@ mod util;
 
 pub use error::{Error, Result};
 pub use schema::SCHEMA_VERSION;
+// The extraction row records live in `selene-core` (their producer is
+// `selene-extract`, which must not depend on this crate); re-exported here
+// so store-side code and tests keep the `selene_db::FileRecord` paths.
+pub use selene_core::{FileRecord, RefStatus, UnresolvedRef};
 pub use store::{
-    Direction, FileRecord, GraphStats, GraphStore, NeighborEntry, RefStatus, ReplaceStats,
-    SearchCandidate, Subgraph, TraversalOptions, UnresolvedRef,
+    Direction, GraphStats, GraphStore, NeighborEntry, ReplaceStats, SearchCandidate, Subgraph,
+    TraversalOptions,
 };
 pub use surreal::{DATABASE_DIRNAME, SurrealStore};
