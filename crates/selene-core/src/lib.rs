@@ -1,8 +1,10 @@
 //! # selene-core
 //!
 //! Shared domain types for SeleneCode's code-intelligence graph: the node and
-//! edge kinds, provenance, and the [`Node`] / [`Edge`] records that every other
-//! crate reads and writes.
+//! edge kinds, provenance, the [`Node`] / [`Edge`] records that every other
+//! crate reads and writes, and the extraction row records ([`FileRecord`],
+//! [`UnresolvedRef`], [`RefStatus`]) that `selene-extract` produces and
+//! `selene-db` stores.
 //!
 //! Ported faithfully from the CodeGraph TypeScript implementation
 //! (`src/types.ts`). These wire strings are the contract shared by extractors,
@@ -310,6 +312,108 @@ pub struct Edge {
 }
 
 // =============================================================================
+// Extraction row records (produced by selene-extract, stored by selene-db)
+// =============================================================================
+//
+// These live here — not in the storage crate — because `selene-extract`
+// (Phase 2) *produces* them: an extraction result is `(Vec<Node>, Vec<Edge>,
+// Vec<UnresolvedRef>, FileRecord)`, and the extractor must not depend on the
+// storage crate to name its own output. `selene-db` re-exports all three at
+// its crate root, so store-side code and tests keep their existing paths.
+
+/// A tracked source file: the unit of incremental re-indexing.
+///
+/// `path` is the store's primary key. `content_hash` lets a caller skip
+/// re-extracting a file whose content hasn't changed. `node_count` is a
+/// denormalized count of the nodes currently attributed to this file.
+/// `errors` carries structured extraction diagnostics (parse errors, etc.) —
+/// an opaque JSON array, not interpreted by the store.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRecord {
+    /// Path relative to the project root; primary key.
+    pub path: String,
+    /// Content hash used to detect an unchanged file and skip re-extraction.
+    pub content_hash: String,
+    /// Programming language, as classified by `selene-extract`.
+    pub language: String,
+    /// File size in bytes.
+    pub size: u64,
+    /// Filesystem modification time (unix millis).
+    pub modified_at: i64,
+    /// When this file was last (re-)indexed (unix millis).
+    pub indexed_at: i64,
+    /// Number of nodes currently attributed to this file.
+    pub node_count: u32,
+    /// Structured extraction diagnostics for this file (opaque to the store).
+    pub errors: Vec<serde_json::Value>,
+}
+
+/// The resolution status of an [`UnresolvedRef`].
+///
+/// Serializes to the wire strings `"pending"` / `"failed"` (ported verbatim
+/// from the CodeGraph TS schema's `unresolved_refs.status` column).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RefStatus {
+    /// Not yet attempted, or eligible for another resolution pass.
+    Pending,
+    /// Resolution was attempted and did not succeed; kept for the store's
+    /// bounded retry pipeline (`retryable_failed`) rather than dropped.
+    Failed,
+}
+
+impl RefStatus {
+    /// The canonical wire string — identical to the serde representation and
+    /// to what the store persists in the `status` column. Queries bind this
+    /// instead of restringing `'pending'`/`'failed'` literals (the same
+    /// discipline as [`NodeKind::as_str`]/[`EdgeKind::as_str`]).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            RefStatus::Pending => "pending",
+            RefStatus::Failed => "failed",
+        }
+    }
+}
+
+/// A reference (call, import, type use, …) whose target symbol could not be
+/// resolved at extraction time, held for a later cross-file resolution pass.
+///
+/// `(from_node_id, reference_name)` is the natural key the store's
+/// `delete_resolved`/`mark_failed` operations match on.
+/// `file_path`/`language` are denormalized from the source node so the
+/// resolver can batch by file without a join. `name_tail` is the last
+/// dot/`::`-separated segment of `reference_name`, used to index failed
+/// retries by their most specific segment.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UnresolvedRef {
+    /// Id of the node that holds this unresolved reference.
+    pub from_node_id: String,
+    /// The name being referenced (possibly qualified).
+    pub reference_name: String,
+    /// What kind of reference this is (e.g. `"call"`, `"type"`,
+    /// `"function_ref"` — a superset of [`EdgeKind`]; never itself an edge
+    /// kind once resolved).
+    pub reference_kind: String,
+    /// Line of the reference site, if known.
+    pub line: Option<u32>,
+    /// Column of the reference site, if known.
+    pub column: Option<u32>,
+    /// Candidate target nodes gathered so far (opaque JSON, scored upstream).
+    pub candidates: Vec<serde_json::Value>,
+    /// File path of the referencing node (denormalized).
+    pub file_path: String,
+    /// Language of the referencing node (denormalized).
+    pub language: String,
+    /// Current resolution status.
+    pub status: RefStatus,
+    /// Last segment of `reference_name` (e.g. `"calculateTotal"` out of
+    /// `"MathHelper.calculateTotal"`).
+    pub name_tail: String,
+}
+
+// =============================================================================
 // Errors
 // =============================================================================
 
@@ -393,5 +497,16 @@ mod tests {
     fn unknown_kind_is_an_error() {
         assert!(NodeKind::from_str("nope").is_err());
         assert!(EdgeKind::from_str("nope").is_err());
+    }
+
+    /// `RefStatus::as_str` must stay identical to the serde wire strings the
+    /// store persists in the `status` column — store queries bind `as_str()`,
+    /// so a drift between the two would silently match nothing.
+    #[test]
+    fn ref_status_as_str_matches_serde_representation() {
+        for status in [RefStatus::Pending, RefStatus::Failed] {
+            let json = serde_json::to_string(&status).unwrap();
+            assert_eq!(json, format!("\"{}\"", status.as_str()));
+        }
     }
 }

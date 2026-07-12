@@ -7,6 +7,65 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+indexmap = { workspace = true }
+# Feature-gated per `[features]` below (no engine hardcoded here) so callers pick
+# the kv backend(s) they package. `default` pulls the in-memory engine
+# (`Mem`, for the spike + fast tests) plus the on-disk RocksDB engine that
+# `SurrealStore::open` uses for `.selene/graph.db`.
+surrealdb = { workspace = true }
+# Required (not optional) since the deferred-FTS bulk-load mode (Task 9d):
+# `bulk_load_finish`'s index-build poll sleeps between `INFO FOR INDEX` reads
+# on *every* engine, kv-mem included (the on-disk `open()` lock-retry backoff
+# sleeps too). Costs nothing extra — surrealdb's embedded engines already
+# require a tokio runtime, so tokio is in every build's dependency graph anyway.
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+# Bench harness (PRD §5.3 gate — `benches/bulk_and_traverse.rs`). Default
+# features off drops the heavy `plotters`/`rayon` pull-ins; `async_tokio` gives
+# criterion's `to_async`/`iter_custom` a tokio `Runtime`, `cargo_bench_support`
+# is the `cargo bench` CLI harness (`[[bench]] harness = false`).
+criterion = { version = "0.8", default-features = false, features = [
+    "async_tokio",
+    "cargo_bench_support",
+] }
+
+# kv backends forward 1:1 to surrealdb's same-named features.
+#   kv-mem       — embedded in-memory engine (`Mem`); `SurrealStore::in_memory`.
+#   kv-rocksdb   — on-disk RocksDB engine; the DEFAULT disk backend (§5.3 gate,
+#                  2026-07-12: 15.3x faster bulk load than surrealkv — 141.7 s
+#                  vs 2,161.8 s per 100k-node load — with equivalent traversal
+#                  reads; docs/benchmarks/2026-07-phase1-db-gate.md). Cost: a
+#                  ~7.5 min C++ first build and a fatter binary.
+#   kv-surrealkv — on-disk SurrealKV engine; OPTIONAL (measured pathologically
+#                  slow on this bulk write load: ~36 min per 100k-node load,
+#                  sync/IO-bound). When explicitly compiled in, `open()` still
+#                  prefers it over RocksDB — enabling the feature is an opt-in
+#                  (e.g. to open an existing SurrealKV store).
+# `open()` is only compiled when at least one disk backend is enabled.
+#   bench-support — compiles the deterministic synthetic-graph generator
+#                   (`src/bench_support.rs`) used by the criterion benches and
+#                   their determinism/shape test. Pure Rust (no extra deps); off
+#                   by default so it never ships in a normal build.
+[features]
+default = ["kv-mem", "kv-rocksdb"]
+kv-mem = ["surrealdb/kv-mem"]
+kv-surrealkv = ["surrealdb/kv-surrealkv"]
+kv-rocksdb = ["surrealdb/kv-rocksdb"]
+bench-support = []
+
+# One criterion bench target. `harness = false` hands `fn main` to
+# `criterion_main!`; run with the generator feature on:
+#   cargo bench -p selene-db --features bench-support
+[[bench]]
+name = "bulk_and_traverse"
+harness = false
 
 [lints]
 workspace = true

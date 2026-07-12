@@ -6,7 +6,7 @@ SeleneCode parses any supported codebase with tree-sitter, stores symbols / edge
 
 SeleneCode is the Rust port of [CodeGraph](../codegraph): same value proposition (fast structural/flow answers with zero Read/Grep), rebuilt for a single static binary, native tree-sitter, and a graph-native data model.
 
-> **Status: scaffold.** The workspace, the data model (`selene-core`), and the docs are in place; the layer crates are stubs. The target architecture is fully specified in the PRD below.
+> **Status: early.** The workspace, the data model (`selene-core`), and the storage layer (`selene-db`, Phase 1) are implemented; the remaining layer crates are stubs. The target architecture is fully specified in the PRD below.
 
 ## Documentation
 
@@ -21,7 +21,7 @@ A Cargo workspace of focused crates (see PRD §3):
 | Crate | Responsibility |
 |---|---|
 | `selene-core` | Domain types: `NodeKind` (22), `EdgeKind` (12), `Provenance`, `Node`, `Edge`, errors. **Implemented.** |
-| `selene-db` | `GraphStore` trait + embedded SurrealDB backend + FTS (permissive fallback: IndraDB/redb + Tantivy) |
+| `selene-db` | `GraphStore` trait + embedded SurrealDB backend + FTS (SurrealQL-max, 2026-07-12: fallback backend dropped; default disk engine RocksDB per the §5.3 gate). **Implemented.** |
 | `selene-extract` | Native tree-sitter extraction + standalone extractors; Rayon parallelism |
 | `selene-resolve` | Reference/import/name resolution, frameworks, dynamic-dispatch synthesizers |
 | `selene-graph` | Traversal (BFS/DFS, impact radius, path-finding) + query manager |
@@ -53,5 +53,6 @@ tagged `heuristic` with `synthesizedBy` / `registeredAt` in their metadata.
 
 Intended license: **MIT OR Apache-2.0** (permissive / OSI). Add `LICENSE-MIT`
 and `LICENSE-APACHE` before publishing. The one DB dependency with a non-OSI
-license (SurrealDB, BSL 1.1 — free to embed) sits behind the `GraphStore` trait
-with a fully-permissive fallback; see PRD §5.
+license (SurrealDB, BSL 1.1 — free to embed) sits behind the `GraphStore`
+trait; the previously-planned fully-permissive fallback backend was dropped
+with the locked SurrealQL-max decision (2026-07-12); see PRD §5.

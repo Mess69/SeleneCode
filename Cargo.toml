@@ -40,6 +40,11 @@ serde_json   = "1"
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"
+# Ordered map: preserves traversal/visit order (e.g. `Subgraph.nodes`) where a
+# plain HashMap would not — the Rust analog of the CodeGraph TS traverser's
+# reliance on `Map` insertion order (see
+# docs/reference/from-codegraph/maps/db-graph-search.md "Rust port notes").
+indexmap     = { version = "2", features = ["serde"] }
 # Async runtime (surrealdb + rmcp are tokio-based); rayon handles data-parallel
 # parsing and must never run on tokio worker threads (bridge via spawn_blocking).
 tokio        = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "io-std", "net", "process", "signal"] }
