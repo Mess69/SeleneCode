@@ -42,17 +42,24 @@
 //! run sees the file as un-indexed and re-runs the whole protocol — a partial
 //! re-index never masquerades as complete. This ordering is load-bearing; do
 //! not move `upsert_file` earlier.
+//!
+//! ## Unresolved-ref helpers live in `src/unresolved.rs` (Task 7)
+//!
+//! This module used to carry private `unresolved_content`/`name_tail`/
+//! `insert_unresolved_rows` helpers (Task 6, written before the
+//! unresolved-ref CRUD section of `GraphStore` had a home). They are now the
+//! public [`SurrealStore::insert_unresolved`] and `pub(crate)`
+//! `crate::unresolved::name_tail` in `src/unresolved.rs`;
+//! [`SurrealStore::build_resurrected`] and [`SurrealStore::replace_file_extraction`]
+//! below call those instead of duplicating them.
 
 use std::collections::{BTreeSet, HashMap};
 
 use selene_core::{Edge, Node, NodeKind};
 use surrealdb::types::RecordId;
 
+use crate::unresolved::name_tail;
 use crate::{FileRecord, RefStatus, ReplaceStats, Result, SurrealStore, UnresolvedRef};
-
-/// Rows written per file/unresolved round trip. Mirrors `src/nodes.rs`'s
-/// `CHUNK` (bounds single-statement/bind-array size).
-const CHUNK: usize = 500;
 
 /// Column list for every `file` read, in `FileRecord`'s field order. `path` is
 /// a stored field (also the record key — see the module docs), so no
@@ -68,21 +75,6 @@ fn file_content(f: &FileRecord) -> Result<serde_json::Value> {
     serde_json::to_value(f).map_err(crate::Error::from)
 }
 
-/// Serializes an [`UnresolvedRef`] for storage, dropping any `null`-valued key.
-///
-/// `UnresolvedRef`'s `line`/`column` are `Option<u32>` **without**
-/// `skip_serializing_if`, so a `None` serializes to JSON `null`; the SCHEMAFULL
-/// `option<int>` columns accept only absent/`NONE`, never `NULL` (the Task 1/3
-/// finding that `node_content`/`edge_content` also work around). Retaining only
-/// non-null keys folds a `None` position to an absent field.
-fn unresolved_content(r: &UnresolvedRef) -> Result<serde_json::Value> {
-    let mut value = serde_json::to_value(r)?;
-    if let serde_json::Value::Object(map) = &mut value {
-        map.retain(|_, v| !v.is_null());
-    }
-    Ok(value)
-}
-
 /// The stamped `(refName, refKind)` an edge carries for resurrection, or `None`
 /// if either is absent/non-string. Synthesized/heuristic edges stamp these in
 /// `metadata` so an unmatched cross-file edge can be resurrected as an
@@ -92,16 +84,6 @@ fn ref_stamp(edge: &Edge) -> Option<(String, String)> {
     let ref_name = obj.get("refName")?.as_str()?.to_string();
     let ref_kind = obj.get("refKind")?.as_str()?.to_string();
     Some((ref_name, ref_kind))
-}
-
-/// The `name_tail` of a (possibly qualified) reference name: the last
-/// `.`-separated segment (`"Helper.M"` → `"M"`, `"bare"` → `"bare"`).
-fn name_tail(reference_name: &str) -> String {
-    reference_name
-        .rsplit('.')
-        .next()
-        .unwrap_or(reference_name)
-        .to_string()
 }
 
 impl SurrealStore {
@@ -260,10 +242,10 @@ impl SurrealStore {
         // (surviving, cross-file) source node.
         let resurrected = self.build_resurrected(&resurrect_pending).await?;
         let incoming_resurrected = resurrected.len() as u64;
-        self.insert_unresolved_rows(&resurrected).await?;
+        self.insert_unresolved(&resurrected).await?;
 
         // (f) Insert the caller-supplied unresolved refs.
-        self.insert_unresolved_rows(unresolved).await?;
+        self.insert_unresolved(unresolved).await?;
 
         // (g) Write the file row LAST (crash-safety — see the module docs).
         self.upsert_file(file_record).await?;
@@ -326,24 +308,5 @@ impl SurrealStore {
                 }
             })
             .collect())
-    }
-
-    /// Insert `refs` into the `unresolved_ref` table (auto-generated record
-    /// ids). A private helper for the cascade-resurrection + caller-supplied
-    /// inserts the re-index protocol needs; the public unresolved-ref CRUD is
-    /// Task 7. Chunked and null-folded like the node/edge writers.
-    async fn insert_unresolved_rows(&self, refs: &[UnresolvedRef]) -> Result<()> {
-        for chunk in refs.chunks(CHUNK) {
-            let rows = chunk
-                .iter()
-                .map(unresolved_content)
-                .collect::<Result<Vec<_>>>()?;
-            self.db()
-                .query("FOR $r IN $rows { CREATE unresolved_ref CONTENT $r; };")
-                .bind(("rows", rows))
-                .await?
-                .check()?;
-        }
-        Ok(())
     }
 }

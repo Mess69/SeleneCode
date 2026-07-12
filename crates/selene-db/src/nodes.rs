@@ -60,7 +60,11 @@ const CHUNK: usize = 500;
 /// order, with the record id resolved to its raw stored key via
 /// `record::id(id) AS id` (see the module docs' "Record id ↔ `Node.id`
 /// mapping" section for why this replaces a naive `id` projection).
-const NODE_FIELDS: &str = "\
+///
+/// `pub(crate)`: `src/search.rs` (Task 7) reuses this verbatim for its
+/// candidate-fetch projections instead of duplicating the 20-field list,
+/// which would otherwise be a drift risk against `Node`'s wire shape.
+pub(crate) const NODE_FIELDS: &str = "\
 kind, name, qualifiedName, filePath, language, startLine, endLine, startColumn, endColumn, \
 docstring, signature, visibility, isExported, isAsync, isStatic, isAbstract, decorators, \
 typeParameters, returnType, updatedAt, record::id(id) AS id";

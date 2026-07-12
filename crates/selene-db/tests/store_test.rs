@@ -17,9 +17,9 @@
 
 #[cfg(feature = "kv-mem")]
 use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance, Visibility};
-#[cfg(feature = "kv-mem")]
-use selene_db::FileRecord;
 use selene_db::SurrealStore;
+#[cfg(feature = "kv-mem")]
+use selene_db::{FileRecord, RefStatus, UnresolvedRef};
 
 /// A minimal SCHEMAFULL-valid `node` record body for a given key, used to give
 /// the ENFORCED edge tables real endpoints to relate.
@@ -1414,5 +1414,320 @@ async fn replace_file_extraction_skips_required_field_invalid_nodes_silently() {
         store.get_nodes_by_file("src/f1.rs").await.unwrap().len(),
         2,
         "exactly the valid nodes are attributed to the file"
+    );
+}
+
+// =============================================================================
+// Unresolved-reference CRUD (Task 7)
+// =============================================================================
+
+/// The last `.`-separated segment of `reference_name` — duplicated here (not
+/// imported) because `selene_db::unresolved::name_tail` is `pub(crate)`, not
+/// part of the public surface; this integration test only needs it to build
+/// fixtures with a name_tail matching what the real store would compute.
+#[cfg(feature = "kv-mem")]
+fn name_tail(reference_name: &str) -> String {
+    reference_name
+        .rsplit('.')
+        .next()
+        .unwrap_or(reference_name)
+        .to_string()
+}
+
+/// A fully-populated [`UnresolvedRef`] fixture: `line`/`column` `Some`,
+/// `candidates` non-empty — exercises the whole-struct round trip, not just
+/// the required fields.
+#[cfg(feature = "kv-mem")]
+fn unresolved_ref(
+    from_node_id: &str,
+    reference_name: &str,
+    file_path: &str,
+    status: RefStatus,
+) -> UnresolvedRef {
+    UnresolvedRef {
+        from_node_id: from_node_id.to_string(),
+        reference_name: reference_name.to_string(),
+        reference_kind: "call".to_string(),
+        line: Some(7),
+        column: Some(3),
+        candidates: vec![serde_json::json!({ "nodeId": "function:maybe", "score": 0.5 })],
+        file_path: file_path.to_string(),
+        language: "rust".to_string(),
+        status,
+        name_tail: name_tail(reference_name),
+    }
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn insert_unresolved_batch_round_trips_whole_struct() {
+    let store = fresh_store().await;
+
+    let a = unresolved_ref(
+        "function:a",
+        "Helper.target",
+        "src/a.rs",
+        RefStatus::Pending,
+    );
+    let b = unresolved_ref("function:b", "target2", "src/b.rs", RefStatus::Pending);
+    store
+        .insert_unresolved(&[a.clone(), b.clone()])
+        .await
+        .unwrap();
+
+    let mut batch = store.unresolved_pending_batch(0, 10).await.unwrap();
+    batch.sort_by(|x, y| x.from_node_id.cmp(&y.from_node_id));
+    let mut expected = vec![a, b];
+    expected.sort_by(|x, y| x.from_node_id.cmp(&y.from_node_id));
+    assert_eq!(
+        batch, expected,
+        "every field (incl. status/name_tail/line/column/candidates) round-trips"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn unresolved_pending_count_excludes_failed() {
+    let store = fresh_store().await;
+
+    let a = unresolved_ref("function:a", "t1", "src/a.rs", RefStatus::Pending);
+    let b = unresolved_ref("function:b", "t2", "src/a.rs", RefStatus::Pending);
+    let c = unresolved_ref("function:c", "t3", "src/a.rs", RefStatus::Pending);
+    store
+        .insert_unresolved(&[a.clone(), b.clone(), c.clone()])
+        .await
+        .unwrap();
+    assert_eq!(store.unresolved_pending_count().await.unwrap(), 3);
+
+    store
+        .mark_failed(&[(b.from_node_id.clone(), b.reference_name.clone())])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.unresolved_pending_count().await.unwrap(),
+        2,
+        "a failed ref must not count as pending"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn unresolved_pending_batch_offset_limit_is_deterministic() {
+    let store = fresh_store().await;
+
+    // 5 refs with distinct fromNodeId, same referenceName/referenceKind — the
+    // order key is (fromNodeId, referenceName, referenceKind), so sorting by
+    // fromNodeId alone is unambiguous here.
+    let refs: Vec<UnresolvedRef> = ["a", "b", "c", "d", "e"]
+        .iter()
+        .map(|n| {
+            unresolved_ref(
+                &format!("function:{n}"),
+                "target",
+                "src/x.rs",
+                RefStatus::Pending,
+            )
+        })
+        .collect();
+    store.insert_unresolved(&refs).await.unwrap();
+
+    let page1 = store.unresolved_pending_batch(0, 2).await.unwrap();
+    let page2 = store.unresolved_pending_batch(2, 2).await.unwrap();
+    let page3 = store.unresolved_pending_batch(4, 2).await.unwrap();
+    let page4 = store.unresolved_pending_batch(5, 2).await.unwrap();
+
+    assert_eq!(
+        page1.iter().map(|r| &r.from_node_id).collect::<Vec<_>>(),
+        vec!["function:a", "function:b"]
+    );
+    assert_eq!(
+        page2.iter().map(|r| &r.from_node_id).collect::<Vec<_>>(),
+        vec!["function:c", "function:d"]
+    );
+    assert_eq!(
+        page3.iter().map(|r| &r.from_node_id).collect::<Vec<_>>(),
+        vec!["function:e"]
+    );
+    assert!(page4.is_empty(), "offset past the end yields an empty page");
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn unresolved_by_files_filters_pending_and_requested_paths() {
+    let store = fresh_store().await;
+
+    let a = unresolved_ref("function:a", "t1", "src/a.rs", RefStatus::Pending);
+    let b_failed = unresolved_ref("function:b", "t2", "src/a.rs", RefStatus::Pending);
+    let c = unresolved_ref("function:c", "t3", "src/b.rs", RefStatus::Pending);
+    let d_other_file = unresolved_ref("function:d", "t4", "src/c.rs", RefStatus::Pending);
+    store
+        .insert_unresolved(&[a.clone(), b_failed.clone(), c.clone(), d_other_file.clone()])
+        .await
+        .unwrap();
+    store
+        .mark_failed(&[(
+            b_failed.from_node_id.clone(),
+            b_failed.reference_name.clone(),
+        )])
+        .await
+        .unwrap();
+
+    let mut found = store
+        .unresolved_by_files(&["src/a.rs".to_string(), "src/b.rs".to_string()])
+        .await
+        .unwrap();
+    found.sort_by(|x, y| x.from_node_id.cmp(&y.from_node_id));
+
+    assert_eq!(
+        found,
+        vec![a, c],
+        "only pending refs in the requested files, failed and other-file refs excluded"
+    );
+
+    assert!(
+        store.unresolved_by_files(&[]).await.unwrap().is_empty(),
+        "empty paths must short-circuit to empty, zero queries"
+    );
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_resolved_removes_exact_pairs_only() {
+    let store = fresh_store().await;
+
+    // Same fromNodeId, two different referenceNames — deleting one key must
+    // not touch the other.
+    let a = unresolved_ref("function:a", "target1", "src/a.rs", RefStatus::Pending);
+    let b = unresolved_ref("function:a", "target2", "src/a.rs", RefStatus::Pending);
+    store
+        .insert_unresolved(&[a.clone(), b.clone()])
+        .await
+        .unwrap();
+
+    store
+        .delete_resolved(&[(a.from_node_id.clone(), a.reference_name.clone())])
+        .await
+        .unwrap();
+
+    let remaining = store.unresolved_pending_batch(0, 10).await.unwrap();
+    assert_eq!(
+        remaining,
+        vec![b],
+        "only the exact (from,name) pair is deleted"
+    );
+
+    // Deleting with an empty key set is a no-op, not an error.
+    store.delete_resolved(&[]).await.unwrap();
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn mark_failed_flips_status_and_pending_batch_stops_returning_it() {
+    let store = fresh_store().await;
+
+    let a = unresolved_ref("function:a", "target1", "src/a.rs", RefStatus::Pending);
+    let b = unresolved_ref("function:b", "target2", "src/a.rs", RefStatus::Pending);
+    store
+        .insert_unresolved(&[a.clone(), b.clone()])
+        .await
+        .unwrap();
+
+    store
+        .mark_failed(&[(a.from_node_id.clone(), a.reference_name.clone())])
+        .await
+        .unwrap();
+
+    let pending = store.unresolved_pending_batch(0, 10).await.unwrap();
+    assert_eq!(pending, vec![b], "the failed ref is no longer pending");
+
+    // The row still exists (not deleted) — findable via retryable_failed.
+    let retryable = store
+        .retryable_failed(&["target1".to_string()], 500)
+        .await
+        .unwrap();
+    assert_eq!(retryable.len(), 1);
+    assert_eq!(retryable[0].from_node_id, "function:a");
+    assert_eq!(retryable[0].status, RefStatus::Failed);
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn retryable_failed_matches_by_name_and_name_tail_and_respects_ceiling() {
+    let store = fresh_store().await;
+
+    // Matched via exact reference_name (bare/unqualified — name_tail equals it too).
+    let bare = unresolved_ref("function:a", "bareTarget", "src/a.rs", RefStatus::Failed);
+    // Matched via name_tail only: reference_name is qualified, name_tail is "M".
+    let qualified = unresolved_ref("function:b", "Helper.M", "src/a.rs", RefStatus::Failed);
+    // A pending ref sharing the same reference_name — must never surface as retryable.
+    let still_pending = unresolved_ref("function:c", "bareTarget", "src/a.rs", RefStatus::Pending);
+    store
+        .insert_unresolved(&[bare.clone(), qualified.clone(), still_pending.clone()])
+        .await
+        .unwrap();
+
+    let mut found = store
+        .retryable_failed(&["bareTarget".to_string(), "M".to_string()], 500)
+        .await
+        .unwrap();
+    found.sort_by(|x, y| x.from_node_id.cmp(&y.from_node_id));
+    assert_eq!(
+        found,
+        vec![bare, qualified],
+        "matches both an exact reference_name and a name_tail-only match; excludes the pending row"
+    );
+
+    // Ceiling: 3 distinct failed refs all sharing reference_name "dup" — capped at 2.
+    let dups: Vec<UnresolvedRef> = ["d1", "d2", "d3"]
+        .iter()
+        .map(|n| {
+            unresolved_ref(
+                &format!("function:{n}"),
+                "dup",
+                "src/a.rs",
+                RefStatus::Failed,
+            )
+        })
+        .collect();
+    store.insert_unresolved(&dups).await.unwrap();
+    let capped = store
+        .retryable_failed(&["dup".to_string()], 2)
+        .await
+        .unwrap();
+    assert_eq!(
+        capped.len(),
+        2,
+        "per-name ceiling must cap the returned rows"
+    );
+
+    // Empty names short-circuits to empty, zero queries.
+    assert!(store.retryable_failed(&[], 500).await.unwrap().is_empty());
+}
+
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn clear_unresolved_wipes_the_table() {
+    let store = fresh_store().await;
+
+    let a = unresolved_ref("function:a", "t1", "src/a.rs", RefStatus::Pending);
+    let b = unresolved_ref("function:b", "t2", "src/a.rs", RefStatus::Failed);
+    store.insert_unresolved(&[a, b]).await.unwrap();
+
+    store.clear_unresolved().await.unwrap();
+
+    assert_eq!(store.unresolved_pending_count().await.unwrap(), 0);
+    assert!(
+        store
+            .unresolved_pending_batch(0, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        store
+            .retryable_failed(&["t2".to_string()], 500)
+            .await
+            .unwrap()
+            .is_empty()
     );
 }

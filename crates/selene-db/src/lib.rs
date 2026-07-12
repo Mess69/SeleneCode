@@ -22,10 +22,13 @@
 mod edges;
 mod error;
 mod files;
+mod meta;
 mod nodes;
 mod schema;
+mod search;
 mod store;
 mod surreal;
+mod unresolved;
 
 pub use error::{Error, Result};
 pub use schema::SCHEMA_VERSION;
