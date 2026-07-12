@@ -12,18 +12,32 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 indexmap = { workspace = true }
-# `kv-mem` pulls in the embedded in-memory engine (`surrealdb::engine::local::Mem`)
-# used by the spike + fast tests. Production kv backends are separate features.
-surrealdb = { workspace = true, features = ["kv-mem"] }
+# Feature-gated per `[features]` below (no engine hardcoded here) so callers pick
+# the kv backend(s) they package. `default` pulls the in-memory engine
+# (`Mem`, for the spike + fast tests) plus the on-disk `SurrealKv` engine that
+# `SurrealStore::open` uses for `.selene/graph.db`.
+surrealdb = { workspace = true }
+# Only the on-disk `open()` path uses a runtime primitive (`tokio::time::sleep`
+# for the file-lock reopen retry), so `tokio` is optional and pulled in by the
+# disk features below. The `GraphStore` trait itself needs only
+# `std::future::Future` (see `src/store.rs`); `tokio` also stays a dev-dependency
+# for `#[tokio::test]`.
+tokio = { workspace = true, optional = true }
 
-# `GraphStore` methods are written in desugared `-> impl Future<..> + Send`
-# form (see `src/store.rs` trait docs), so defining the trait needs only
-# `std::future::Future` — no runtime. `tokio` stays a dev-dependency; it only
-# drives `#[tokio::test]` (the spike test today, `SurrealStore` tests from
-# Task 3 on).
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = { workspace = true }
+
+# kv backends forward 1:1 to surrealdb's same-named features.
+#   kv-mem       — embedded in-memory engine (`Mem`); `SurrealStore::in_memory`.
+#   kv-surrealkv — on-disk SurrealKV engine (preferred by `open`).
+#   kv-rocksdb   — on-disk RocksDB engine (fallback for `open` when surrealkv off).
+# `open()` is only compiled when at least one disk backend is enabled.
+[features]
+default = ["kv-mem", "kv-surrealkv"]
+kv-mem = ["surrealdb/kv-mem"]
+kv-surrealkv = ["surrealdb/kv-surrealkv", "dep:tokio"]
+kv-rocksdb = ["surrealdb/kv-rocksdb", "dep:tokio"]
 
 [lints]
 workspace = true
