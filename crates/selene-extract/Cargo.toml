@@ -8,6 +8,8 @@ license.workspace = true
 
 [dependencies]
 selene-core.workspace = true
+regex.workspace = true
+serde.workspace = true
 # tree-sitter core 0.26 + the 12 v0 grammar crates (13 grammars — the
 # typescript crate carries both the TS and TSX LanguageFns). Versions are
 # pinned EXACT in the root [workspace.dependencies] (node-type names are

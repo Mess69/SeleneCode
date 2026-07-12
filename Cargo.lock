@@ -3420,7 +3420,9 @@ dependencies = [
 name = "selene-extract"
 version = "0.1.0"
 dependencies = [
+ "regex",
  "selene-core",
+ "serde",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",

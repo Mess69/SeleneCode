@@ -51,6 +51,10 @@ tokio        = { version = "1", features = ["macros", "rt-multi-thread", "sync",
 rayon        = "1"
 # Parsing / extraction  (PRD §3: selene-extract)
 tree-sitter  = "0.26"
+# No §-pin in rust-ecosystem-2026-07.md; current stable major, house style
+# for non-contract deps. Used by detection sniffers + generated-file
+# classifier (Task 3) and the C/C++ pre-parse blankers (Task 12).
+regex        = "1"
 # v0 grammar crates — pinned EXACT (=x.y.z) per rust-ecosystem-2026-07.md §3:
 # node-type names are extraction contracts, so a silent grammar bump would
 # drift every language config. Only selene-extract opts in. All depend on
