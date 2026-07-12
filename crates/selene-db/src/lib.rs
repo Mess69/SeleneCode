@@ -28,6 +28,7 @@ mod schema;
 mod search;
 mod store;
 mod surreal;
+mod traverse;
 mod unresolved;
 
 pub use error::{Error, Result};
