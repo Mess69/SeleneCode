@@ -536,6 +536,18 @@ fn extract_name(rules: &'static dyn LanguageRules, node: Node<'_>, source: &str)
     rules.recover_mangled_name(raw)
 }
 
+/// Class/module-scope `CONST = …`: an `assignment` whose LHS is a
+/// `constant` node (the TS `isClassScopeConstantAssignment` — see the
+/// variable branch of the dispatch ladder).
+fn is_class_scope_constant_assignment(node: Node<'_>) -> bool {
+    if node.kind() != "assignment" {
+        return false;
+    }
+    get_child_by_field(node, "left")
+        .or_else(|| node.named_child(0))
+        .is_some_and(|left| left.kind() == "constant")
+}
+
 /// `resolveBody` hook, else the `body_field` child.
 fn resolve_body<'t>(rules: &'static dyn LanguageRules, node: Node<'t>) -> Option<Node<'t>> {
     rules
@@ -595,8 +607,13 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         extract_property(rules, s, node);
     } else if t.field_types.contains(&node_type) && s.is_inside_class_like() {
         extract_field(rules, s, node);
-    } else if t.variable_types.contains(&node_type) && !s.is_inside_class_like() {
-        // (Ruby class-scope `CONST =` gate arrives with Task 14.)
+    } else if t.variable_types.contains(&node_type)
+        && (!s.is_inside_class_like() || is_class_scope_constant_assignment(node))
+    {
+        // Top-level variables — plus class/module-scope CONSTANTS (Task 14):
+        // a Ruby `CONST = …` has a `constant`-typed LHS; no other grammar
+        // puts one here, so the gate is effectively Ruby-only and never
+        // disturbs other languages' class-internal locals.
         extract_variable(rules, s, node);
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);

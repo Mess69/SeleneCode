@@ -1,0 +1,103 @@
+---
+source: crates/selene-extract/tests/lang_csharp_test.rs
+expression: r
+---
+nodes:
+  - id: "file:Cart.cs"
+    kind: file
+    name: Cart.cs
+    qualifiedName: Cart.cs
+    filePath: Cart.cs
+    language: csharp
+    startLine: 1
+    endLine: 12
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: 0
+  - id: "namespace:7465c626bcfe02d5309afbc876ca0849"
+    kind: namespace
+    name: Shop
+    qualifiedName: Shop
+    filePath: Cart.cs
+    language: csharp
+    startLine: 2
+    endLine: 2
+    startColumn: 0
+    endColumn: 15
+    updatedAt: 0
+  - id: "class:13111cf056551115952e08f9df049092"
+    kind: class
+    name: Item
+    qualifiedName: "Shop::Item"
+    filePath: Cart.cs
+    language: csharp
+    startLine: 4
+    endLine: 4
+    startColumn: 0
+    endColumn: 40
+    visibility: public
+    updatedAt: 0
+  - id: "class:7804671d0240a46cc6e36189a41ebcf4"
+    kind: class
+    name: Cart
+    qualifiedName: "Shop::Cart"
+    filePath: Cart.cs
+    language: csharp
+    startLine: 6
+    endLine: 11
+    startColumn: 0
+    endColumn: 1
+    visibility: public
+    updatedAt: 0
+  - id: "constant:db22f0eeadbac00980575aac5a31ad4a"
+    kind: constant
+    name: Limit
+    qualifiedName: "Shop::Cart::Limit"
+    filePath: Cart.cs
+    language: csharp
+    startLine: 8
+    endLine: 8
+    startColumn: 21
+    endColumn: 31
+    visibility: public
+    isStatic: false
+    updatedAt: 0
+  - id: "method:81f8ada81dc22f976c979162b5761cab"
+    kind: method
+    name: Add
+    qualifiedName: "Shop::Cart::Add"
+    filePath: Cart.cs
+    language: csharp
+    startLine: 10
+    endLine: 10
+    startColumn: 4
+    endColumn: 34
+    visibility: public
+    isAsync: false
+    isStatic: false
+    updatedAt: 0
+edges:
+  - source: "file:Cart.cs"
+    target: "namespace:7465c626bcfe02d5309afbc876ca0849"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:7465c626bcfe02d5309afbc876ca0849"
+    target: "class:13111cf056551115952e08f9df049092"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:7465c626bcfe02d5309afbc876ca0849"
+    target: "class:7804671d0240a46cc6e36189a41ebcf4"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7804671d0240a46cc6e36189a41ebcf4"
+    target: "constant:db22f0eeadbac00980575aac5a31ad4a"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:7804671d0240a46cc6e36189a41ebcf4"
+    target: "method:81f8ada81dc22f976c979162b5761cab"
+    kind: contains
+    provenance: tree-sitter
+unresolved: []
+errors: []
+durationMs: 0
