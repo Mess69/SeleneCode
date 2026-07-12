@@ -157,10 +157,45 @@ unresolved:
     referenceKind: imports
     line: 2
     column: 0
+  - fromNodeId: "file:pay.ts"
+    referenceName: Stripe
+    referenceKind: imports
+    line: 2
+    column: 9
+  - fromNodeId: "property:0f5962d3bcf88bc7bdea5699cc9ba7ee"
+    referenceName: Stripe
+    referenceKind: references
+    line: 11
+    column: 18
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Promise
+    referenceKind: references
+    line: 13
+    column: 32
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Receipt
+    referenceKind: references
+    line: 13
+    column: 40
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Promise
+    referenceKind: references
+    line: 13
+    column: 32
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Receipt
+    referenceKind: references
+    line: 13
+    column: 40
   - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
     referenceName: charge
     referenceKind: calls
     line: 14
     column: 11
+  - fromNodeId: "function:c6a96521cfad3d66cf92cdfa4a2e82e3"
+    referenceName: Receipt
+    referenceKind: references
+    line: 18
+    column: 26
 errors: []
 durationMs: "[ms]"

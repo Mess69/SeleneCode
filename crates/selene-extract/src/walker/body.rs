@@ -118,9 +118,16 @@ impl Session<'_> {
         // Static-member / value-read: `Enum.value`, `Type.CONST`, `Foo::BAR`.
         self.extract_static_member_ref(node);
 
-        // INSERTION POINT (Task 8): local variable type annotations
-        // (`variable_declarator` in TYPE_ANNOTATION_LANGUAGES →
-        // extract_variable_type_annotation on the enclosing symbol).
+        // Local variable type annotations (Task 8): locals get NO nodes, but
+        // the TYPE a local is annotated with is a real dependency of the
+        // enclosing function — attribute a `references` ref to it. Falls
+        // through to the recursion so initializer calls still walk.
+        if node_type == "variable_declarator"
+            && super::ts_core::is_type_annotation_language(self.language())
+            && let Some(owner_id) = self.node_stack().last().cloned()
+        {
+            self.extract_variable_type_annotation(node, &owner_id);
+        }
 
         // Nested NAMED functions become their own nodes; anonymous ones fall
         // through to the recursion so their calls attribute to the encloser.

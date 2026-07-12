@@ -77,6 +77,11 @@ unresolved:
     referenceKind: imports
     line: 1
     column: 0
+  - fromNodeId: "file:Login.tsx"
+    referenceName: React
+    referenceKind: imports
+    line: 1
+    column: 7
   - fromNodeId: "function:7d9860729267091db54712ed23de0c63"
     referenceName: login
     referenceKind: calls

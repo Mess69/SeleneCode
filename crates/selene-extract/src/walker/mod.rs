@@ -31,6 +31,7 @@
 //! is within the Global Constraints and steadier).
 
 mod body;
+mod ts_core;
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -79,6 +80,8 @@ pub struct Session<'s> {
     file_scope_values: HashMap<String, String>,
     file_scope_value_counts: HashMap<String, usize>,
     value_ref_scopes: Vec<ValueRefScope>,
+    /// Per-file Vue-store heuristic cache (`src/walker/ts_core.rs`).
+    vue_store_file: Option<bool>,
 }
 
 /// One value-reference reader scope: the symbol's id/name plus the byte
@@ -121,7 +124,15 @@ impl<'s> Session<'s> {
             file_scope_values: HashMap::new(),
             file_scope_value_counts: HashMap::new(),
             value_ref_scopes: Vec::new(),
+            vue_store_file: None,
         }
+    }
+
+    pub(crate) fn vue_store_file_cache(&self) -> Option<bool> {
+        self.vue_store_file
+    }
+    pub(crate) fn set_vue_store_file_cache(&mut self, v: bool) {
+        self.vue_store_file = Some(v);
     }
 
     pub fn file_path(&self) -> &str {
@@ -582,9 +593,28 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);
     }
-    // INSERTION POINT (Task 8): TS/JS re-export refs + Vuex-module default
-    // export branch slot in here (before call_types, per map §8).
-    else if t.call_types.contains(&node_type) {
+    // TS/JS re-export refs: `export { A, B as C } from './y'` — barrels
+    // record a dependency on their source module (Task 8).
+    else if node_type == "export_statement"
+        && is_ts_js_language(s.language())
+        && get_child_by_field(node, "source").is_some()
+    {
+        if let Some(parent_id) = s.scope_id().cloned() {
+            s.emit_re_export_refs(node, &parent_id);
+        }
+        matched = false; // children still recurse (a re-export can't nest, but parity)
+    }
+    // Vuex MODULE default export: `export default { namespaced, actions:
+    // {…} }` — store-file gated; the collection methods become nodes and
+    // the subtree is consumed (Task 8).
+    else if node_type == "export_statement"
+        && is_ts_js_language(s.language())
+        && s.looks_like_vue_store_file()
+        && let Some(exported) = get_child_by_field(node, "value")
+        && (exported.kind() == "object" || exported.kind() == "object_expression")
+    {
+        s.extract_store_collection_methods(rules, exported);
+    } else if t.call_types.contains(&node_type) {
         // Top-level calls (IIFE module wrappers #528, side-effect calls)
         // attribute to the stack top; children STILL recurse so nested
         // arrows/calls extract (TS: skipChildren stays false here).
@@ -597,8 +627,17 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         matched = false;
     }
     // INSERTION POINT (Task 9): Rust `impl_item` implements refs.
-    // INSERTION POINT (Task 8): TS interface member type-annotation refs.
-    else {
+    // TS interface members: property_signature / method_signature carry
+    // type annotations the interface walker would otherwise drop (Task 8).
+    else if (node_type == "property_signature" || node_type == "method_signature")
+        && s.is_inside_class_like()
+        && ts_core::is_type_annotation_language(s.language())
+    {
+        if let Some(parent_id) = s.scope_id().cloned() {
+            s.extract_type_annotations(rules, node, &parent_id);
+        }
+        matched = false; // nested signatures still need traversal
+    } else {
         matched = false;
     }
 
@@ -614,17 +653,32 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
 }
 
 fn extract_function(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+    extract_function_named(rules, s, node, None);
+}
+
+/// [`extract_function`] with an optional explicit name — supplied only for
+/// explicitly-named anonymous functions the caller resolved itself (object-
+/// literal function members, RTK endpoints — `src/walker/ts_core.rs`).
+fn extract_function_named(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    node: Node<'_>,
+    name_override: Option<&str>,
+) {
     // Receiver-typed functions (Rust impl fns, Task 9) route to method.
     if rules.get_receiver_type(node, s.source()).is_some() {
         extract_method(rules, s, node);
         return;
     }
 
-    let mut name = extract_name(rules, node, s.source());
+    let mut name = name_override
+        .map(str::to_string)
+        .unwrap_or_else(|| extract_name(rules, node, s.source()));
     // TS/JS arrow-const naming: `const useAuth = () => {…}` — the arrow
     // node has no `name` field; the name lives on the parent
     // `variable_declarator` (Task 7).
-    if name == "<anonymous>"
+    if name_override.is_none()
+        && name == "<anonymous>"
         && (node.kind() == "arrow_function" || node.kind() == "function_expression")
         && let Some(parent) = node.parent()
         && parent.kind() == "variable_declarator"
@@ -656,6 +710,8 @@ fn extract_function(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
     };
     let Some(id) = s.id_of(idx) else { return };
 
+    // Type refs from parameter/return annotations (Task 8).
+    s.extract_type_annotations(rules, node, &id);
     extract_decorators_for(s, node, &id);
 
     s.push_scope(id.clone());
@@ -724,6 +780,8 @@ fn extract_method(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         }
     }
 
+    // Type refs from parameter/return annotations (Task 8).
+    s.extract_type_annotations(rules, node, &id);
     extract_decorators_for(s, node, &id);
 
     s.push_scope(id.clone());
@@ -926,16 +984,20 @@ fn extract_type_alias(
         return false;
     };
 
+    // Type refs from the alias value (`type X = ITextModel | null`) +
     // TS/TSX alias-member surfacing: `type X = { foo(): T }` members become
     // property/method nodes with `TypeAlias::member` QNs (#359), and
     // string-literal contract names in generic tuples become searchable
-    // method nodes (#634). Type refs from the alias value — Task 8.
-    if matches!(s.language(), Language::Typescript | Language::Tsx)
-        && let (Some(alias_id), Some(value)) = (s.id_of(idx), get_child_by_field(node, "value"))
-    {
-        let alias_name = name.clone();
-        extract_ts_type_alias_members(rules, s, value, &alias_id, &alias_name);
-        extract_ts_tuple_contract_names(rules, s, value, &alias_id, &alias_name);
+    // method nodes (#634).
+    if let (Some(alias_id), Some(value)) = (s.id_of(idx), get_child_by_field(node, "value")) {
+        if ts_core::is_type_annotation_language(s.language()) {
+            s.extract_type_refs_from_subtree(value, &alias_id);
+        }
+        if matches!(s.language(), Language::Typescript | Language::Tsx) {
+            let alias_name = name.clone();
+            extract_ts_type_alias_members(rules, s, value, &alias_id, &alias_name);
+            extract_ts_tuple_contract_names(rules, s, value, &alias_id, &alias_name);
+        }
     }
     false
 }
@@ -994,7 +1056,10 @@ fn extract_ts_type_alias_members(
                 ..NodeExtra::default()
             };
             s.create_node(rules, member_kind, &member_name, child, extra);
-            // INSERTION POINT (Task 8): type refs from the member signature.
+            // Type refs from the member's signature attach to the ALIAS
+            // (consistent with interface-member treatment, #432 — Task 8).
+            let alias_owned = alias_id.to_string();
+            s.extract_type_annotations(rules, child, &alias_owned);
         }
     }
     s.pop_scope();
@@ -1121,8 +1186,13 @@ fn extract_property(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
         is_static: rules.is_static(node, s.source()),
         ..NodeExtra::default()
     };
-    s.create_node(rules, NodeKind::Property, &name, node, extra);
-    // (Type-annotation refs + decorator capture on properties — Task 7.)
+    let created = s.create_node(rules, NodeKind::Property, &name, node, extra);
+    // `@Inject() private svc: Foo` — decorator + type-annotation refs on
+    // class properties too (Task 8).
+    if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
+        extract_decorators_for(s, node, &id);
+        s.extract_type_annotations(rules, node, &id);
+    }
 }
 
 /// Class field declarations (Java/C#/PHP shapes — Task 10/14). The generic
@@ -1150,6 +1220,20 @@ fn extract_field(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: N
         };
         s.create_node(rules, NodeKind::Field, &name, d, extra);
     }
+}
+
+/// Vue store collection key names (`ts_core.rs` owns the sets; this thin
+/// check keeps the variable branch readable).
+fn ts_core_is_store_collection_name(name: &str) -> bool {
+    matches!(name, "actions" | "mutations" | "getters")
+}
+
+/// The TS/JS language family gate for the ts_core ladder branches.
+fn is_ts_js_language(l: Language) -> bool {
+    matches!(
+        l,
+        Language::Typescript | Language::Tsx | Language::Javascript | Language::Jsx
+    )
 }
 
 /// `= <first 100 chars>[...]` initializer signature (searchable context).
@@ -1190,9 +1274,14 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
             };
             let value_node = get_child_by_field(child, "value");
             // Skip destructured patterns (`let { x, y } = props()`) — ugly
-            // multi-line names. INSERTION POINT (Task 8): RTK Query hook
-            // bindings (`export const { useGetXQuery } = api`).
+            // multi-line names. EXCEPT RTK generated-hook destructures off a
+            // bare-identifier RHS (`export const { useGetXQuery } = api`).
             if name_node.kind() == "object_pattern" || name_node.kind() == "array_pattern" {
+                if name_node.kind() == "object_pattern"
+                    && value_node.is_some_and(|v| v.kind() == "identifier")
+                {
+                    s.extract_rtk_hook_bindings(rules, name_node, is_exported);
+                }
                 continue;
             }
             let name = get_node_text(name_node, s.source()).to_string();
@@ -1205,28 +1294,94 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
                 continue;
             }
             let signature = value_node.map(|v| init_signature(s, v));
-            // INSERTION POINT (Task 8): React HOC component consts
-            // (forwardRef/memo/styled → `component` node), exported
-            // object-of-functions / Zustand / RTK createApi / Pinia/Vuex
-            // store collections.
+
+            // React HOC-wrapped components (#841): PascalCase-gated so a
+            // memoization util (`const cache = memo(fn)`) stays a constant.
+            if let Some(value) = value_node
+                && name.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                && let Some(inner) = s.react_component_hoc(value)
+            {
+                let extra = NodeExtra {
+                    docstring: docstring.clone(),
+                    signature,
+                    is_exported,
+                    ..NodeExtra::default()
+                };
+                s.extract_react_component_node(rules, &name, child, inner, extra);
+                continue;
+            }
+
             let extra = NodeExtra {
                 docstring: docstring.clone(),
                 signature,
                 is_exported,
                 ..NodeExtra::default()
             };
-            s.create_node(rules, kind, &name, child, extra);
-            // INSERTION POINT (Task 8): variable type-annotation refs.
-            // Walk the initializer for calls — object literals excepted
-            // (their function-valued properties are Task 8's business).
-            // NOTE (TS parity): no scope push — initializer calls attribute
-            // to the enclosing scope (the file), exactly as in TS; only
-            // Go's spec branch (Task 9) pushes the declared symbol (#693).
+            let created = s.create_node(rules, kind, &name, child, extra);
+            if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
+                s.extract_variable_type_annotation(child, &id);
+            }
+
+            // Store-shaped initializers (Task 8): exported object-of-
+            // functions (SvelteKit actions, Zustand `create(...)` returns),
+            // RTK createApi endpoints, Pinia setup stores, Vue store
+            // collections — their nested function members become nodes;
+            // otherwise the initializer body is walked for calls (object
+            // literals excepted). NOTE (TS parity): no scope push — walk
+            // attributes to the enclosing scope; only Go pushes (#693).
+            let object_of_fns = match value_node {
+                Some(v) if v.kind() == "object" || v.kind() == "object_expression" => Some(v),
+                Some(v) if v.kind() == "call_expression" => {
+                    s.find_initializer_returned_object(v, 0)
+                }
+                _ => None,
+            };
+            let has_inline_fns = object_of_fns.is_some_and(|o| s.object_has_inline_functions(o));
+            let extract_object_methods =
+                is_exported == Some(true) && object_of_fns.is_some() && has_inline_fns;
+
+            let rtk_endpoints = value_node
+                .filter(|v| v.kind() == "call_expression")
+                .and_then(|v| s.find_rtk_endpoints_object(v));
+            let pinia_setup = value_node
+                .filter(|v| v.kind() == "call_expression")
+                .and_then(|v| s.find_pinia_setup_fn(v));
+
+            let mut store_collections: Vec<Node<'_>> = Vec::new();
+            if let Some(v) = value_node
+                && (v.kind() == "call_expression" || v.kind() == "new_expression")
+            {
+                store_collections.extend(s.find_vue_store_collection_objects(v));
+            }
+            if let Some(obj) = object_of_fns
+                && !extract_object_methods
+                && ts_core_is_store_collection_name(&name)
+                && s.looks_like_vue_store_file()
+            {
+                store_collections.push(obj);
+            }
+
             if let Some(value) = value_node
                 && value.kind() != "object"
                 && value.kind() != "object_expression"
+                && !(extract_object_methods && value.kind() == "call_expression")
+                && rtk_endpoints.is_none()
+                && pinia_setup.is_none()
+                && store_collections.is_empty()
             {
                 s.visit_function_body(value, "");
+            }
+            if extract_object_methods && let Some(obj) = object_of_fns {
+                s.extract_object_literal_functions(rules, obj);
+            }
+            if let Some(endpoints) = rtk_endpoints {
+                s.extract_rtk_endpoints(rules, endpoints);
+            }
+            if let Some(setup) = pinia_setup {
+                s.extract_pinia_setup_body(rules, setup);
+            }
+            for coll in store_collections {
+                s.extract_object_literal_functions(rules, coll);
             }
         }
         return;
@@ -1274,7 +1429,13 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
                 language: None,
             });
         }
-        // INSERTION POINT (Task 7): TS/JS import-binding refs.
+        // TS/JS import-binding refs: each imported LOCAL binding records a
+        // dependency (Task 8).
+        if is_ts_js_language(s.language())
+            && let Some(parent_id) = s.scope_id().cloned()
+        {
+            s.emit_import_binding_refs(node, &parent_id);
+        }
         // Python `from m import X, Y` per-name refs:
         if s.language == Language::Python
             && node.kind() == "import_from_statement"
