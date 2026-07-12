@@ -2,8 +2,8 @@
 //! `extraction.test.ts` + the Go imports block, plus the Task 9 brief's
 //! pins (receiver regex #583 generics, uppercase-export rule, `type_spec`
 //! reclassification, return-type normalization, interface method specs) and
-//! one insta snapshot. The Task 6 body-walker-dependent call-shape tests are
-//! `#[ignore]`d — see each test's note.
+//! one insta snapshot. The formerly-`#[ignore]`d call-shape tests are live
+//! (the Task 6 body walker merged in via 7ba47e3).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use selene_core::{EdgeKind, NodeKind};
@@ -219,8 +219,6 @@ fn top_level_const_and_var_declarations() {
 // =============================================================================
 
 #[test]
-#[ignore = "depends on Task 6's body walker (visit_function_body is a no-op at \
-            this branch's base 5fb90cd); un-ignore after the core chain merges"]
 fn chained_factory_call_only_for_bare_identifier_inner() {
     let code = "\npackage main\n\nfunc Use() {\n\tNewClient().Run()\n\tpkg.New().Run()\n}\n";
     let r = extract("chain.go", code);
@@ -237,8 +235,6 @@ fn chained_factory_call_only_for_bare_identifier_inner() {
 }
 
 #[test]
-#[ignore = "depends on Task 6's body walker (visit_function_body is a no-op at \
-            this branch's base 5fb90cd); un-ignore after the core chain merges"]
 fn conversion_call_normalizes_pointer_conversion() {
     let code = "\npackage main\n\nfunc Cast(x interface{}) {\n\t_ = (*Config)(x)\n}\n";
     let r = extract("conv.go", code);

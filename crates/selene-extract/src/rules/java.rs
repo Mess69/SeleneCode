@@ -13,8 +13,8 @@
 //!   refs and type-annotation refs stay with the core chain (Task 7) —
 //!   flagged in the Task 10 report, not silently dropped.
 //! - Anonymous classes (`new T() { … }` → `<T$anon@line>`) are NOT here:
-//!   they are reached through function bodies, i.e. Task 6's body walker
-//!   (tests ported and `#[ignore]`d).
+//!   they live at the walker's `INSERTION POINT (Task 10)` markers
+//!   (`src/walker/body.rs` — reached through function bodies).
 
 use std::sync::LazyLock;
 
@@ -312,7 +312,6 @@ fn extract_java_fields(rules: &JavaRules, node: Node<'_>, s: &mut Session<'_>) {
             None => name.clone(),
         };
         s.create_node(
-            &JavaRules,
             kind,
             &name,
             *decl,
@@ -633,7 +632,6 @@ fn synthesize_lombok_members(class_node: Node<'_>, s: &mut Session<'_>) {
     // Pass 2: emit.
     for m in plan {
         s.create_node(
-            &JavaRules,
             m.kind,
             &m.name,
             m.anchor,

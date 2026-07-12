@@ -162,5 +162,20 @@ unresolved:
     referenceKind: imports
     line: 5
     column: 1
+  - fromNodeId: "method:d8d8597558c0a5c3fcc120c11baad700"
+    referenceName: fmt.Sprint
+    referenceKind: calls
+    line: 17
+    column: 39
+  - fromNodeId: "function:aa53026fc889d06fa1130dcb8b5c90ad"
+    referenceName: Item
+    referenceKind: references
+    line: 19
+    column: 12
+  - fromNodeId: "function:aa53026fc889d06fa1130dcb8b5c90ad"
+    referenceName: Item
+    referenceKind: instantiates
+    line: 19
+    column: 27
 errors: []
 durationMs: "[ms]"

@@ -416,7 +416,6 @@ fn extract_kotlin_property(node: Node<'_>, s: &mut Session<'_>) -> bool {
     });
 
     s.create_node(
-        &KotlinRules,
         kind,
         &name,
         node,

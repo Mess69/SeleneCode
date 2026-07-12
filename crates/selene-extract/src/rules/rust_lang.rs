@@ -264,7 +264,6 @@ fn extract_rust_use(rules: &RustRules, node: Node<'_>, s: &mut Session<'_>) {
         return; // wildcard-only use: nothing extracted (TS parity)
     };
     s.create_node(
-        &RustRules,
         NodeKind::Import,
         &info.module_name,
         node,
@@ -520,7 +519,6 @@ fn extract_rust_variables(node: Node<'_>, s: &mut Session<'_>) {
             continue;
         }
         s.create_node(
-            &RustRules,
             NodeKind::Variable,
             &name,
             child,

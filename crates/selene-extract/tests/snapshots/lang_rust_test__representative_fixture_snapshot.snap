@@ -167,5 +167,20 @@ unresolved:
     referenceKind: implements
     line: 13
     column: 5
+  - fromNodeId: "method:657e8f05e1a3156867efd70c99b71b0f"
+    referenceName: "String::new"
+    referenceKind: calls
+    line: 15
+    column: 8
+  - fromNodeId: "method:926efde4424daba18e37b7edbd6efa6e"
+    referenceName: Self
+    referenceKind: references
+    line: 20
+    column: 20
+  - fromNodeId: "method:926efde4424daba18e37b7edbd6efa6e"
+    referenceName: Widget
+    referenceKind: instantiates
+    line: 21
+    column: 8
 errors: []
 durationMs: "[ms]"

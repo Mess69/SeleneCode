@@ -264,5 +264,10 @@ unresolved:
     referenceKind: decorates
     line: 6
     column: 0
+  - fromNodeId: "method:dd5852ec8d947f68ec0af23aff99a53c"
+    referenceName: Order
+    referenceKind: references
+    line: 17
+    column: 4
 errors: []
 durationMs: "[ms]"

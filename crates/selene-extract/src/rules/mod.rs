@@ -4,15 +4,17 @@
 //! ([`LanguageRules`]). Every capability the TS interface had exists here so
 //! later language tasks only *fill in*, never reshape.
 //!
-//! Registry: [`rules_for`] — v0 wires Python (Task 5) and Go/Rust (Task 9);
-//! TS/JS (Task 7/8), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14)
+//! Registry: [`rules_for`] — v0 wires Python (Task 5), TS/JS (Tasks 7/8),
+//! Go/Rust (Task 9), Java (10), Kotlin (11); C/C++ (13), C#/PHP/Ruby (14)
 //! land per plan.
 
 pub(crate) mod go;
 pub(crate) mod java;
+pub(crate) mod javascript;
 pub(crate) mod kotlin;
 pub(crate) mod python;
 pub(crate) mod rust_lang;
+pub(crate) mod typescript;
 
 use selene_core::{NodeKind, Visibility};
 use tree_sitter::Node;
@@ -114,6 +116,18 @@ pub struct ImportInfo {
     pub handled_refs: bool,
 }
 
+/// `extractVariables` hook result (the TS `VariableInfo`): one entry per
+/// declared variable. `delegate_to_function` names a declarator whose value
+/// is actually a function — the walker extracts THAT node as a function
+/// instead of minting a variable (Kotlin/Scala/R property hooks, wave 2).
+pub struct VariableInfo<'t> {
+    pub name: String,
+    /// `NodeKind::Variable` or `NodeKind::Constant`.
+    pub kind: NodeKind,
+    pub signature: Option<String>,
+    pub delegate_to_function: Option<Node<'t>>,
+}
+
 /// A language's extraction rules: the type tables plus every optional hook
 /// of the TS `LanguageExtractor`, defaulted inert (return `None`/`false`/
 /// empty — exactly the absent-closure behavior in TS).
@@ -170,6 +184,12 @@ pub trait LanguageRules: Sync {
     }
     /// Compile-time member synthesis (Java Lombok). Runs after the class
     /// body walk, class still on the scope stack.
+    ///
+    /// DEVIATION from the Task 5 brief's `class_idx: usize` sketch
+    /// (controller-approved): takes the class's AST `Node` instead — Lombok
+    /// synthesis needs the class SYNTAX (annotations, field declarators),
+    /// not the output-node index; the created class is the scope-stack top
+    /// when this runs, so the index adds nothing.
     fn synthesize_members(&self, class_node: Node<'_>, session: &mut Session<'_>) {}
     fn classify_class_node(&self, node: Node<'_>, source: &str) -> Option<ClassKind> {
         None
@@ -182,6 +202,12 @@ pub trait LanguageRules: Sync {
         None
     }
     fn extract_import(&self, node: Node<'_>, source: &str) -> Option<ImportInfo> {
+        None
+    }
+    /// Language-owned variable extraction (Kotlin/Scala/R property hooks —
+    /// Tasks 11+/wave 2). `None` = the walker's generic variable branches
+    /// apply; `Some(entries)` = the hook owns the declaration.
+    fn extract_variables<'t>(&self, node: Node<'t>, source: &str) -> Option<Vec<VariableInfo<'t>>> {
         None
     }
     fn get_receiver_type(&self, node: Node<'_>, source: &str) -> Option<String> {
@@ -211,6 +237,8 @@ pub trait LanguageRules: Sync {
 pub fn rules_for(l: Language) -> Option<&'static dyn LanguageRules> {
     match l {
         Language::Python => Some(&python::PythonRules),
+        Language::Typescript | Language::Tsx => Some(&typescript::TypescriptRules),
+        Language::Javascript | Language::Jsx => Some(&javascript::JavascriptRules),
         Language::Go => Some(&go::GoRules),
         Language::Rust => Some(&rust_lang::RustRules),
         Language::Java => Some(&java::JavaRules),

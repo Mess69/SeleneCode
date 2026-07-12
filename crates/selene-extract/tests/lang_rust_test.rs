@@ -2,8 +2,8 @@
 //! `extraction.test.ts` (functions/structs/traits/impl-for/supertraits/plain
 //! impl) + the Rust imports block, plus the Task 9 brief's pins (receiver
 //! methods, `-> Self` marker, `pub(crate)` quirk, use-binding refs) and one
-//! insta snapshot. The Task 6 body-walker-dependent call-shape tests are
-//! `#[ignore]`d — see each test's note.
+//! insta snapshot. The formerly-`#[ignore]`d call-shape tests are live
+//! (the Task 6 body walker merged in via 7ba47e3).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use selene_core::{EdgeKind, NodeKind, Visibility};
@@ -252,8 +252,6 @@ fn use_binding_refs_link_each_imported_leaf() {
 // =============================================================================
 
 #[test]
-#[ignore = "depends on Task 6's body walker (visit_function_body is a no-op at \
-            this branch's base 5fb90cd); un-ignore after the core chain merges"]
 fn scoped_identifier_calls_keep_full_path() {
     let code = "\nfn caller() {\n    utils::parse::run();\n    helper();\n}\n";
     let r = extract("calls.rs", code);
@@ -269,8 +267,6 @@ fn scoped_identifier_calls_keep_full_path() {
 }
 
 #[test]
-#[ignore = "depends on Task 6's body walker (visit_function_body is a no-op at \
-            this branch's base 5fb90cd); un-ignore after the core chain merges"]
 fn chained_factory_reencodes_only_scoped_identifier_inner() {
     let code = "\nfn caller() {\n    Widget::new().render();\n    make().render();\n}\n";
     let r = extract("chain.rs", code);

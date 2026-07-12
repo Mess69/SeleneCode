@@ -228,7 +228,6 @@ fn extract_go_imports(node: Node<'_>, s: &mut Session<'_>) {
         }
         let signature = get_node_text(spec, s.source()).trim().to_string();
         s.create_node(
-            &GoRules,
             NodeKind::Import,
             &import_path,
             spec,
@@ -292,7 +291,6 @@ fn extract_go_variables(node: Node<'_>, s: &mut Session<'_>) {
                 None
             };
             let idx = s.create_node(
-                &GoRules,
                 spec_kind,
                 &name,
                 spec,
@@ -304,9 +302,9 @@ fn extract_go_variables(node: Node<'_>, s: &mut Session<'_>) {
             );
             created_id = idx.and_then(|i| s.nodes().get(i).map(|n| n.id.clone()));
         }
-        // Walk the initializer scoped to the declared symbol (#693). A no-op
-        // until Task 6's body walker lands; the scoping is wired now so it
-        // lights up then.
+        // Walk the initializer scoped to the declared symbol (#693), so a
+        // call inside an anonymous func initializer — a cobra `RunE` handler,
+        // a callback closure — attributes to the var, not the file.
         if let Some(value_field) = get_child_by_field(spec, "value") {
             if let Some(id) = &created_id {
                 s.push_scope(id.clone());
@@ -334,7 +332,6 @@ fn extract_go_variables(node: Node<'_>, s: &mut Session<'_>) {
         for id in idents {
             let name = get_node_text(id, s.source()).to_string();
             s.create_node(
-                &GoRules,
                 NodeKind::Variable,
                 &name,
                 node,
@@ -362,7 +359,7 @@ fn extract_go_interface(node: Node<'_>, s: &mut Session<'_>) {
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
-    let Some(idx) = s.create_node(rules, NodeKind::Interface, &name, node, extra) else {
+    let Some(idx) = s.create_node(NodeKind::Interface, &name, node, extra) else {
         return;
     };
     let Some(iface_id) = s.nodes().get(idx).map(|n| n.id.clone()) else {
@@ -389,7 +386,7 @@ fn extract_go_interface(node: Node<'_>, s: &mut Session<'_>) {
             signature: rules.get_signature(m, s.source()),
             ..NodeExtra::default()
         };
-        s.create_node(rules, NodeKind::Method, &mname, m, extra);
+        s.create_node(NodeKind::Method, &mname, m, extra);
     }
     s.pop_scope();
 }

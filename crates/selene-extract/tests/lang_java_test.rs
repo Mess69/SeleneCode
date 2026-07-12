@@ -3,8 +3,8 @@
 //! the Java imports block, the extraction-level assertions of
 //! `lombok.test.ts` (#912 — the call-resolution halves stay with the
 //! resolver phase), the `static final` constant gate, and one insta
-//! snapshot. The two anonymous-class tests are `#[ignore]`d — they reach
-//! `new T() { … }` through method/lambda bodies, i.e. Task 6's body walker.
+//! snapshot. The anonymous-class tests are live: `new T() { … }` extraction
+//! landed at the walker's `INSERTION POINT (Task 10)` markers post-merge.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use selene_core::{EdgeKind, NodeKind, Visibility};
@@ -115,9 +115,6 @@ fn enums_and_constants() {
 }
 
 #[test]
-#[ignore = "anonymous classes (`new T() { … }`) are reached through method \
-            bodies — Task 6's body walker, a no-op at this branch's base \
-            5fb90cd; un-ignore after the core chain merges"]
 fn extracts_anonymous_class_overrides() {
     let code = "\npackage com.example;\n\nabstract class Base {\n  abstract int compute(int x);\n}\n\npublic class Factory {\n  public Base make() {\n    return new Base() {\n      @Override\n      int compute(int x) { return x + 1; }\n    };\n  }\n}\n";
     let r = extract("Factory.java", code);
@@ -151,9 +148,6 @@ fn extracts_anonymous_class_overrides() {
 }
 
 #[test]
-#[ignore = "anonymous classes inside lambda bodies are reached through Task \
-            6's body walker, a no-op at this branch's base 5fb90cd; un-ignore \
-            after the core chain merges"]
 fn extracts_anonymous_class_inside_lambda_body() {
     let code = "\npackage com.example;\n\ninterface Strategy {\n  java.util.Iterator<String> iterator(String s);\n}\n\nabstract class BaseIter implements java.util.Iterator<String> {\n  abstract int separatorStart(int start);\n}\n\npublic class Splitter {\n  private final Strategy strategy;\n  public Splitter(Strategy s) { this.strategy = s; }\n\n  public static Splitter on(char c) {\n    return new Splitter((seq) ->\n        new BaseIter() {\n          @Override\n          int separatorStart(int start) { return start + 1; }\n          @Override public boolean hasNext() { return false; }\n          @Override public String next() { return null; }\n        });\n  }\n}\n";
     let r = extract("Splitter.java", code);
