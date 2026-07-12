@@ -983,15 +983,17 @@ async fn children_returns_direct_contains_targets_only() {
 // =============================================================================
 
 #[tokio::test(flavor = "multi_thread")]
-async fn callers_dense_fan_in_expands_each_node_once() {
-    // A dense fan-in shape where re-expanding already-visited nodes is
+async fn callers_dense_fan_in_output_correct() {
+    // A dense fan-in shape where naive frontier re-expansion would be
     // quadratic: 20 callers (A*) that each call all 15 intermediate targets
-    // (B*), which each call the hub. A naive frontier that re-enqueues or
-    // re-sends visited nodes would expand the whole A-set once per B; the
-    // pruned prefetch sends every node exactly once. Semantics pin: the exact
-    // TS DFS replay order — B01's entire caller subtree (A01..A20, by edge
-    // line) before B02..B15, which by then contribute nothing new — and each
-    // node exactly once (#1086 dedup).
+    // (B*), which each call the hub. This test pins the *observable output*
+    // on that shape — the exact TS DFS replay order (B01's entire caller
+    // subtree A01..A20, by edge line, before B02..B15, which by then
+    // contribute nothing new) and each node exactly once (#1086 dedup) —
+    // so any future frontier/prefetch change is fenced by the worst-case
+    // topology. (That the frontier sends each node once is a fetch-level
+    // property, evidenced by the §5.3 probe instrumentation in
+    // docs/benchmarks/2026-07-phase1-db-gate.md, not asserted here.)
     let hub = func("hub");
     let bs: Vec<Node> = (1..=15).map(|j| func(&format!("B{j:02}"))).collect();
     let callers_a: Vec<Node> = (1..=20).map(|i| func(&format!("A{i:02}"))).collect();

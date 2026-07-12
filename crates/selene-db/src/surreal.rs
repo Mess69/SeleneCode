@@ -41,6 +41,12 @@ const DATABASE: &str = "graph";
 /// is negligible against the builds it waits on (7.6 s for 100k nodes) while
 /// keeping the poll from hammering the engine mid-build.
 const INDEX_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Upper bound on one index's `bulk_load_finish` wait. All four builds
+/// together measured 7.6 s on a 100k-node corpus (§5.3), so ten minutes is
+/// ~80x headroom even for far larger repos; past it the build is assumed
+/// wedged and surfaces as [`Error::IndexBuild`] instead of hanging the
+/// caller forever.
+const MAX_INDEX_BUILD_WAIT: Duration = Duration::from_secs(600);
 
 /// The embedded-SurrealDB [`crate::GraphStore`] backend.
 ///
@@ -196,38 +202,40 @@ impl SurrealStore {
     }
 
     /// Poll `INFO FOR INDEX <name> ON TABLE node` until the build reports
-    /// `ready`. Observed shapes on embedded 3.2.1 (Task 9d probe):
-    /// `{ building: { status: "cleaning" } }` →
-    /// `{ building: { status: "indexing", initial, pending, updated } }` →
-    /// `{ building: { status: "ready", .. } }`. A missing `building` object
-    /// is treated as ready (an inline-built index has nothing to build);
-    /// `status: "error"` propagates as [`Error::IndexBuild`]. Only ever
-    /// called with names from [`schema::FTS_INDEXES`] — the `format!` embeds
-    /// no caller-supplied text — and only after the index was DEFINEd
+    /// `ready` (classification table: [`index_build_state`]). The poll
+    /// interval is bounded ([`INDEX_POLL_INTERVAL`]) **and** so is the total
+    /// wait ([`MAX_INDEX_BUILD_WAIT`]): a build still in progress past the
+    /// bound, a `status: "error"`, or a status this crate does not recognize
+    /// all surface as [`Error::IndexBuild`] — never an infinite loop. Only
+    /// ever called with names from [`schema::FTS_INDEXES`] — the `format!`
+    /// embeds no caller-supplied text — and only after the index was DEFINEd
     /// (`INFO FOR INDEX` on an *absent* index errors, which `?` surfaces).
     async fn wait_index_ready(&self, name: &str) -> Result<()> {
+        let started = std::time::Instant::now();
         loop {
             let mut resp = self
                 .db
                 .query(format!("INFO FOR INDEX {name} ON TABLE node"))
                 .await?;
             let info: Option<serde_json::Value> = resp.take(0)?;
-            let building = info.as_ref().and_then(|i| i.get("building"));
-            let status = building
-                .and_then(|b| b.get("status"))
-                .and_then(|s| s.as_str());
-            match status {
-                None | Some("ready") => return Ok(()),
-                Some("error") => {
+            match index_build_state(info.as_ref()) {
+                IndexBuildState::Ready => return Ok(()),
+                IndexBuildState::Failed(detail) => {
                     return Err(Error::IndexBuild(format!(
-                        "FULLTEXT index '{name}' reported a build error: {}",
-                        building
-                            .and_then(|b| b.get("error"))
-                            .and_then(|e| e.as_str())
-                            .unwrap_or("(no detail)")
+                        "FULLTEXT index '{name}': {detail}"
                     )));
                 }
-                Some(_) => tokio::time::sleep(INDEX_POLL_INTERVAL).await,
+                IndexBuildState::InProgress => {
+                    if started.elapsed() >= MAX_INDEX_BUILD_WAIT {
+                        return Err(Error::IndexBuild(format!(
+                            "FULLTEXT index '{name}' still building after {}s (bound: \
+                             the whole 4-index build measured 7.6 s on 100k nodes) — \
+                             assuming the build is wedged",
+                            MAX_INDEX_BUILD_WAIT.as_secs()
+                        )));
+                    }
+                    tokio::time::sleep(INDEX_POLL_INTERVAL).await;
+                }
             }
         }
     }
@@ -244,6 +252,52 @@ impl SurrealStore {
     #[doc(hidden)]
     pub fn db(&self) -> &Surreal<Db> {
         &self.db
+    }
+}
+
+/// One classified observation of a `CONCURRENTLY` index build, decoded from
+/// `INFO FOR INDEX`'s `building` object by [`index_build_state`].
+#[derive(Debug, PartialEq)]
+enum IndexBuildState {
+    /// `building.status: "ready"`, or no `building` object at all (an
+    /// inline-built index has nothing to build).
+    Ready,
+    /// A known in-progress status — keep polling (up to
+    /// [`MAX_INDEX_BUILD_WAIT`]).
+    InProgress,
+    /// `building.status: "error"` (engine detail attached), or a status this
+    /// crate does not recognize. Both are terminal: polling an unknown
+    /// status could spin forever, so it fails loudly instead.
+    Failed(String),
+}
+
+/// Pure classification of one `INFO FOR INDEX` result — split from the poll
+/// loop so the status table is unit-testable without a real (slow) build.
+///
+/// The in-progress set is the Task 9d probe's observed sequence on embedded
+/// 3.2.1 — `{ building: { status: "cleaning" } }` →
+/// `{ building: { status: "indexing", initial, pending, updated } }` →
+/// `{ building: { status: "ready", .. } }` — plus `"started"` (the documented
+/// initial status). Anything else is treated as terminal, not poll-worthy.
+fn index_build_state(info: Option<&serde_json::Value>) -> IndexBuildState {
+    let building = info.and_then(|i| i.get("building"));
+    let status = building
+        .and_then(|b| b.get("status"))
+        .and_then(|s| s.as_str());
+    match status {
+        None | Some("ready") => IndexBuildState::Ready,
+        Some("started" | "cleaning" | "indexing") => IndexBuildState::InProgress,
+        Some("error") => IndexBuildState::Failed(format!(
+            "build error: {}",
+            building
+                .and_then(|b| b.get("error"))
+                .and_then(|e| e.as_str())
+                .unwrap_or("(no detail)")
+        )),
+        Some(other) => IndexBuildState::Failed(format!(
+            "unrecognized build status '{other}' — treating as terminal rather than \
+             polling indefinitely"
+        )),
     }
 }
 
@@ -282,5 +336,52 @@ where
                 return Err(err.into());
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// The status table [`wait_index_ready`] polls on, checked against every
+    /// shape the Task 9d probe observed on embedded 3.2.1 plus the terminal
+    /// fallbacks (unknown status must fail, not poll forever).
+    #[test]
+    fn index_build_state_classifies_observed_and_unknown_shapes() {
+        let ready =
+            json!({"building": {"status": "ready", "initial": 0, "pending": 0, "updated": 0}});
+        assert_eq!(index_build_state(Some(&ready)), IndexBuildState::Ready);
+
+        for in_progress in [
+            json!({"building": {"status": "started"}}),
+            json!({"building": {"status": "cleaning"}}),
+            json!({"building": {"status": "indexing", "initial": 3, "pending": 1}}),
+        ] {
+            assert_eq!(
+                index_build_state(Some(&in_progress)),
+                IndexBuildState::InProgress,
+                "must keep polling on {in_progress}"
+            );
+        }
+
+        // No `building` object (an inline-built index) and no info at all
+        // both count as ready.
+        assert_eq!(index_build_state(Some(&json!({}))), IndexBuildState::Ready);
+        assert_eq!(index_build_state(None), IndexBuildState::Ready);
+
+        // An engine-reported error carries its detail through.
+        let err = json!({"building": {"status": "error", "error": "boom"}});
+        let IndexBuildState::Failed(detail) = index_build_state(Some(&err)) else {
+            panic!("error status must be terminal");
+        };
+        assert!(detail.contains("boom"), "engine detail preserved: {detail}");
+
+        // An unrecognized status is terminal, never an infinite poll.
+        let odd = json!({"building": {"status": "some-future-status"}});
+        assert!(matches!(
+            index_build_state(Some(&odd)),
+            IndexBuildState::Failed(_)
+        ));
     }
 }

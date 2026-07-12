@@ -189,12 +189,18 @@ Raw-SQL cost split of the level-2 expansion (6,183-id frontier, 25,264 edges):
 Findings:
 1. **The frontier itself was never re-expanded** — the level loops already gate on a
    fetched-set, so no node is re-enqueued or re-sent (the draft's "re-visits at each
-   level" diagnosis was wrong at the node level). Now pinned by a dense fan-in
-   regression test (`callers_dense_fan_in_expands_each_node_once`).
-2. The measured re-work was **cross-level node-payload re-fetch** (6,834 of 17,074
-   payload fetches were repeats) and **per-kind pointer re-scans** (one `LET` subquery
-   per edge kind re-walked the frontier k times). Both fixed in Task 9d (walk-long
-   payload cache over edges-only batch readers; single-pass pointer projection).
+   level" diagnosis was wrong at the node level). This no-re-expansion property is
+   evidenced by the instrumentation above (each level's frontier holds only
+   first-seen nodes); output correctness on a dense fan-in shape — where naive
+   re-expansion would be quadratic — is pinned by a regression test
+   (`callers_dense_fan_in_output_correct`).
+2. The measured re-work was **cross-level node-payload re-fetch** — 6,834 of the
+   23,907 payload fetches across the three levels (2,038 + 6,965 + 14,904) were
+   repeats of one of the 17,073 distinct payloads: **28.6% of all fetches**, a repeat
+   volume equal to 40% of the distinct set — and **per-kind pointer re-scans** (one
+   `LET` subquery per edge kind re-walked the frontier k times). Both fixed in Task 9d
+   (walk-long payload cache over edges-only batch readers; single-pass pointer
+   projection).
 3. The dominant remaining cost is the **edge-row point-fetch: ~39 µs/row × 25k rows ≈
    1.0 s** on the biggest level, an engine per-record rate, not an algorithmic
    re-expansion. A depth-first-exact fetch was evaluated and rejected: demand-driven
@@ -206,8 +212,12 @@ Findings:
    engine rates (~25 µs/node payload, ~39 µs/edge row) just materializing the result
    costs ~0.8–0.9 s — hub-rooted depth-3 on this fixture cannot approach 50 ms without
    changing what the query returns (caps/pagination are product-layer concerns,
-   Phase 4). Hub-rooted traversal cost is **O(result size)**, ~70–110 µs per returned
-   entry end-to-end.
+   Phase 4). Hub-rooted traversal cost is **O(result size)**; measured end-to-end
+   post-fix rates: **callers_d3 = 1.64 s ÷ 12,743 = 129 µs/entry (kv-mem)** and
+   **1.93 s ÷ 12,743 = 151 µs/entry (kv-rocksdb)**. The shallow callers_d1 is cheaper
+   per entry (48.6 ms ÷ 2,038 = 24 µs/entry) because a depth-1 walk pays one level's
+   pointer scan and no deep-frontier adjacency fetch — the depth-3 rate is the one
+   that bounds hub-rooted deep traversals.
 
 Known future lever (deferred, out of Task 9d's bounded scope): the deterministic edge
 record id already encodes `(kind, source, target, line, col)`, so adjacency could skip
@@ -298,8 +308,14 @@ Measured on the Task 9d commits with `kv-rocksdb` as the compiled disk backend
 |---|---|---|
 | Bulk load | **≥ 4,000 nodes/s (node phase), deferred-FTS, on the default disk backend**; full 100k-node/509k-edge load ≤ ~2.5 min | The 20k/s figure was calibrated against raw-KV writes (the TS store's SQLite bulk path), not a document-graph engine maintaining 7+ secondary indexes + unique constraints per row. 100k nodes ≈ a very large repo; a ~1.5–2.5 min initial index is acceptable product-wise (initial index is once per repo; incremental re-index is per-file). Deferred-FTS is the shipped load pattern (`bulk_load_begin`/`finish`). |
 | Deep traversal (corridor, depth 3–5, path-finding) | **< 50 ms p50** (unchanged) | Passes with 10x+ headroom on every engine (1.2–4.4 ms). |
-| Deep traversal (hub-rooted) | **< 50 ms for product-realistic result sizes (≲ 500 entries); O(result size) beyond — ~70–110 µs/entry** (record actual: see post-fix table) | The synthetic 2,038-caller hub at depth 3 returns 12,743 entries; materializing that result alone costs ~0.8–0.9 s at engine point-fetch rates. This is result-size-bound, not frontier-algorithm-bound (the probe section above). Product surfaces cap/paginate explore output (Phase 4 explore budgets), so the honest per-entry rate is the durable number. |
+| Deep traversal (hub-rooted) | **O(result size): 129 µs/entry (kv-mem) / 151 µs/entry (kv-rocksdb), measured end-to-end at depth 3 (1.64 s ÷ 12,743 / 1.93 s ÷ 12,743)**. At those rates < 50 ms holds up to **~390 (kv-mem) / ~330 (kv-rocksdb) returned entries** — extrapolated from the measured d3 rates, not separately measured. Actual on the synthetic hub: 1.64 s / 1.93 s for 12,743 entries. | The synthetic 2,038-caller hub at depth 3 returns 12,743 entries; materializing that result alone costs ~0.8–0.9 s at engine point-fetch rates. This is result-size-bound, not frontier-algorithm-bound (the probe section above). Product surfaces cap/paginate explore output (Phase 4 explore budgets), so the honest per-entry rate is the durable number. |
 | FTS | **< 20 ms for typical terms; ≤ ~30 ms (kv-mem) / ~55 ms (rocksdb) worst-case high-frequency term at 20k nodes** | The probe exhausted the contract-preserving shapes; 26 ms (kv-mem) stands. The worst-case term matches 6.5% of the corpus in two indexes at once — rare in real queries. Final ranking blends upstream (Phase 4), which can also cache/limit hot terms. |
+
+Attribution: the maintainer's 2026-07-12 decision fixed the recalibration **approach**
+("fix + recalibrate on evidence") and the bulk ≥ 4,000 nodes/s target. The
+result-size-conditioned hub-rooted row is an **implementer-derived revision** from the
+measured materialization floor, reviewed by the task reviewer and signed off by the
+session controller under that decision — it is not itself a maintainer-stated number.
 
 ### Gate verdict
 

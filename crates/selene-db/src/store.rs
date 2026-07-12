@@ -582,9 +582,11 @@ pub trait GraphStore: Send + Sync {
     /// Leave bulk-load mode: (re)build the deferred search indexes and block
     /// until the store is search-ready — when this returns `Ok`,
     /// [`Self::search_fts`] serves results identical to a store that was
-    /// never in bulk-load mode. Idempotent, and a no-op on a store that never
-    /// entered bulk-load mode. A failed index build is a genuine store
-    /// malfunction and returns `Err`.
+    /// never in bulk-load mode. Idempotent, and a no-op on an *initialized*
+    /// store that never entered bulk-load mode; on an uninitialized store
+    /// (schema never applied) it may error on missing schema objects —
+    /// [`Self::bulk_load_begin`] is the initializing entry point of the pair.
+    /// A failed index build is a genuine store malfunction and returns `Err`.
     fn bulk_load_finish(&self) -> impl Future<Output = Result<()>> + Send;
 
     // -------------------------------------------------------------------

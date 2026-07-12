@@ -19,10 +19,10 @@
 //! see [`SurrealStore::level_entries`]) — never a per-node query in a loop —
 //! so a traversal costs O(depth) round-trip pairs regardless of frontier
 //! width, and each distinct node's payload crosses the wire at most once per
-//! walk (Task 9d: cross-level payload re-fetch was nearly half the node
-//! traffic of a hub-rooted depth-3 callers prefetch). Pure-SurrealQL
-//! one-shots remain a future optimization behind these same method
-//! signatures.
+//! walk (Task 9d: in a hub-rooted depth-3 callers prefetch, 6,834 of 23,907
+//! payload fetches — 28.6%, a repeat volume equal to 40% of the 17,073
+//! distinct payloads — were cross-level repeats). Pure-SurrealQL one-shots
+//! remain a future optimization behind these same method signatures.
 //!
 //! ## No recursion
 //!
@@ -262,8 +262,9 @@ impl SurrealStore {
     /// Task 9d frontier pruning: attaching from a per-traversal cache means a
     /// node's payload crosses the wire **once per traversal**, not once per
     /// level that reaches it — the §5.3 probe measured 6,834 cross-level
-    /// payload re-fetches (of 17,074 distinct nodes) in a single depth-3
-    /// hub-rooted callers prefetch on the 20k-node bench graph. An edge whose
+    /// payload re-fetches out of 23,907 total fetches (17,073 distinct
+    /// payloads; 28.6% of the fetch volume) in a single depth-3 hub-rooted
+    /// callers prefetch on the 20k-node bench graph. An edge whose
     /// neighbor id is missing from the node table is dropped, exactly like
     /// `edges.rs`' `attach_neighbors` (success-shaped-miss contract).
     async fn level_entries(
