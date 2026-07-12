@@ -1,15 +1,10 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 //! Ported Ruby conformance tests: mixins → `implements` refs (the
-//! Ruby-mixins describe block), require/require_relative imports, method
-//! visibility, and one insta snapshot.
-//!
-//! DEFERRED (documented, follow-up once the core chain's `Session::visit`
-//! lands on this branch): the `module` visit_node hook needs dispatch-ladder
-//! re-entry for the module body, and the class-scope `CONST=` gate is a
-//! walker-ladder branch — both live behind core-owned walker/mod.rs. The
-//! Ruby-modules describe block ports with that follow-up. The
-//! `extract_bare_call` spec is fully implemented + unit-tested colocated in
-//! `src/rules/ruby.rs` (its walker consumer is the Task 6 body walker).
+//! Ruby-mixins describe block), the Ruby-modules describe block (module
+//! nodes + containment, nested modules), class-scope `CONST=` variables,
+//! require/require_relative imports, method visibility, and one insta
+//! snapshot. The `extract_bare_call` spec is unit-tested colocated in
+//! `src/rules/ruby.rs` (its consumer is the body walker).
 
 use selene_core::NodeKind;
 use selene_extract::{ExtractionResult, Language, extract_from_source};
@@ -107,4 +102,71 @@ fn representative_fixture_snapshot() {
     }
     r.duration_ms = 0;
     insta::assert_yaml_snapshot!("ruby_representative_fixture", r);
+}
+
+// =============================================================================
+// Ruby modules (the Ruby-modules describe block — landed with Session::visit)
+// =============================================================================
+
+#[test]
+fn module_extracts_as_module_node_with_containment() {
+    let code = "\nmodule CachedCounting\n  def self.disable\n    @enabled = false\n  end\n\n  def perform_increment!(key, count)\n    write_cache!(key, count)\n  end\nend\n";
+    let r = extract("concerns/cached_counting.rb", code);
+
+    let module = find(&r, NodeKind::Module, "CachedCounting").unwrap();
+    assert_eq!(module.qualified_name, "CachedCounting");
+
+    // Methods inside the module get module-qualified names.
+    let disable = find(&r, NodeKind::Method, "disable").unwrap();
+    assert_eq!(disable.qualified_name, "CachedCounting::disable");
+    let increment = find(&r, NodeKind::Method, "perform_increment!").unwrap();
+    assert_eq!(
+        increment.qualified_name,
+        "CachedCounting::perform_increment!"
+    );
+
+    // Containment edges from the module to its methods.
+    let contains = r
+        .edges
+        .iter()
+        .filter(|e| e.source == module.id && e.kind == selene_core::EdgeKind::Contains)
+        .count();
+    assert!(
+        contains >= 2,
+        "expected >= 2 contains edges, got {contains}"
+    );
+}
+
+#[test]
+fn nested_modules_with_classes_qualify_names() {
+    let code = "\nmodule Discourse\n  module Auth\n    class AuthProvider\n      def authenticate(params)\n        validate(params)\n      end\n    end\n  end\nend\n";
+    let r = extract("lib/auth.rb", code);
+
+    assert!(find(&r, NodeKind::Module, "Discourse").is_some());
+    let auth = find(&r, NodeKind::Module, "Auth").unwrap();
+    assert_eq!(auth.qualified_name, "Discourse::Auth");
+    let provider = find(&r, NodeKind::Class, "AuthProvider").unwrap();
+    assert_eq!(provider.qualified_name, "Discourse::Auth::AuthProvider");
+    let auth_method = find(&r, NodeKind::Method, "authenticate").unwrap();
+    assert_eq!(
+        auth_method.qualified_name,
+        "Discourse::Auth::AuthProvider::authenticate"
+    );
+}
+
+/// Class/module-scope `CONST = …` (a `constant`-typed LHS — effectively
+/// Ruby-only) extracts like a top-level variable; TS parity: kind stays
+/// `variable` (Ruby's config has no is_const hook) and the name is the
+/// constant. Locals inside methods stay unextracted.
+#[test]
+fn class_scope_constant_assignment_is_extracted() {
+    let code = "\nclass Config\n  MAX_ITEMS = 50\n  module Nested\n    TIMEOUT = 30\n  end\n  def read\n    local = 1\n    local\n  end\nend\n";
+    let r = extract("config.rb", code);
+
+    let max = find(&r, NodeKind::Variable, "MAX_ITEMS").unwrap();
+    assert_eq!(max.qualified_name, "Config::MAX_ITEMS");
+    let timeout = find(&r, NodeKind::Variable, "TIMEOUT").unwrap();
+    assert_eq!(timeout.qualified_name, "Config::Nested::TIMEOUT");
+    // Locals inside method bodies are NOT variables (top-level gate).
+    assert!(find(&r, NodeKind::Variable, "local").is_none());
 }

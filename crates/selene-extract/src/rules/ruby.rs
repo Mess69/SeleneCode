@@ -4,22 +4,20 @@
 //! self` and dynamic args are skipped), `require`/`require_relative` →
 //! imports, visibility from preceding modifier calls, and the
 //! [`LanguageRules::extract_bare_call`] spec (statement-level bare
-//! identifiers; consumed by the Task 6 body walker, unit-tested below).
-//!
-//! DEFERRED (follow-up once the core chain's `Session::visit` lands on this
-//! branch — the module body must re-enter the dispatch ladder, and `Session`
-//! lives in core-owned walker/mod.rs): the `module` → [`NodeKind::Module`]
-//! visit_node branch, and the class-scope `CONST =` variables gate (a
-//! walker-ladder branch by design — walker/mod.rs carries its insertion
-//! comment). Tracked in the Task 14 report.
+//! identifiers; consumed by the body walker, unit-tested below), and
+//! `module` → [`NodeKind::Module`] nodes via the `visit_node` hook — the
+//! module body re-enters the dispatch ladder through [`Session::visit`], so
+//! nested modules/classes/methods pick up `Discourse::Auth::AuthProvider`-
+//! style qualified names. (The companion class-scope `CONST =` gate lives in
+//! the walker's variable branch — its marked Task 14 insertion point.)
 
-use selene_core::Visibility;
+use selene_core::{NodeKind, Visibility};
 use tree_sitter::Node;
 
 use crate::UnresolvedReference;
 use crate::helpers::{get_child_by_field, get_node_text};
 use crate::rules::{ImportInfo, LanguageRules, NodeTypeTables};
-use crate::walker::Session;
+use crate::walker::{NodeExtra, Session};
 
 static TABLES: NodeTypeTables = NodeTypeTables {
     function_types: &["method"],
@@ -69,6 +67,34 @@ impl LanguageRules for RubyRules {
     /// mixed-in module) so editing a concern surfaces every class that
     /// includes it.
     fn visit_node(&self, node: Node<'_>, s: &mut Session<'_>) -> bool {
+        // Ruby modules: a first-class scope (mixin targets, ActiveSupport
+        // concerns). Mint a `module` node, then hand the body back to the
+        // dispatch ladder ([`Session::visit`]) with the module on the scope
+        // stack so nested modules/classes/methods qualify under it.
+        if node.kind() == "module" {
+            let Some(name_node) = get_child_by_field(node, "name") else {
+                return false;
+            };
+            let name = get_node_text(name_node, s.source()).to_string();
+            let Some(idx) = s.create_node(NodeKind::Module, &name, node, NodeExtra::default())
+            else {
+                return false;
+            };
+            let Some(id) = s.nodes().get(idx).map(|n| n.id.clone()) else {
+                return false;
+            };
+            s.push_scope(id);
+            if let Some(body) = get_child_by_field(node, "body") {
+                let mut cursor = body.walk();
+                let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+                for child in children {
+                    s.visit(child);
+                }
+            }
+            s.pop_scope();
+            return true;
+        }
+
         if node.kind() != "call" || get_child_by_field(node, "receiver").is_some() {
             return false;
         }
