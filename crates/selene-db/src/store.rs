@@ -559,6 +559,35 @@ pub trait GraphStore: Send + Sync {
     fn clear(&self) -> impl Future<Output = Result<()>> + Send;
 
     // -------------------------------------------------------------------
+    // Bulk load (deferred search-index maintenance)
+    // -------------------------------------------------------------------
+
+    /// Enter bulk-load mode: initialize the store (idempotently — safe as the
+    /// very first call on a fresh store) with any derived full-text search
+    /// indexes *deferred*, so a large `insert_nodes` stream skips per-row
+    /// index maintenance. Motivation (§5.3 gate remediation, measured on the
+    /// SurrealDB backend): inline FTS maintenance capped node ingest at
+    /// 803 nodes/s vs 4,703 nodes/s without it — the deferred pattern is a
+    /// 2.15x total-load win on a 100k-node graph.
+    ///
+    /// Contract: idempotent (calling twice is a no-op). Between this call and
+    /// [`Self::bulk_load_finish`], [`Self::search_fts`] returns `Ok` with an
+    /// empty result — a success-shaped miss, **never** `Err` (the `isError`
+    /// reservation, PRD §8.2, one layer down). Everything else (lookups,
+    /// adjacency, traversals, `search_name_like`) works normally. A backend
+    /// whose write path pays nothing for inline index maintenance may
+    /// implement both methods as no-ops.
+    fn bulk_load_begin(&self) -> impl Future<Output = Result<()>> + Send;
+
+    /// Leave bulk-load mode: (re)build the deferred search indexes and block
+    /// until the store is search-ready — when this returns `Ok`,
+    /// [`Self::search_fts`] serves results identical to a store that was
+    /// never in bulk-load mode. Idempotent, and a no-op on a store that never
+    /// entered bulk-load mode. A failed index build is a genuine store
+    /// malfunction and returns `Err`.
+    fn bulk_load_finish(&self) -> impl Future<Output = Result<()>> + Send;
+
+    // -------------------------------------------------------------------
     // Search candidates (final scoring lives upstream — see trait docs)
     // -------------------------------------------------------------------
 

@@ -98,15 +98,50 @@ DEFINE INDEX IF NOT EXISTS node_file_path ON node FIELDS filePath;
 DEFINE INDEX IF NOT EXISTS node_language ON node FIELDS language;
 DEFINE INDEX IF NOT EXISTS node_qualified_name ON node FIELDS qualifiedName;
 DEFINE INDEX IF NOT EXISTS node_file_line ON node FIELDS filePath, startLine;
-DEFINE INDEX IF NOT EXISTS node_name_fts ON node FIELDS name \
-FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS;
-DEFINE INDEX IF NOT EXISTS node_qualified_name_fts ON node FIELDS qualifiedName \
-FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS;
-DEFINE INDEX IF NOT EXISTS node_docstring_fts ON node FIELDS docstring \
-FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS;
-DEFINE INDEX IF NOT EXISTS node_signature_fts ON node FIELDS signature \
-FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS;
 ";
+
+/// The four FULLTEXT `(index name, node field)` pairs, in schema order. The
+/// single source shared by [`all_ddl`] (inline definition), the bulk-load
+/// mode's drop/rebuild DDL ([`remove_fts_index_ddl`]/[`fts_index_ddl`]), and
+/// `SurrealStore::bulk_load_finish`'s readiness poll — so the deferred rebuild
+/// can never drift from what `apply_schema` would have defined inline.
+pub(crate) const FTS_INDEXES: [(&str, &str); 4] = [
+    ("node_name_fts", "name"),
+    ("node_qualified_name_fts", "qualifiedName"),
+    ("node_docstring_fts", "docstring"),
+    ("node_signature_fts", "signature"),
+];
+
+/// `DEFINE INDEX IF NOT EXISTS ... FULLTEXT` for the four [`FTS_INDEXES`].
+/// With `concurrently`, each statement gets a trailing `CONCURRENTLY`:
+/// verified on embedded SurrealDB 3.2.1 — the DEFINE returns immediately, the
+/// four builds run in parallel (7.6 s vs 16.0 s blocking-sequential on a
+/// 100k-node corpus), and progress is observable via `INFO FOR INDEX`
+/// (`building.status`: `cleaning`/`indexing` → `ready`). Both variants are
+/// idempotent (`IF NOT EXISTS` no-ops on an existing index, `CONCURRENTLY`
+/// included).
+pub(crate) fn fts_index_ddl(concurrently: bool) -> String {
+    let suffix = if concurrently { " CONCURRENTLY" } else { "" };
+    FTS_INDEXES
+        .iter()
+        .map(|(name, field)| {
+            format!(
+                "DEFINE INDEX IF NOT EXISTS {name} ON node FIELDS {field} \
+                 FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS{suffix};\n"
+            )
+        })
+        .collect()
+}
+
+/// `REMOVE INDEX IF EXISTS ... ON TABLE node` for the four [`FTS_INDEXES`] —
+/// the bulk-load mode's enter step. Idempotent: `IF EXISTS` no-ops on an
+/// already-removed index (verified on embedded 3.2.1).
+pub(crate) fn remove_fts_index_ddl() -> String {
+    FTS_INDEXES
+        .iter()
+        .map(|(name, _)| format!("REMOVE INDEX IF EXISTS {name} ON TABLE node;\n"))
+        .collect()
+}
 
 /// `file` table: fields mirror `selene_db::FileRecord`'s camelCase serde output.
 const FILE_DDL: &str = "\
@@ -166,13 +201,14 @@ DEFINE INDEX IF NOT EXISTS {kind}_unique ON {kind} FIELDS in, out, lineKey, colK
 }
 
 /// The complete v1 schema as one multi-statement SurrealQL program, in
-/// dependency order (analyzer → node → 12 edge tables → file → unresolved →
-/// meta). Applied as a single `query(...)` whose statements are all validated
-/// via `Response::check()`.
+/// dependency order (analyzer → node (+ inline FTS indexes) → 12 edge tables
+/// → file → unresolved → meta). Applied as a single `query(...)` whose
+/// statements are all validated via `Response::check()`.
 pub(crate) fn all_ddl() -> String {
     let mut ddl = String::with_capacity(8 * 1024);
     ddl.push_str(ANALYZER_DDL);
     ddl.push_str(NODE_DDL);
+    ddl.push_str(&fts_index_ddl(false));
     for kind in EdgeKind::ALL {
         ddl.push_str(&edge_ddl(kind.as_str()));
     }
@@ -207,5 +243,36 @@ mod tests {
         for line in ddl.lines().filter(|l| l.trim_start().starts_with("DEFINE")) {
             assert!(line.contains("IF NOT EXISTS"), "non-idempotent DDL: {line}");
         }
+    }
+
+    /// The bulk-load drop/rebuild DDL and the inline schema must agree on the
+    /// same four FULLTEXT indexes — `bulk_load_finish` may never rebuild a
+    /// different index set than `apply_schema` defines.
+    #[test]
+    fn fts_ddl_variants_stay_in_sync() {
+        let ddl = all_ddl();
+        let inline = fts_index_ddl(false);
+        let concurrent = fts_index_ddl(true);
+        let removes = remove_fts_index_ddl();
+
+        for (name, field) in FTS_INDEXES {
+            let define = format!(
+                "DEFINE INDEX IF NOT EXISTS {name} ON node FIELDS {field} \
+                 FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS"
+            );
+            assert!(ddl.contains(&define), "all_ddl missing inline FTS: {name}");
+            assert!(inline.contains(&format!("{define};")), "inline: {name}");
+            assert!(
+                concurrent.contains(&format!("{define} CONCURRENTLY;")),
+                "concurrent variant must end with CONCURRENTLY: {name}"
+            );
+            assert!(
+                removes.contains(&format!("REMOVE INDEX IF EXISTS {name} ON TABLE node;")),
+                "remove DDL missing: {name}"
+            );
+        }
+        // The inline schema builds FTS blocking (no CONCURRENTLY): apply_schema
+        // must stay synchronous — search-ready the moment it returns.
+        assert!(!ddl.contains("CONCURRENTLY"), "all_ddl must stay blocking");
     }
 }

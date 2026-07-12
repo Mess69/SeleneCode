@@ -1762,3 +1762,131 @@ async fn clear_unresolved_wipes_the_table() {
             .is_empty()
     );
 }
+
+// =============================================================================
+// Bulk-load mode: deferred FULLTEXT indexes (Task 9d, §5.3 remediation)
+// =============================================================================
+
+/// A node whose `name`/`docstring`/`signature` all carry the token `user`, so
+/// every one of the four FULLTEXT indexes has something to match.
+#[cfg(feature = "kv-mem")]
+fn searchable_node(id_suffix: &str, file_path: &str) -> Node {
+    let mut n = node(&format!("getUserProfile{id_suffix}"), file_path);
+    n.docstring = Some("Fetches the user profile".to_string());
+    n.signature = Some("fn get_user_profile() -> User".to_string());
+    n
+}
+
+/// The core deferred-FTS lifecycle: `bulk_load_begin` on a **fresh** store
+/// (no prior `apply_schema` — begin must self-initialize), inserts, then
+/// `search_fts` stays success-shaped-empty until `bulk_load_finish` makes the
+/// same query return the loaded nodes.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bulk_load_defers_fts_until_finish() {
+    let store = SurrealStore::in_memory().await.unwrap();
+    store.bulk_load_begin().await.unwrap();
+    assert_eq!(
+        store.schema_version().await.unwrap(),
+        Some(1),
+        "begin on a fresh store must self-apply the schema"
+    );
+
+    let nodes = vec![
+        searchable_node("A", "src/a.rs"),
+        searchable_node("B", "src/b.rs"),
+    ];
+    store.insert_nodes(&nodes).await.unwrap();
+
+    let terms = vec!["user".to_string()];
+    // Contract pin: between begin and finish, FTS is a success-shaped miss —
+    // Ok(empty), never Err (crate isError discipline; PRD §8.2 one layer down).
+    let during = store.search_fts(&terms, &[], &[], 20, 0).await.unwrap();
+    assert!(
+        during.is_empty(),
+        "search_fts before bulk_load_finish must be empty, got {} hits",
+        during.len()
+    );
+
+    store.bulk_load_finish().await.unwrap();
+
+    let after = store.search_fts(&terms, &[], &[], 20, 0).await.unwrap();
+    let mut ids: Vec<&str> = after.iter().map(|c| c.node.id.as_str()).collect();
+    ids.sort_unstable();
+    assert_eq!(
+        ids,
+        vec!["function:getUserProfileA", "function:getUserProfileB"],
+        "post-finish FTS must find the bulk-loaded nodes"
+    );
+    // No score-positivity assertion: BM25 is legitimately zero/negative on a
+    // tiny corpus whose every document carries the term (raw_score is
+    // rank-only — see `src/search.rs`). Functional equivalence of the rebuilt
+    // scores is pinned by `deferred_and_inline_fts_agree` below.
+}
+
+/// `bulk_load_begin` twice and `bulk_load_finish` twice are both no-op-safe,
+/// and a `finish` on a store that never entered bulk mode (inline FTS from
+/// `apply_schema`) is a no-op that leaves search working.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn bulk_load_begin_and_finish_are_idempotent() {
+    let store = SurrealStore::in_memory().await.unwrap();
+    store.bulk_load_begin().await.unwrap();
+    store.bulk_load_begin().await.unwrap(); // begin twice: REMOVE ... IF EXISTS
+
+    store
+        .insert_nodes(&[searchable_node("A", "src/a.rs")])
+        .await
+        .unwrap();
+
+    store.bulk_load_finish().await.unwrap();
+    store.bulk_load_finish().await.unwrap(); // finish twice: DEFINE ... IF NOT EXISTS
+
+    let terms = vec!["user".to_string()];
+    let hits = store.search_fts(&terms, &[], &[], 20, 0).await.unwrap();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].node.id, "function:getUserProfileA");
+
+    // finish on a store that never began: inline indexes already exist.
+    let inline = fresh_store().await;
+    inline
+        .insert_nodes(&[searchable_node("B", "src/b.rs")])
+        .await
+        .unwrap();
+    inline.bulk_load_finish().await.unwrap();
+    let hits = inline.search_fts(&terms, &[], &[], 20, 0).await.unwrap();
+    assert_eq!(hits.len(), 1, "no-op finish must not disturb inline FTS");
+}
+
+/// The deferred path is functionally equivalent to the inline path: same
+/// corpus, same query ⇒ same candidates in the same order with the same
+/// raw scores (the §5.3 remediation experiment's leg B+D equivalence, pinned).
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn deferred_and_inline_fts_agree() {
+    let corpus = vec![
+        searchable_node("A", "src/a.rs"),
+        searchable_node("B", "src/b.rs"),
+        maximal_node("renderWidget", "src/w.rs"), // no 'user' anywhere
+    ];
+
+    let inline = fresh_store().await;
+    inline.insert_nodes(&corpus).await.unwrap();
+
+    let deferred = SurrealStore::in_memory().await.unwrap();
+    deferred.bulk_load_begin().await.unwrap();
+    deferred.insert_nodes(&corpus).await.unwrap();
+    deferred.bulk_load_finish().await.unwrap();
+
+    let terms = vec!["user".to_string()];
+    let a = inline.search_fts(&terms, &[], &[], 20, 0).await.unwrap();
+    let b = deferred.search_fts(&terms, &[], &[], 20, 0).await.unwrap();
+
+    let key = |c: &selene_db::SearchCandidate| (c.node.id.clone(), c.raw_score);
+    assert_eq!(
+        a.iter().map(key).collect::<Vec<_>>(),
+        b.iter().map(key).collect::<Vec<_>>(),
+        "deferred FTS rebuild must be functionally identical to inline FTS"
+    );
+    assert_eq!(a.len(), 2, "sanity: the 'user' corpus subset matches");
+}

@@ -43,6 +43,13 @@ pub enum Error {
     /// normal operation and never used for "not found" (see the module docs).
     #[error("unexpected record shape: {0}")]
     Decode(String),
+
+    /// A deferred (`CONCURRENTLY`) index rebuild reported a build failure —
+    /// `bulk_load_finish`'s readiness poll saw `building.status: "error"`. A
+    /// genuine store malfunction (the index would otherwise silently serve
+    /// partial search results), never an expected outcome.
+    #[error("index build failed: {0}")]
+    IndexBuild(String),
 }
 
 /// Convenience result alias for `selene-db`.

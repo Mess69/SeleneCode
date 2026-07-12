@@ -8,12 +8,12 @@
 //! a directory named [`DATABASE_DIRNAME`]; callers place that under a project's
 //! `.selene/`.
 
-// `Path` (the `open` signature) and `Duration` (the reopen backoff) are used
-// only by the on-disk constructors; gate their imports to a disk backend so a
-// mem-only build stays warning-clean.
+// `Path` (the `open` signature) is used only by the on-disk constructors;
+// gate its import to a disk backend so a mem-only build stays warning-clean.
+// `Duration` is engine-independent: `bulk_load_finish`'s index-build poll
+// uses it on every backend (the reopen backoff also does, on disk builds).
 #[cfg(any(feature = "kv-surrealkv", feature = "kv-rocksdb"))]
 use std::path::Path;
-#[cfg(any(feature = "kv-surrealkv", feature = "kv-rocksdb"))]
 use std::time::Duration;
 
 use surrealdb::Surreal;
@@ -37,6 +37,10 @@ pub const DATABASE_DIRNAME: &str = "graph.db";
 const NAMESPACE: &str = "selene";
 /// SurrealDB database every store selects.
 const DATABASE: &str = "graph";
+/// How often `bulk_load_finish` re-polls a `CONCURRENTLY` index build. 100 ms
+/// is negligible against the builds it waits on (7.6 s for 100k nodes) while
+/// keeping the poll from hammering the engine mid-build.
+const INDEX_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// The embedded-SurrealDB [`crate::GraphStore`] backend.
 ///
@@ -63,9 +67,16 @@ impl SurrealStore {
     /// engine. Namespace/database are already selected; call
     /// [`Self::apply_schema`] before use.
     ///
-    /// Compiled when the `kv-surrealkv` feature is on (the default disk
-    /// backend). With only `kv-rocksdb`, the RocksDB variant below is compiled
-    /// instead; with neither disk feature, `open` is not compiled at all.
+    /// **Not** the default disk backend since the §5.3 gate run (2026-07-12):
+    /// SurrealKV measured 15.3x slower than RocksDB on the bulk write path
+    /// (2,161.8 s vs 141.7 s per 100k-node load — see
+    /// `docs/benchmarks/2026-07-phase1-db-gate.md`), so the `kv-surrealkv`
+    /// feature is now opt-in. When it *is* compiled, this variant is the one
+    /// that exists — enabling the feature is an explicit choice (e.g. to open
+    /// an existing SurrealKV store), and it takes preference over RocksDB.
+    /// With only `kv-rocksdb` (the default), the RocksDB variant below is
+    /// compiled instead; with neither disk feature, `open` is not compiled at
+    /// all.
     #[cfg(feature = "kv-surrealkv")]
     pub async fn open(dir: &Path) -> Result<Self> {
         let db = connect_disk_with_lock_retry(|| Surreal::new::<SurrealKv>(dir)).await?;
@@ -73,10 +84,12 @@ impl SurrealStore {
         Ok(Self { db })
     }
 
-    /// Open (creating if absent) an on-disk store at `dir`, using RocksDB.
-    /// Compiled only when `kv-rocksdb` is on and `kv-surrealkv` is off (so
-    /// exactly one `open` exists). See [`Self::open`]'s surrealkv variant for
-    /// the documented behavior.
+    /// Open (creating if absent) an on-disk store at `dir`, using RocksDB —
+    /// the **default** disk backend (§5.3 gate, 2026-07-12: fastest bulk load
+    /// of the disk engines measured, with traversal reads equivalent to
+    /// kv-mem's). Compiled only when `kv-rocksdb` is on and `kv-surrealkv` is
+    /// off (so exactly one `open` exists); see the surrealkv variant above
+    /// for the preference rationale and the shared documented behavior.
     #[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
     pub async fn open(dir: &Path) -> Result<Self> {
         let db = connect_disk_with_lock_retry(|| Surreal::new::<RocksDb>(dir)).await?;
@@ -129,6 +142,93 @@ impl SurrealStore {
                 Ok(Some(version))
             }
             None => Ok(None),
+        }
+    }
+
+    /// Enter bulk-load mode: apply the schema (idempotently, initializing a
+    /// fresh store), then drop the four FULLTEXT indexes so a large
+    /// `insert_nodes` stream skips inline FTS maintenance.
+    ///
+    /// Why (§5.3 remediation, 100k-node synthetic graph, kv-mem, release):
+    /// node insertion under the four FULLTEXT indexes runs at 803 nodes/s;
+    /// without them, 4,703 nodes/s (5.9x) — full load 175.8 s → 81.9 s
+    /// including the post-load rebuild
+    /// (`docs/benchmarks/2026-07-phase1-db-gate.md`). Edge throughput is
+    /// FTS-independent (edge tables carry no FULLTEXT index).
+    ///
+    /// Idempotent: safe on a fresh store (the schema apply is all
+    /// `IF NOT EXISTS`) and safe to call twice (the drops are `REMOVE INDEX
+    /// IF EXISTS`). Between this call and [`Self::bulk_load_finish`],
+    /// `search_fts` returns `Ok(vec![])` — the missing-index query error is
+    /// swallowed by the search module's FTS-swallow contract — a
+    /// success-shaped miss, never `Err` (crate `isError` discipline).
+    pub async fn bulk_load_begin(&self) -> Result<()> {
+        self.apply_schema().await?;
+        self.db
+            .query(schema::remove_fts_index_ddl())
+            .await?
+            .check()?;
+        Ok(())
+    }
+
+    /// Leave bulk-load mode: re-define the four FULLTEXT indexes with
+    /// `DEFINE INDEX ... CONCURRENTLY` and poll each build to completion, so
+    /// the store is search-ready when this returns.
+    ///
+    /// `CONCURRENTLY` is supported by embedded SurrealDB 3.2.1 and builds the
+    /// four indexes in parallel — 7.6 s vs 16.0 s blocking-sequential on a
+    /// 100k-node corpus, with `search_fts` results identical to an inline
+    /// (non-deferred) load (`docs/benchmarks/2026-07-phase1-db-gate.md`).
+    /// Total time is corpus-size-dependent; the poll interval is bounded
+    /// ([`INDEX_POLL_INTERVAL`]), the wait itself is not.
+    ///
+    /// Idempotent: the DEFINEs are `IF NOT EXISTS`, and an already-built
+    /// index reports `ready` (or carries no `building` entry) on the first
+    /// poll — so calling twice, or on a store that never entered bulk-load
+    /// mode (inline FTS from [`Self::apply_schema`]), is a no-op. A build
+    /// failure surfaces as [`Error::IndexBuild`].
+    pub async fn bulk_load_finish(&self) -> Result<()> {
+        self.db.query(schema::fts_index_ddl(true)).await?.check()?;
+        for (name, _) in schema::FTS_INDEXES {
+            self.wait_index_ready(name).await?;
+        }
+        Ok(())
+    }
+
+    /// Poll `INFO FOR INDEX <name> ON TABLE node` until the build reports
+    /// `ready`. Observed shapes on embedded 3.2.1 (Task 9d probe):
+    /// `{ building: { status: "cleaning" } }` →
+    /// `{ building: { status: "indexing", initial, pending, updated } }` →
+    /// `{ building: { status: "ready", .. } }`. A missing `building` object
+    /// is treated as ready (an inline-built index has nothing to build);
+    /// `status: "error"` propagates as [`Error::IndexBuild`]. Only ever
+    /// called with names from [`schema::FTS_INDEXES`] — the `format!` embeds
+    /// no caller-supplied text — and only after the index was DEFINEd
+    /// (`INFO FOR INDEX` on an *absent* index errors, which `?` surfaces).
+    async fn wait_index_ready(&self, name: &str) -> Result<()> {
+        loop {
+            let mut resp = self
+                .db
+                .query(format!("INFO FOR INDEX {name} ON TABLE node"))
+                .await?;
+            let info: Option<serde_json::Value> = resp.take(0)?;
+            let building = info.as_ref().and_then(|i| i.get("building"));
+            let status = building
+                .and_then(|b| b.get("status"))
+                .and_then(|s| s.as_str());
+            match status {
+                None | Some("ready") => return Ok(()),
+                Some("error") => {
+                    return Err(Error::IndexBuild(format!(
+                        "FULLTEXT index '{name}' reported a build error: {}",
+                        building
+                            .and_then(|b| b.get("error"))
+                            .and_then(|e| e.as_str())
+                            .unwrap_or("(no detail)")
+                    )));
+                }
+                Some(_) => tokio::time::sleep(INDEX_POLL_INTERVAL).await,
+            }
         }
     }
 
