@@ -17,10 +17,14 @@
 
 mod error;
 mod generated;
+mod helpers;
 mod language;
 mod types;
 
 pub use error::{ErrorCode, ExtractionError, Severity};
 pub use generated::is_generated_file;
+pub use helpers::{
+    clean_comment_markers, get_child_by_field, get_node_text, get_preceding_docstring,
+};
 pub use language::{Language, detect_language, is_file_level_only, is_source_file};
 pub use types::{ExtractionResult, MAX_FILE_SIZE, UnresolvedReference};
