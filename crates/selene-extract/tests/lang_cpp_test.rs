@@ -204,3 +204,41 @@ fn representative_cpp_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+/// Inheritance-gap closure — C++ `base_class_clause` carries access specifiers
+/// AND base types; only the type nodes become refs, and a templated base has its
+/// `<…>` args stripped so the ref matches the class the template was declared as
+/// (tree-sitter.ts:5284-5300, #1043).
+#[test]
+fn extracts_cpp_base_class_refs() {
+    let code = "struct Base {\n    int x;\n};\n\nstruct Widget {\n    int y;\n};\n\nclass FOO : public Base { int a; };\nstruct BAR : public Base { int b; };\nclass Multi : public Base, public Widget { int c; };\n";
+    let r = extract("inherit.cpp", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "extends")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(extends, vec!["Base", "Base", "Base", "Widget"]);
+}
+
+/// A C++ class with NO base clause must emit NO `extends` ref.
+///
+/// This is the regression guard for the one justified TS deviation. TS's
+/// Go-struct-embedding arm is not language-gated, and C++ spells a member
+/// declaration `field_declaration` too — with no `field_identifier`, since the
+/// name lives inside the `function_declarator`. So TS reads the RETURN TYPE of the
+/// first member as an embedded base and emits a phantom `extends:Widget` here.
+/// We gate that arm to Go, so we do not. "Silent beats wrong."
+#[test]
+fn cpp_member_return_type_is_not_a_base_class() {
+    let code = "struct Widget { int w; };\nclass Factory { public: static Widget create(); };\n";
+    let r = extract("f.cpp", code);
+    assert!(
+        !r.unresolved.iter().any(|u| u.reference_kind == "extends"),
+        "phantom base class from a member's return type: {:?}",
+        r.unresolved
+    );
+}

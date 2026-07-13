@@ -298,3 +298,38 @@ fn representative_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+/// Inheritance-gap closure, Rust arm — a NEGATIVE test as much as a positive one.
+///
+/// Rust's supertrait (`trait_bounds`) and `impl Trait for Type` refs are owned by
+/// `rules/rust_lang.rs`, NOT by the walker's shared `extract_inheritance` pass —
+/// which deliberately does not handle `trait_bounds` (tree-sitter.ts:5380). If it
+/// ever did, these refs would DOUBLE. The exact-equality assertions below are what
+/// pin that: a duplicate would fail them.
+#[test]
+fn rust_supertrait_and_impl_refs_are_emitted_exactly_once() {
+    let code = "pub trait Display {}\n\npub trait Error: Display {\n    fn description(&self) -> &str;\n}\n\npub struct MyError {\n    code: u32,\n}\n\nimpl Error for MyError {\n    fn description(&self) -> &str {\n        \"e\"\n    }\n}\n";
+    let r = extract("inherit.rs", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Extends.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    let implements: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Implements.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    // Exactly one each — NOT two. The supertrait bound, and the impl-for.
+    assert_eq!(
+        extends,
+        vec!["Display"],
+        "supertrait ref must not duplicate"
+    );
+    assert_eq!(implements, vec!["Error"], "impl-for ref must not duplicate");
+}

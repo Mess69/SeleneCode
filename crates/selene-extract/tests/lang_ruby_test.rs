@@ -207,13 +207,16 @@ end
 
     // …and its body is WALKED — attributed to that node. Before the fix the
     // whole subtree was consumed, so this file produced ZERO refs.
-    // (`Calculator.new` yields a `calls` ref to `Calculator` rather than an
-    // `instantiates` one: Ruby's receiver/method call branch is an explicit
-    // wave-2 gap — see `walker/body.rs`. What this pins is that the body is
-    // reached at all, and that the ref hangs off the right scope.)
+    //
+    // UPDATED: this assertion used to expect `calls:Calculator`, and said so
+    // explicitly — "Ruby's receiver/method call branch is an explicit wave-2 gap".
+    // That gap is now closed (tree-sitter.ts:3843-3898), so `Calculator.new` is
+    // recognized for what it is: an INSTANTIATION of `Calculator`, not a call to
+    // it. What this test pins is unchanged — that the block body is reached at
+    // all, and that the ref hangs off the right scope.
     assert!(
         r.unresolved.iter().any(|u| {
-            u.reference_kind == EdgeKind::Calls.as_str()
+            u.reference_kind == EdgeKind::Instantiates.as_str()
                 && u.reference_name == "Calculator"
                 && u.from_node_id == m.id
         }),
@@ -238,4 +241,154 @@ fn require_still_extracts_as_an_import() {
         .map(|n| n.name.as_str())
         .collect();
     assert_eq!(imports, vec!["json", "helper"]);
+}
+
+/// Task-19 parity-gate fix (report §4, BUG 6) — `require_relative 'helper'`
+/// emitted only the bare name, which cannot be matched to a file. TS also emits
+/// the RESOLVED path (against this file's directory), and that is the ref the
+/// resolver hangs the cross-file dependency on (tree-sitter.ts:3470-3498).
+#[test]
+fn emits_resolved_path_ref_for_require_relative() {
+    let code = "\nrequire 'json'\nrequire 'yaml'\nrequire_relative 'helper'\n";
+    let r = extract("ruby/lib.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Imports.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    // Bare gem/stdlib requires stay bare (external — no file to point at); the
+    // relative require ALSO yields the resolved, `.rb`-suffixed file path.
+    assert_eq!(imports, vec!["json", "yaml", "helper", "ruby/helper.rb"]);
+}
+
+/// `..` segments resolve against the requiring file's directory, and a
+/// load-path `require` with a slash is kept as-is for suffix matching.
+#[test]
+fn resolves_require_relative_parent_segments() {
+    let code = "\nrequire 'sidekiq/fetch'\nrequire_relative '../util/text'\n";
+    let r = extract("app/models/user.rb", code);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Imports.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    assert!(
+        imports.contains(&"app/util/text.rb"),
+        "`..` must normalize against the file's dir: {imports:?}"
+    );
+    // A load-path require with a slash resolves by file-path suffix.
+    assert!(
+        imports.contains(&"sidekiq/fetch.rb"),
+        "load-path require kept for suffix match: {imports:?}"
+    );
+}
+
+/// Inheritance-gap closure — Ruby `class Child < Base` spells the base clause
+/// `superclass`, the same node type Java uses for `extends`
+/// (tree-sitter.ts:5200/5261-5274).
+#[test]
+fn extracts_ruby_superclass_ref() {
+    let code = "class Base\n  def handle\n    1\n  end\nend\n\nclass Child < Base\n  def handle\n    2\n  end\nend\n";
+    let r = extract("inherit.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Extends.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(extends, vec!["Base"]);
+
+    let child = r
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Class && n.name == "Child")
+        .unwrap();
+    assert!(
+        r.unresolved
+            .iter()
+            .any(|u| u.reference_kind == EdgeKind::Extends.as_str() && u.from_node_id == child.id),
+        "derived class must own its extends ref"
+    );
+}
+
+/// Ruby `call` nodes use `receiver` + `method` fields, NOT the `object`/`name`/
+/// `function` fields the generic call path expects — so they fell through to it,
+/// which took the RECEIVER as the callee and DROPPED the method: `@db.query(id)`
+/// produced `calls:@db` (unresolvable) and no method edge at all
+/// (tree-sitter.ts:3843-3898).
+///
+/// The COUNT gate is blind to this — `calls` is 1 either way. It took the identity
+/// gate to see it.
+#[test]
+fn ruby_call_refs_carry_receiver_and_method() {
+    let code = "module Store\n  class Repository\n    def initialize(db)\n      @db = db\n    end\n\n    def find(id)\n      raw = @db.query(id)\n      JSON.parse(raw)\n    end\n\n    def self.build(db)\n      new(db)\n    end\n  end\nend\n";
+    let r = extract("composite.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Calls.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    // `receiver.method`, not the bare receiver. `new(db)` has no receiver → bare.
+    assert!(calls.contains(&"@db.query"), "calls: {calls:?}");
+    assert!(calls.contains(&"JSON.parse"), "calls: {calls:?}");
+    assert!(calls.contains(&"new"), "calls: {calls:?}");
+    assert!(
+        !calls.contains(&"@db"),
+        "receiver leaked as callee: {calls:?}"
+    );
+
+    // A CONSTANT receiver is itself a dependency — a class used only via its class
+    // methods still records a dependent (ts:3885-3897).
+    let refs: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::References.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(refs, vec!["JSON"]);
+}
+
+/// `Foo.new` is construction, not a call; `self`/`super` receivers collapse to the
+/// bare method name (tree-sitter.ts:3866-3877).
+#[test]
+fn ruby_new_is_instantiation_and_self_receiver_collapses() {
+    let code = "class C\n  def run\n    Widget.new(1)\n    self.helper(2)\n  end\nend\n";
+    let r = extract("c.rb", code);
+
+    let inst: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Instantiates.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(inst, vec!["Widget"]);
+
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Calls.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"helper"),
+        "self receiver must collapse: {calls:?}"
+    );
+    assert!(!calls.contains(&"self.helper"), "calls: {calls:?}");
+    // A `new` receiver must NOT also surface as a plain call.
+    assert!(
+        !calls.iter().any(|c| c.contains("Widget")),
+        "calls: {calls:?}"
+    );
 }

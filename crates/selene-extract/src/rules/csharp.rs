@@ -132,7 +132,19 @@ impl LanguageRules for CSharpRules {
                     is_static,
                     ..NodeExtra::default()
                 };
-                s.create_node(kind, &name, d, extra);
+                let Some(idx) = s.create_node(kind, &name, d, extra) else {
+                    continue;
+                };
+                // The field's declared type is a `references` dependency
+                // (tree-sitter.ts:2077 → `extractTypeAnnotations` → the C# path
+                // at tree-sitter.ts:5758). The search scope is the OUTER
+                // `field_declaration`: C# carries the type inside the
+                // `variable_declaration` wrapper, which that path descends into
+                // (#381). Called directly — the generic `extract_type_annotations`
+                // entry only re-dispatches back to here for C#.
+                if let Some(id) = s.id_of(idx) {
+                    s.extract_csharp_type_refs(node, &id);
+                }
             }
         }
         true

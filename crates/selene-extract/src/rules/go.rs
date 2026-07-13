@@ -369,6 +369,10 @@ fn extract_go_interface(node: Node<'_>, s: &mut Session<'_>) {
     let Some(interface_type) = get_child_by_field(node, "type") else {
         return;
     };
+    // Go interface embedding — `type Querier interface { LabelQuerier; … }`. The
+    // embedded interfaces hang off the INNER `interface_type`, not the type_spec,
+    // so this runs on `interface_type` (tree-sitter.ts:2894).
+    s.extract_inheritance(interface_type, &iface_id);
     s.push_scope(iface_id);
     let mut cursor = interface_type.walk();
     let members: Vec<Node<'_>> = interface_type

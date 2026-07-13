@@ -65,3 +65,32 @@ fn representative_js_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+/// Inheritance-gap closure — JS `class_heritage` holds a BARE identifier, with
+/// no `extends_clause` wrapper (tree-sitter.ts:5499-5513).
+#[test]
+fn extracts_javascript_class_extends_ref() {
+    let code = "class Animal {\n  speak() {\n    return 'generic';\n  }\n}\n\nexport class Dog extends Animal {\n  speak() {\n    return 'woof';\n  }\n}\n";
+    let r = extract("inherit.js", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "extends")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(extends, vec!["Animal"]);
+
+    // Attributed to the derived class, not the file.
+    let dog = r
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Class && n.name == "Dog")
+        .unwrap();
+    assert!(
+        r.unresolved
+            .iter()
+            .any(|u| u.reference_kind == "extends" && u.from_node_id == dog.id)
+    );
+}

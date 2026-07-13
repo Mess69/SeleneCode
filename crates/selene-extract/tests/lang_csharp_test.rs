@@ -167,3 +167,116 @@ fn representative_fixture_snapshot() {
     r.duration_ms = 0;
     insta::assert_yaml_snapshot!("csharp_representative_fixture", r);
 }
+
+// ---------------------------------------------------------------------------
+// Task-19 parity-gate fixes (report §4, BUGs 3 + 4)
+// ---------------------------------------------------------------------------
+
+fn refs_of(r: &ExtractionResult, kind: &str) -> Vec<String> {
+    r.unresolved
+        .iter()
+        .filter(|u| u.reference_kind == kind)
+        .map(|u| u.reference_name.clone())
+        .collect()
+}
+
+/// BUG 3 — C# type-annotation refs were entirely missing. The C# grammar has no
+/// `type_identifier` leaf (it uses `identifier`, `predefined_type`,
+/// `qualified_name`, `generic_name`), so the generic subtree walk emitted zero.
+/// The C#-aware path walks only KNOWN type positions (tree-sitter.ts:5758-5877).
+#[test]
+fn extracts_csharp_type_annotation_refs() {
+    let code = "\npublic class OrderService\n{\n    private readonly IOrderRepository _repository;\n\n    public OrderService(IOrderRepository repository)\n    {\n        _repository = repository;\n    }\n\n    public async Task<Order> GetOrderAsync(string id)\n    {\n        return await _repository.FindByIdAsync(id);\n    }\n}\n";
+    let r = extract("OrderService.cs", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let refs = refs_of(&r, "references");
+    // Field type, ctor param type, and the generic return type unwrapped to BOTH
+    // its head and its argument. `string id` is a predefined_type → never a ref.
+    assert_eq!(
+        refs,
+        vec!["IOrderRepository", "IOrderRepository", "Task", "Order"]
+    );
+
+    // The field's type ref is attributed to the FIELD node, not the class.
+    let field_id = &find(&r, NodeKind::Field, "_repository").unwrap().id;
+    assert!(
+        r.unresolved.iter().any(|u| {
+            &u.from_node_id == field_id
+                && u.reference_kind == "references"
+                && u.reference_name == "IOrderRepository"
+        }),
+        "field must own its type ref"
+    );
+}
+
+/// A parameter NAME must never be mis-emitted as a type ref (#381) — the reason
+/// the C# path walks only `type` fields instead of the whole subtree.
+#[test]
+fn csharp_parameter_names_are_not_type_refs() {
+    let code = "\npublic class B\n{\n    public void Build(UserDto request) { }\n}\n";
+    let r = extract("B.cs", code);
+    let refs = refs_of(&r, "references");
+    assert_eq!(refs, vec!["UserDto"], "param name leaked as a type ref");
+}
+
+/// BUG 4 — a record's base list was unwired. Also pins the DELIBERATE divergence
+/// from TS: TS emits the raw `primary_constructor_base_type` text
+/// (`SimplePositional(A)` — argument list and all, a name that can never
+/// resolve); we emit the bare type name. Count-identical, resolution-correct.
+#[test]
+fn extracts_csharp_record_base_list_and_primary_ctor_refs() {
+    let code = "\nnamespace Fixture;\n\npublic record SimplePositional(int A);\npublic record DerivedRec(int A, string B) : SimplePositional(A);\npublic record GenericRec<T>(T Value);\n";
+    let r = extract("Records.cs", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    // The base type, NOT `SimplePositional(A)`.
+    assert_eq!(refs_of(&r, "extends"), vec!["SimplePositional"]);
+
+    // A positional record's primary-ctor params are the type's declared deps
+    // (#237): `T` from GenericRec. `int`/`string` are predefined → skipped.
+    assert_eq!(refs_of(&r, "references"), vec!["T"]);
+}
+
+/// A C# class base list carries the base class AND the interfaces in one
+/// colon-separated list; the syntax can't tell them apart, so TS emits every
+/// entry as `extends` (tree-sitter.ts:5439-5458). Generic bases unwrap to the
+/// bare head so the ref matches the class the generic was declared as.
+#[test]
+fn extracts_csharp_class_base_list() {
+    let code = "\npublic class Movie : BaseItem, IPlugin\n{\n}\n\npublic class Client : ClientBase<Order>\n{\n}\n";
+    let r = extract("Movie.cs", code);
+    assert_eq!(
+        refs_of(&r, "extends"),
+        vec!["BaseItem", "IPlugin", "ClientBase"]
+    );
+}
+
+/// A C# enum's base list names its STORAGE TYPE, not a supertype — so it emits NO
+/// `extends` ref.
+///
+/// TS runs `extractInheritance` on enums (tree-sitter.ts:1873) and its `base_list`
+/// arm (ts:5442) takes every child, so TS emits `extends:byte` for
+/// `enum Status : byte` — asserting the enum INHERITS FROM `byte`. It does not: C#
+/// enums cannot inherit, `: byte` picks the storage width, and `byte` is a
+/// `predefined_type` keyword with no definition node anywhere to resolve to.
+///
+/// A false inheritance edge is what "silent beats wrong" forbids, so `extract_enum`
+/// does not call the inheritance pass. Recorded as a justified deviation against
+/// `csharp/Enums.cs` in deviations.toml — this test is its semantic half.
+#[test]
+fn csharp_enum_storage_type_is_not_a_base_class() {
+    let code = "public enum Status : byte\n{\n    Active,\n    Inactive,\n}\n\npublic enum Plain\n{\n    One,\n}\n";
+    let r = extract("Enums.cs", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    assert!(
+        !r.unresolved.iter().any(|u| u.reference_kind == "extends"),
+        "an enum's storage type leaked as a base class: {:?}",
+        r.unresolved
+    );
+    // The enums and their members are still extracted normally.
+    assert!(find(&r, NodeKind::Enum, "Status").is_some());
+    assert!(find(&r, NodeKind::Enum, "Plain").is_some());
+    assert!(find(&r, NodeKind::EnumMember, "Active").is_some());
+}

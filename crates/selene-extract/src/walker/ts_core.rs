@@ -36,10 +36,9 @@ static VUE_STORE_FILE_SIGNAL: LazyLock<Regex> = LazyLock::new(|| {
         .unwrap()
 });
 
-/// `TYPE_ANNOTATION_LANGUAGES ∩ v0` — TS/TSX drive it now; kotlin/rust/go/
-/// java/csharp/php gate in as their configs land (C# and PHP need their
-/// own dispatch paths — Tasks 10/14 insertion points in
-/// [`Session::extract_type_annotations`]).
+/// `TYPE_ANNOTATION_LANGUAGES ∩ v0`. C# and PHP have their own dispatch
+/// paths inside [`Session::extract_type_annotations`] — neither grammar
+/// produces the `type_identifier` leaf the generic subtree walk keys on.
 pub(super) fn is_type_annotation_language(l: Language) -> bool {
     matches!(
         l,
@@ -78,17 +77,61 @@ fn is_builtin_type(name: &str) -> bool {
     )
 }
 
+/// PHP type-position wrappers — a type-hint arrives as one of these, never
+/// as a bare `type_identifier`. Ported VERBATIM from `PHP_TYPE_NODES`
+/// (tree-sitter.ts:309-313).
+fn is_php_type_node(kind: &str) -> bool {
+    matches!(
+        kind,
+        "named_type"
+            | "optional_type"
+            | "nullable_type"
+            | "union_type"
+            | "intersection_type"
+            | "disjunctive_normal_form_type"
+            | "primitive_type"
+    )
+}
+
+/// PHP pseudo-types that never create a reference (`self`, `static`, the
+/// scalar hints). Ported VERBATIM from `PHP_PSEUDO_TYPES`
+/// (tree-sitter.ts:5625-5628).
+fn is_php_pseudo_type(name: &str) -> bool {
+    matches!(
+        name,
+        "self"
+            | "static"
+            | "parent"
+            | "mixed"
+            | "object"
+            | "iterable"
+            | "callable"
+            | "void"
+            | "null"
+            | "false"
+            | "true"
+            | "never"
+            | "array"
+            | "int"
+            | "float"
+            | "string"
+            | "bool"
+    )
+}
+
 impl Session<'_> {
     // =========================================================================
     // Type-annotation references
     // =========================================================================
 
-    /// Type refs from a function/method/property node's annotations
-    /// (parameter types, return type, direct `type_annotation`) →
-    /// `references` UnresolvedReferences. INSERTION POINT (Task 10/14):
-    /// the C#-aware and PHP-aware dispatch paths (their grammars have no
-    /// `type_identifier` leaves).
-    pub(super) fn extract_type_annotations(
+    /// Type refs from a function/method/property/field node's annotations
+    /// (parameter types, return type, direct `type_annotation`) → `references`
+    /// UnresolvedReferences.
+    ///
+    /// C# and PHP dispatch to their own paths first: neither grammar produces
+    /// the `type_identifier` leaf the generic subtree walk keys on, so the
+    /// generic path emits nothing for them (tree-sitter.ts:5653-5677).
+    pub(crate) fn extract_type_annotations(
         &mut self,
         rules: &'static dyn LanguageRules,
         node: Node<'_>,
@@ -97,6 +140,27 @@ impl Session<'_> {
         if !is_type_annotation_language(self.language()) {
             return;
         }
+
+        // C# tree-sitter produces no `type_identifier` leaf — it uses
+        // `identifier` / `predefined_type` / `qualified_name` / `generic_name` —
+        // so the generic subtree walk below emits ZERO refs for it. Dispatch to
+        // a C#-aware path that descends only KNOWN type positions, so parameter
+        // NAMES never surface as type refs (tree-sitter.ts:5663-5666, #381).
+        if self.language() == Language::CSharp {
+            self.extract_csharp_type_refs(node, node_id);
+            return;
+        }
+
+        // PHP type-hints are `named_type`/`optional_type`/`union_type` wrapping
+        // a `name`/`qualified_name` — never `type_identifier` — so the generic
+        // walk emits nothing. Dispatch to a PHP-aware path over type positions
+        // only, so a `variable_name` like `$events` can't mis-emit as a ref
+        // (tree-sitter.ts:5674-5677).
+        if self.language() == Language::Php {
+            self.extract_php_type_refs(node, node_id);
+            return;
+        }
+
         if let Some(params) = get_child_by_field(node, rules.tables().params_field) {
             self.extract_type_refs_from_subtree(params, node_id);
         }
@@ -149,6 +213,229 @@ impl Session<'_> {
         let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
         for child in children {
             self.extract_type_refs_from_subtree(child, from_id);
+        }
+    }
+
+    /// One `references` ref at `node`'s position — the shared tail of every
+    /// type-position emit below.
+    fn push_type_ref(&mut self, name: String, node: Node<'_>, from_id: &str) {
+        self.add_unresolved(UnresolvedReference {
+            from_node_id: from_id.to_string(),
+            reference_name: name,
+            reference_kind: EdgeKind::References.as_str().to_string(),
+            line: Some(u32::try_from(node.start_position().row).unwrap_or(0) + 1),
+            column: Some(u32::try_from(node.start_position().column).unwrap_or(0)),
+            file_path: None,
+            language: None,
+        });
+    }
+
+    /// Type refs from a C# node that OWNS a type position — a method /
+    /// constructor / property / field declaration. Walks only into the known
+    /// type fields, so a parameter name (`request` in `Build(UserDto request)`)
+    /// is never mis-emitted as a type ref. Port of `extractCsharpTypeRefs`
+    /// (tree-sitter.ts:5758-5790, #381).
+    pub(crate) fn extract_csharp_type_refs(&mut self, node: Node<'_>, node_id: &str) {
+        // A property's type is under `type`; a method/ctor's RETURN type is
+        // under `returns` (tree-sitter-c-sharp 0.23.x). A node carries only one
+        // of the two, so checking both covers each without conflating them
+        // (tree-sitter.ts:5763-5764).
+        if let Some(direct) =
+            get_child_by_field(node, "type").or_else(|| get_child_by_field(node, "returns"))
+        {
+            self.walk_csharp_type_position(direct, node_id);
+        }
+
+        // A `field_declaration` has no `type` field of its own — it wraps its
+        // declarators in a `variable_declaration` that carries it, so descend
+        // one level (tree-sitter.ts:5766-5774).
+        let mut cursor = node.walk();
+        let var_decl = node
+            .named_children(&mut cursor)
+            .find(|c| c.kind() == "variable_declaration");
+        if let Some(vd) = var_decl
+            && let Some(vd_type) = get_child_by_field(vd, "type")
+        {
+            self.walk_csharp_type_position(vd_type, node_id);
+        }
+
+        // Method / constructor parameters: walk ONLY each `parameter`'s `type`
+        // field — walking the parameter itself would emit its NAME as a type
+        // ref (tree-sitter.ts:5776-5789).
+        if let Some(params) = get_child_by_field(node, "parameters") {
+            let mut c2 = params.walk();
+            let types: Vec<Node<'_>> = params
+                .named_children(&mut c2)
+                .filter(|c| c.kind() == "parameter")
+                .filter_map(|p| get_child_by_field(p, "type"))
+                .collect();
+            for t in types {
+                self.walk_csharp_type_position(t, node_id);
+            }
+        }
+    }
+
+    /// The dependencies declared by a C# PRIMARY CONSTRUCTOR —
+    /// `class Svc(IRepo repo) { … }` (C# 12+) and EVERY positional record
+    /// (`record GenericRec<T>(T Value)`). The parameter list hangs off the type
+    /// declaration as an unnamed-field `parameter_list` child, not the
+    /// `parameters` field a method uses, so it is found by node type. Port of
+    /// `extractCsharpPrimaryCtorParamRefs` (tree-sitter.ts:5803-5813, #237).
+    pub(super) fn extract_csharp_primary_ctor_param_refs(
+        &mut self,
+        node: Node<'_>,
+        owner_id: &str,
+    ) {
+        if self.language() != Language::CSharp {
+            return;
+        }
+        let mut cursor = node.walk();
+        let Some(param_list) = node
+            .named_children(&mut cursor)
+            .find(|c| c.kind() == "parameter_list")
+        else {
+            return;
+        };
+        let mut c2 = param_list.walk();
+        let types: Vec<Node<'_>> = param_list
+            .named_children(&mut c2)
+            .filter(|c| c.kind() == "parameter")
+            .filter_map(|p| get_child_by_field(p, "type"))
+            .collect();
+        for t in types {
+            self.walk_csharp_type_position(t, owner_id);
+        }
+    }
+
+    /// Walk a C# subtree KNOWN to be in a type position (return / parameter /
+    /// property / field type, generic argument). Identifiers reached here are
+    /// type names, not parameter names — the callers gate that. Port of
+    /// `walkCsharpTypePosition` (tree-sitter.ts:5820-5877).
+    fn walk_csharp_type_position(&mut self, node: Node<'_>, from_id: &str) {
+        match node.kind() {
+            // int/string/bool/… — never a project ref (tree-sitter.ts:5822).
+            "predefined_type" => {}
+
+            // Bare type name: `Foo` in `Foo bar`, or the `Foo` inside
+            // `List<Foo>` (tree-sitter.ts:5825-5836).
+            "identifier" => {
+                let name = get_node_text(node, self.source());
+                if !name.is_empty() && !is_builtin_type(name) {
+                    let name = name.to_string();
+                    self.push_type_ref(name, node, from_id);
+                }
+            }
+
+            // `Namespace.Foo` → the rightmost identifier is the type; the
+            // resolver matches on the trailing simple name
+            // (tree-sitter.ts:5842-5854).
+            "qualified_name" => {
+                let text = get_node_text(node, self.source());
+                let last = text.rsplit('.').next().unwrap_or(text);
+                if !last.is_empty() && !is_builtin_type(last) {
+                    let last = last.to_string();
+                    self.push_type_ref(last, node, from_id);
+                }
+            }
+
+            // `(int Code, Foo Payload)` — a tuple element has BOTH a `type` and
+            // a `name` field; descending into all named children would emit the
+            // element NAME (`Code`) as a type ref (tree-sitter.ts:5861-5865).
+            "tuple_element" => {
+                if let Some(t) = get_child_by_field(node, "type") {
+                    self.walk_csharp_type_position(t, from_id);
+                }
+            }
+
+            // Composite type nodes — `generic_name`, `nullable_type`,
+            // `array_type`, `pointer_type`, `tuple_type`, `ref_type`, and any
+            // newer wrapper the grammar adds (tree-sitter.ts:5867-5876).
+            _ => {
+                let mut cursor = node.walk();
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for child in children {
+                    self.walk_csharp_type_position(child, from_id);
+                }
+            }
+        }
+    }
+
+    /// Type refs from a PHP method / function / property declaration. Walks
+    /// ONLY type positions: each parameter's type child (inside
+    /// `formal_parameters`), the return type, and a property's type — all
+    /// direct children of the declaration. Parameter and property NAMES are
+    /// `variable_name` (`$x`), never type nodes, so they cannot be mis-emitted.
+    /// Port of `extractPhpTypeRefs` (tree-sitter.ts:5887-5902).
+    fn extract_php_type_refs(&mut self, node: Node<'_>, node_id: &str) {
+        let mut cursor = node.walk();
+        let params = node
+            .named_children(&mut cursor)
+            .find(|c| c.kind() == "formal_parameters");
+
+        // simple_parameter / property_promotion_parameter / variadic_parameter
+        // each carry their type as a direct child (tree-sitter.ts:5890-5895).
+        let mut types: Vec<Node<'_>> = Vec::new();
+        if let Some(params) = params {
+            let mut c2 = params.walk();
+            for p in params.named_children(&mut c2) {
+                let mut c3 = p.walk();
+                types.extend(
+                    p.named_children(&mut c3)
+                        .filter(|c| is_php_type_node(c.kind())),
+                );
+            }
+        }
+
+        // The return type (method/function) and a property's type are TYPE
+        // nodes that are DIRECT children of the declaration
+        // (tree-sitter.ts:5897-5901).
+        let mut c4 = node.walk();
+        types.extend(
+            node.named_children(&mut c4)
+                .filter(|c| is_php_type_node(c.kind())),
+        );
+
+        for t in types {
+            self.walk_php_type_position(t, node_id);
+        }
+    }
+
+    /// Walk a PHP subtree KNOWN to be in a type position; emit class/interface
+    /// refs. Port of `walkPhpTypePosition` (tree-sitter.ts:5905-5934).
+    fn walk_php_type_position(&mut self, node: Node<'_>, from_id: &str) {
+        match node.kind() {
+            // int/string/void/… (tree-sitter.ts:5906).
+            "primitive_type" => {}
+
+            "name" => {
+                let name = get_node_text(node, self.source());
+                if !name.is_empty() && !is_php_pseudo_type(name) {
+                    let name = name.to_string();
+                    self.push_type_ref(name, node, from_id);
+                }
+            }
+
+            // `App\Contracts\Logger` → the trailing simple name: what the class
+            // node is stored as, and what a `use` import brings into scope
+            // (tree-sitter.ts:5917-5928).
+            "qualified_name" => {
+                let text = get_node_text(node, self.source());
+                let last = text.rsplit('\\').next().unwrap_or("");
+                if !last.is_empty() && !is_php_pseudo_type(last) {
+                    let last = last.to_string();
+                    self.push_type_ref(last, node, from_id);
+                }
+            }
+
+            // optional_type / nullable_type / union_type / intersection_type /
+            // named_type → recurse (tree-sitter.ts:5929-5933).
+            _ => {
+                let mut cursor = node.walk();
+                let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+                for child in children {
+                    self.walk_php_type_position(child, from_id);
+                }
+            }
         }
     }
 

@@ -87,20 +87,51 @@
 //! - **Framework detection / `fw.extract` append** → Phase 3 (the seam is
 //!   threaded through the orchestrator as an empty framework-name list).
 //!
-//! # Known parity deviations
+//! # Parity with the CodeGraph TS extractor
 //!
-//! Real, in-code, and deliberately not re-documented here — each lives at
-//! its site: the **kotlin-ng drift ledger** (`rules::kotlin` module docs —
-//! a different grammar lineage than the WASM grammar the TS maps describe),
-//! **C++ stack-construction (#1035) and local fn-pointer call rewriting**
-//! (unimplemented insertion points in `walker::body`), **Go struct/interface
-//! embedding `extends` refs** (unwired — `rules::go`), **Java field-annotation
-//! `decorates` refs** (unwired — `rules::java`), and **Python stacked-decorator
-//! `is_static`** (`rules::python`).
+//! Extraction is held to **count- AND name-parity** with the reference
+//! implementation by `tests/parity_gate.rs`, at **tolerance 0**, over a shared
+//! corpus of byte-identical fixtures (`tests/fixtures/parity/`). Both halves
+//! matter: the count gate cannot see a divergence that keeps the count and
+//! changes the identity (`extends:Base` → `extends:Base(A)`), which is exactly
+//! what a port under count-pressure produces.
 //!
-//! The Task 19 **parity gate** is the authority on this list — once it
-//! lands, `tests/fixtures/parity/deviations.toml` is the ledger of record
-//! and every deviation must be justified there.
+//! ## Deviation ledger — `tests/fixtures/parity/deviations.toml` is the authority
+//!
+//! Every intentional divergence from TS lives **there**, one entry each, with the
+//! observed counts/names and a cited reason. It is machine-checked: an entry that
+//! matches no observed difference FAILS the gate as stale, so a fixed divergence
+//! cannot leave a whitelist that silently re-permits a regression. Do not record
+//! deviations anywhere else — a second list would drift out of sync with the one
+//! the gate enforces.
+//!
+//! As of the Phase 2 gate the ledger holds **three divergences** — every one a case
+//! of **"silent beats wrong"**, where TS emits a reference that cannot resolve to
+//! anything and we deliberately emit nothing:
+//!
+//! 1. **C++ phantom base classes.** TS's Go-struct-embedding arm is not
+//!    language-gated, and C++ spells member declarations `field_declaration` too —
+//!    so TS reads a member's type (a return type, or a pointer field's type) as an
+//!    inherited base and emits `extends` refs from classes that have no base clause
+//!    at all. We gate that arm to Go.
+//! 2. **C# enum storage types.** For `enum Status : byte`, TS emits `extends:byte`
+//!    — asserting the enum *inherits from* `byte`. C# enums cannot inherit; `: byte`
+//!    picks the storage width, and `byte` is a keyword with no definition node.
+//!    [`walker`]'s enum path does not call the inheritance pass.
+//! 3. **C# record base names.** For `record D(int A) : Base(A)`, TS emits the raw
+//!    `primary_constructor_base_type` text — the literal `Base(A)`, argument list
+//!    included — which no symbol carries and no resolver can match. We unwrap to
+//!    the type head (`Base`). The counts agree, so only the NAME half sees this.
+//!
+//! …plus one **grammar drift** (`[[grammar-drift]]`), which is the opposite of a
+//! deviation: Kotlin's `tree-sitter-kotlin-ng` shapes differ from the grammar TS
+//! ran, the walker compensates, and the output is *identical*. It is recorded so
+//! that the compensation is explained — and machine-checked, by asserting the
+//! fixture stays at exact count AND name parity.
+//!
+//! All four are documented in full, with TS line numbers and fixtures, in
+//! `deviations.toml`. Each is gated: a fixture exercises it, and a stale entry
+//! fails the build.
 //!
 //! # Versioning
 //!

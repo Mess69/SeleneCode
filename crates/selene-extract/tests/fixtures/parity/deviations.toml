@@ -1,0 +1,187 @@
+# Justified TS<->Rust extraction divergences (the Phase 2 parity gate).
+#
+# The gate's tolerance is ZERO. Every difference is either a real bug (fix it) or
+# a justified deviation (an entry here, naming its cause). An entry that matches
+# no observed difference FAILS the gate as stale — a fixed divergence must not
+# leave a permanent whitelist behind.
+#
+# THREE kinds of entry:
+#
+#   [[deviation]]       a COUNT divergence.
+#     fixture = path under tests/fixtures/parity/
+#     counter = "nodes" | "edges" | "refs" | "<group>.<kind>"
+#     ts, rust = the exact counts observed on each side
+#     reason  = why this is correct-by-design, citing the source
+#
+#   [[name-deviation]]  an IDENTITY divergence, where the counts may well AGREE.
+#     fixture = path under tests/fixtures/parity/
+#     set     = "nodes" | "refs"
+#     ts, rust = the `kind:name` each engine emits ("" = that side emits nothing)
+#     reason  = as above
+#
+#   [[grammar-drift]]   NOT a divergence — the opposite. We link a different
+#     tree-sitter grammar than TS ran, the AST shape differs, and the port
+#     compensates so the OUTPUT does not. Recorded here because it explains why
+#     the code carries two shapes, and MACHINE-CHECKED from the other side:
+#     `grammar_drift_holds_exact_parity` asserts the named fixture has ZERO count
+#     and ZERO name differences. If the compensation breaks, the gate fails.
+#
+# A count divergence also shows up as a name divergence (a ref TS emits and we do
+# not is missing from both halves), so such a case needs BOTH entries.
+#
+# EVERY intentional divergence lives HERE. Not in a commit message, not in a code
+# comment — those get lost, and three of these nearly did.
+
+# =============================================================================
+# C++ — TS invents base classes that do not exist. TS is wrong; we emit nothing.
+# =============================================================================
+#
+# ROOT CAUSE (found by porting the very arm that causes it). TS's `extractInheritance`
+# has an arm for GO STRUCT EMBEDDING (tree-sitter.ts:5359-5376): a `field_declaration`
+# with no `field_identifier` means the type IS the name (`type DB struct { *Head }`).
+# That arm is NOT language-gated — and C++ spells a member declaration
+# `field_declaration` too. Compounding it, TS's check
+#
+#     child.namedChildren.some(c => c.type === 'field_identifier')
+#
+# only looks at DIRECT named children. In C++ a member's name is nested inside its
+# DECLARATOR, so it is never a direct child:
+#
+#     static Widget create();   ->  declarator: (function_declarator (field_identifier))
+#     Client *client_;          ->  declarator: (pointer_declarator  (field_identifier))
+#
+# Both therefore look "embedded" to TS, which takes the member's TYPE as a base class.
+# So ANY C++ member whose declarator nests its name (function, pointer, array,
+# reference) and whose type is a bare `type_identifier` becomes a phantom supertype —
+# a member's RETURN TYPE or a FIELD's type, indifferently. Primitive-typed members
+# (`int x;`) are spared only because `int` is a `primitive_type`, not a `type_identifier`.
+#
+# Verified against the real TS build at codegraph 9ccf5d0: a class with NO base clause
+# emits `extends` refs for its members' types, while a genuine
+# `class Derived : public Base` correctly emits `extends:Base`.
+#
+# NOT PORTED, deliberately: a false inheritance edge is exactly what the Global
+# Constraints' "silent beats wrong" rule forbids — it would tell an agent that
+# `Factory` derives from `Widget`, which is true in no sense. We gate the arm to Go.
+# `cpp_member_return_type_is_not_a_base_class` (tests/lang_cpp_test.rs) guards it.
+
+[[deviation]]
+fixture = "cpp/f.cpp"
+counter = "refs.extends"
+ts = 1
+rust = 0
+reason = "TS false positive: its ungated Go-struct-embedding arm reads the RETURN TYPE of `static Widget create();` as an embedded base (the field_identifier is nested in a function_declarator, so TS's direct-children check misses it). `class Factory` has no base clause. Not ported — 'silent beats wrong'."
+
+[[deviation]]
+fixture = "cpp/f.cpp"
+counter = "refs"
+ts = 2
+rust = 1
+reason = "Rollup of the refs.extends phantom above — the same single TS false positive, counted once in the per-kind bucket and once in the file total."
+
+[[name-deviation]]
+fixture = "cpp/f.cpp"
+set = "refs"
+ts = "extends:Widget"
+rust = ""
+reason = "Identity side of the cpp/f.cpp phantom: TS names a base class `Widget` that `class Factory` does not have — it is the return type of a member. We emit nothing."
+
+[[deviation]]
+fixture = "cpp/service.cpp"
+counter = "refs.extends"
+ts = 1
+rust = 0
+reason = "The same TS false positive as cpp/f.cpp, reached via a FIELD instead of a return type: TS reads `Client *client_;` as an embedded base (the field_identifier is nested in a pointer_declarator). `class Service` has no base clause. Not ported — 'silent beats wrong'."
+
+[[deviation]]
+fixture = "cpp/service.cpp"
+counter = "refs"
+ts = 5
+rust = 4
+reason = "Rollup of the refs.extends phantom above — the same single TS false positive, counted once in the per-kind bucket and once in the file total."
+
+[[name-deviation]]
+fixture = "cpp/service.cpp"
+set = "refs"
+ts = "extends:Client"
+rust = ""
+reason = "Identity side of the cpp/service.cpp phantom: TS names a base class `Client` that `class Service` does not have — it is the type of the pointer field `Client *client_;`. We emit nothing."
+
+# =============================================================================
+# C# — TS's record base NAME is malformed. Rust is right, and the COUNTS AGREE,
+# so only the identity half of the gate can see this at all.
+# =============================================================================
+#
+#     public record DerivedRec(int A, string B) : SimplePositional(A);
+#
+# The base is a `primary_constructor_base_type` whose TEXT is `SimplePositional(A)` —
+# the primary-constructor ARGUMENT LIST included. TS takes that text verbatim
+# (tree-sitter.ts:5442-5458 falls through to `getNodeText(baseType)`), emitting a
+# reference to a symbol named `SimplePositional(A)`, which exists nowhere and can never
+# resolve to the `SimplePositional` record. We unwrap to the type head.
+#
+# `refs.extends` is 1 on BOTH sides, so the count gate is structurally blind to this.
+# It is the reason the identity gate exists.
+
+[[name-deviation]]
+fixture = "csharp/Records.cs"
+set = "refs"
+ts = "extends:SimplePositional(A)"
+rust = "extends:SimplePositional"
+reason = "TS emits the raw `primary_constructor_base_type` text, primary-ctor args and all — a name no symbol carries and no resolver can match. We unwrap to the type head, which resolves. Porting TS verbatim would be a knowingly-dead reference ('silent beats wrong')."
+
+# =============================================================================
+# C# — an enum's base list names a STORAGE TYPE, not a supertype.
+# =============================================================================
+#
+#     public enum Status : byte { Active, Inactive }
+#
+# TS calls `extractInheritance` on enum declarations (tree-sitter.ts:1873), whose
+# `base_list` arm (ts:5442-5458) takes every named child of the clause and emits it as
+# `extends`. For a C# enum the base list holds the UNDERLYING INTEGRAL TYPE, so TS emits
+# `extends:byte` — asserting that the enum `Status` INHERITS FROM `byte`.
+#
+# It does not. C# enums cannot inherit; `: byte` chooses the storage width. The ref points
+# at a `predefined_type` keyword that is not a symbol, has no definition node anywhere, and
+# can never resolve. An agent reading the graph would be told `Status` has a supertype.
+#
+# Verified against the real TS build at codegraph 9ccf5d0: `enum Status : byte` -> extends:byte;
+# the base-less control `enum Plain` in the same fixture -> no ref. So this fires on exactly
+# the construct described, and nothing else.
+#
+# NOT PORTED, deliberately: `extract_enum` does not call the inheritance pass. A false
+# inheritance edge is what "silent beats wrong" (Global Constraints) forbids. This entry, and
+# the csharp/Enums.cs fixture, exist so the decision is GATED rather than asserted in prose —
+# it previously lived only in a doc comment, where nothing checked it.
+
+[[deviation]]
+fixture = "csharp/Enums.cs"
+counter = "refs.extends"
+ts = 1
+rust = 0
+reason = "TS emits `extends:byte` for `enum Status : byte` (ts:1873 runs extractInheritance on enums; its base_list arm ts:5442 takes every child). A C# enum's base list is its STORAGE TYPE, not a supertype — enums cannot inherit — so the ref claims a false supertype and points at a keyword that has no definition node. Not ported: 'silent beats wrong'."
+
+[[deviation]]
+fixture = "csharp/Enums.cs"
+counter = "refs"
+ts = 1
+rust = 0
+reason = "Rollup of the refs.extends storage-type phantom above — the same single TS false positive, counted once in the per-kind bucket and once in the file total."
+
+[[name-deviation]]
+fixture = "csharp/Enums.cs"
+set = "refs"
+ts = "extends:byte"
+rust = ""
+reason = "Identity side of the enum storage-type phantom: TS names `byte` as a base class of `enum Status`. `byte` is a predefined_type keyword, not a symbol — there is no node it could ever resolve to. We emit nothing."
+
+# =============================================================================
+# GRAMMAR DRIFT — handled, output identical. Machine-checked to stay that way.
+# =============================================================================
+
+[[grammar-drift]]
+fixture = "kotlin/Inherit.kt"
+rust_grammar = "tree-sitter-kotlin-ng"
+ts_grammar = "tree-sitter-kotlin"
+shapes = "(1) the supertypes sit under a plural `delegation_specifiers` WRAPPER, not as direct children of `class_declaration`; (2) a `user_type`'s name leaf is an `identifier`, not a `type_identifier`."
+reason = "The Rust port links tree-sitter-kotlin-ng; the TS reference ran the older tree-sitter-kotlin. The AST differs in the two ways above, so `extract_inheritance` recurses into the wrapper and `kotlin_delegation_target` accepts BOTH leaf spellings. Output is IDENTICAL to TS (extends:BaseService, extends:Greeter) — this is not a divergence, it is the compensation that prevents one, recorded so the next reader knows why the code carries two shapes. `grammar_drift_holds_exact_parity` asserts this fixture stays at exact count AND name parity, so a broken compensation fails the gate."

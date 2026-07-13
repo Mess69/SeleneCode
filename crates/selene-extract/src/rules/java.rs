@@ -311,7 +311,7 @@ fn extract_java_fields(rules: &JavaRules, node: Node<'_>, s: &mut Session<'_>) {
             Some(t) => format!("{t} {name}"),
             None => name.clone(),
         };
-        s.create_node(
+        let Some(idx) = s.create_node(
             kind,
             &name,
             *decl,
@@ -322,9 +322,24 @@ fn extract_java_fields(rules: &JavaRules, node: Node<'_>, s: &mut Session<'_>) {
                 is_static,
                 ..NodeExtra::default()
             },
-        );
-        // Field-annotation `decorates` refs + type-annotation refs stay with
-        // the core chain (Task 7) — flagged in the Task 10 report.
+        ) else {
+            continue;
+        };
+        // The field's declared TYPE is a `references` dependency
+        // (tree-sitter.ts:2077). The OUTER `field_declaration` is the search
+        // scope — the type sits BESIDE the declarators, not inside them, so
+        // `return_field: "type"` picks it up.
+        //
+        // This hook returns `true`, so the core field chain never runs for Java
+        // and could not emit these: `private final UserRepository repository;`
+        // recorded no dependency on `UserRepository` at all, while the same type
+        // in the constructor's parameter list did (task-19 report §4, BUG 5).
+        //
+        // Field-annotation `decorates` refs remain unwired (Task 10 report).
+        if let Some(id) = s.id_of(idx) {
+            let rules_dyn = s.rules();
+            s.extract_type_annotations(rules_dyn, node, &id);
+        }
     }
 }
 

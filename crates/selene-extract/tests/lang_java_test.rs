@@ -430,3 +430,68 @@ fn chained_factory_reencodes_with_paren_marker() {
         "factory args survived: {calls:?}"
     );
 }
+
+/// Task-19 parity-gate fix (report §4, BUG 5) — a field's declared type emitted
+/// NO `references` ref. `JavaRules::visit_node` intercepts `field_declaration`
+/// and returns `true`, so the core field chain (which would have called
+/// `extractTypeAnnotations`, tree-sitter.ts:2077) never ran for Java: the same
+/// type recorded a dependency from a constructor parameter but not from the
+/// field it was assigned to.
+#[test]
+fn extracts_java_field_type_refs() {
+    let code = "\npublic class UserService {\n    private final UserRepository repository;\n    private int count;\n\n    public UserService(UserRepository repository) {\n        this.repository = repository;\n    }\n\n    public User getUser(String id) {\n        return repository.findById(id);\n    }\n}\n";
+    let r = extract("UserService.java", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let refs: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "references")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    // Field type, ctor param type, method return type. `int`/`String` are
+    // builtins → never refs.
+    assert_eq!(refs, vec!["UserRepository", "UserRepository", "User"]);
+
+    // The field's ref is attributed to the FIELD node.
+    let field_id = &r
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Field && n.name == "repository")
+        .unwrap()
+        .id;
+    assert!(
+        r.unresolved.iter().any(|u| {
+            &u.from_node_id == field_id
+                && u.reference_kind == "references"
+                && u.reference_name == "UserRepository"
+        }),
+        "field must own its type ref"
+    );
+}
+
+/// Inheritance-gap closure — Java uses THREE distinct clauses:
+/// `superclass` (extends), `super_interfaces` (implements) and
+/// `extends_interfaces` (an interface extending another, emitted as `extends`).
+/// The latter two wrap their targets in a `type_list` (tree-sitter.ts:5261/5310).
+#[test]
+fn extracts_java_class_inheritance_refs() {
+    let code = "interface Strategy {\n  String run(String s);\n}\n\ninterface Retryable extends Strategy {\n}\n\nabstract class BaseIter implements java.util.Iterator<String> {\n  abstract int separatorStart(int start);\n}\n\npublic class Splitter extends BaseIter implements Strategy, Retryable {\n  public String run(String s) {\n    return s;\n  }\n}\n";
+    let r = extract("Inherit.java", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let refs = |kind: &str| -> Vec<&str> {
+        r.unresolved
+            .iter()
+            .filter(|u| u.reference_kind == kind)
+            .map(|u| u.reference_name.as_str())
+            .collect()
+    };
+    // `interface Retryable extends Strategy` → extends; `class Splitter extends BaseIter` → extends.
+    assert_eq!(refs("extends"), vec!["Strategy", "BaseIter"]);
+    // BaseIter's qualified generic interface, then BOTH of Splitter's (type_list).
+    assert_eq!(
+        refs("implements"),
+        vec!["java.util.Iterator<String>", "Strategy", "Retryable"]
+    );
+}

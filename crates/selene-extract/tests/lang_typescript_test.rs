@@ -390,3 +390,25 @@ fn representative_tsx_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+/// Inheritance-gap closure — TS `class_heritage` wraps `extends_clause` +
+/// `implements_clause`, so the pass recurses into it (tree-sitter.ts:5517).
+/// `interface Repo extends Serializable` is a legitimate NO-OP: the TS grammar
+/// spells it `extends_type_clause`, which TS's arm list does not cover, so TS
+/// emits nothing for it either — verified against the real TS build.
+#[test]
+fn extracts_typescript_class_inheritance_refs() {
+    let code = "export interface Serializable {\n  serialize(): string;\n}\n\nexport interface Repo extends Serializable {\n  find(id: string): void;\n}\n\nclass BaseController {\n  handle(): void {}\n}\n\nexport class ChildController extends BaseController implements Serializable {\n  serialize(): string {\n    return '';\n  }\n}\n";
+    let r = extract("inherit.ts", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let refs = |kind: &str| -> Vec<&str> {
+        r.unresolved
+            .iter()
+            .filter(|u| u.reference_kind == kind)
+            .map(|u| u.reference_name.as_str())
+            .collect()
+    };
+    assert_eq!(refs("extends"), vec!["BaseController"]);
+    assert_eq!(refs("implements"), vec!["Serializable"]);
+}

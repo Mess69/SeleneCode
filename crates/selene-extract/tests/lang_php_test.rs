@@ -260,3 +260,133 @@ fn php_static_factory_fluent_chain_reencodes() {
         "php fluent chain re-encode: {calls:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// Task-19 parity-gate fixes (report §4, BUGs 1 + 2)
+// ---------------------------------------------------------------------------
+
+/// BUG 1 — `class C extends B implements I, J` emitted NO inheritance refs at
+/// all: the walker's `extract_inheritance` seam was never wired, so PHP's
+/// `base_clause` / `class_interface_clause` were both dropped on the floor.
+/// CodeGraph's own suite asserts these exact refs (extraction.test.ts:1510-1537).
+#[test]
+fn extracts_php_class_inheritance_refs() {
+    let code = "<?php\n\nclass ChildController extends BaseController implements Serializable, JsonSerializable\n{\n    public function serialize(): string\n    {\n        return json_encode($this);\n    }\n}\n";
+    let r = extract("ChildController.php", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let class_id = &find(&r, NodeKind::Class, "ChildController").unwrap().id;
+    let refs = |kind: &str| -> Vec<&str> {
+        r.unresolved
+            .iter()
+            .filter(|u| u.reference_kind == kind && &u.from_node_id == class_id)
+            .map(|u| u.reference_name.as_str())
+            .collect()
+    };
+
+    assert_eq!(refs("extends"), vec!["BaseController"]);
+    // Every interface in the clause, not just the first.
+    assert_eq!(refs("implements"), vec!["Serializable", "JsonSerializable"]);
+}
+
+/// BUG 2 — a typed property produced NO field node: PHP wraps each property in
+/// `property_element` → `variable_name` → `name`, never the `variable_declarator`
+/// the core field pass scans for (tree-sitter.ts:2015-2042).
+#[test]
+fn extracts_php_typed_property_as_field() {
+    let code = "<?php\n\nclass UserController\n{\n    private UserService $userService;\n    public ?Logger $log = null, $other;\n\n    public function show(string $id): User\n    {\n        return $this->userService->find($id);\n    }\n}\n";
+    let r = extract("UserController.php", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let field = find(&r, NodeKind::Field, "userService").expect("typed property → field node");
+    assert_eq!(field.visibility, Some(selene_core::Visibility::Private));
+    // The type hint rides on the signature (TS returns before the type-ref pass).
+    assert_eq!(field.signature.as_deref(), Some("UserService $userService"));
+
+    // One node per property_element, so a multi-property declaration fans out.
+    assert!(find(&r, NodeKind::Field, "log").is_some());
+    assert!(find(&r, NodeKind::Field, "other").is_some());
+
+    // …and each is CONTAINED by the class (the edge the gate counts).
+    let class_id = &find(&r, NodeKind::Class, "UserController").unwrap().id;
+    assert!(
+        r.edges.iter().any(|e| {
+            e.kind == selene_core::EdgeKind::Contains
+                && &e.source == class_id
+                && e.target == field.id
+        }),
+        "class must contain the field"
+    );
+}
+
+/// BUG 2 (refs half) — PHP type-hints are `named_type`/`optional_type` wrapping a
+/// `name`, never a `type_identifier`, so the generic type-ref walk emitted
+/// nothing. Method param + return hints are `references` deps
+/// (tree-sitter.ts:5887-5934); a property's hint deliberately is NOT (ts:2040).
+#[test]
+fn extracts_php_type_hint_refs() {
+    let code = "<?php\n\nclass UserController\n{\n    private UserService $userService;\n\n    public function __construct(UserService $userService) {}\n\n    public function show(string $id): User\n    {\n        return $this->userService->find($id);\n    }\n\n    public function nope(int $n): void {}\n}\n";
+    let r = extract("UserController.php", code);
+
+    let type_refs: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "references")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    // Ctor param type + method return type. NOT the property's own hint, and
+    // never a primitive (`string`/`int`/`void`) or a `$var` name.
+    assert_eq!(type_refs, vec!["UserService", "User"]);
+}
+
+/// A `use Foo\Bar\Baz;` emits a SECOND `imports` ref in the namespace-QUALIFIED
+/// `Foo\Bar::Baz` spelling — the form PHP classes are stored under, and therefore
+/// the only one that resolves to the right definition when several namespaces carry
+/// a same-named contract (Laravel's `Factory`, `Dispatcher`, `Guard`).
+/// Port of `pushPhpUseRef` / `emitPhpUseRefs` (tree-sitter.ts:3453-3458, 3500-3512).
+#[test]
+fn php_use_emits_namespace_qualified_import_ref() {
+    let code = "<?php\n\nnamespace App\\Services;\n\nuse PHPUnit\\Framework\\TestCase;\nuse Mockery as m;\n";
+    let r = extract("composite.php", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "imports")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        imports.contains(&"PHPUnit\\Framework\\TestCase"),
+        "{imports:?}"
+    );
+    assert!(
+        imports.contains(&"PHPUnit\\Framework::TestCase"),
+        "{imports:?}"
+    );
+    // A global-namespace class already matches by simple name — no `::` form.
+    assert!(imports.contains(&"Mockery"), "{imports:?}");
+    assert!(!imports.iter().any(|i| i.starts_with("::")), "{imports:?}");
+}
+
+/// GROUPED `use Foo\{A, B};` emits the qualified spelling too — one ref per member.
+#[test]
+fn php_grouped_use_emits_namespace_qualified_refs() {
+    let code = "<?php use Illuminate\\Database\\{Model, Builder};\n";
+    let r = extract("Models.php", code);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "imports")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            "Illuminate\\Database::Model",
+            "Illuminate\\Database::Builder"
+        ]
+    );
+}

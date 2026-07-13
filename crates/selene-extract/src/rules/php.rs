@@ -220,16 +220,15 @@ impl LanguageRules for PhpRules {
                         ..NodeExtra::default()
                     };
                     s.create_node(NodeKind::Import, &module, node, extra);
+                    // The ref is the namespace-QUALIFIED `Foo\Bar::Baz` spelling —
+                    // the form PHP classes are stored under, so it resolves to the
+                    // right definition (tree-sitter.ts:3280 → pushPhpUseRef). The
+                    // import NODE keeps the raw FQN above; only the REF is
+                    // requalified. Emitting the raw FQN as the ref (what we did)
+                    // silently never resolved.
                     if let Some(pid) = &parent_id {
-                        s.add_unresolved(UnresolvedReference {
-                            from_node_id: pid.clone(),
-                            reference_name: module,
-                            reference_kind: "imports".to_string(),
-                            line: Some(u32::try_from(node.start_position().row).unwrap_or(0) + 1),
-                            column: Some(u32::try_from(node.start_position().column).unwrap_or(0)),
-                            file_path: None,
-                            language: None,
-                        });
+                        let pid = pid.clone();
+                        crate::walker::push_php_use_ref(s, &module, &pid, node);
                     }
                 }
                 true

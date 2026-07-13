@@ -94,6 +94,9 @@ crossterm    = "0.29"
 # Dev
 tempfile     = "3"
 insta        = "1"
+# Parity gate (Task 19): reads tests/fixtures/parity/deviations.toml. Read-only
+# deserialization, so the plain `toml` reader rather than `toml_edit`.
+toml         = "0.9"
 
 # Inherited by every crate via `[lints] workspace = true`. CI denies warnings;
 # tests may locally `#![allow(clippy::unwrap_used, clippy::expect_used)]`.
