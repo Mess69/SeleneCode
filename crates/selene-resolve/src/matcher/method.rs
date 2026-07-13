@@ -51,7 +51,7 @@ const SUPERTYPE_BEARING: [NodeKind; 6] = [
 /// When the type declares no such method, the method may live on a **supertype**
 /// it conforms to (an inherited method, a default-interface method, a trait
 /// default, a Go embedded struct). The walk follows the resolved
-/// `implements`/`extends` edges, depth-capped at [`CONFORMANCE_MAX_DEPTH`].
+/// `implements`/`extends` edges, depth-capped at `CONFORMANCE_MAX_DEPTH`.
 ///
 /// Those edges are **empty during the first resolution pass** and populated by the
 /// time the conformance pass runs (Task 9) — which is exactly why the deferral

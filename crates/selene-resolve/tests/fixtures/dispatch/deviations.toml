@@ -17,11 +17,20 @@
 #
 # ⚠ TWO THINGS DELIBERATELY *NOT* IN THIS FILE
 #
-# 1. The missing `jsx-render` heuristic edge. Not a divergence — an unbuilt feature
-#    (the synthesizers, plan Tasks 21-26, in flight on `p3-synth`). Listing it here
-#    would turn "we have not built synthesis yet" into a green gate, which is exactly
-#    the false confidence Phase 2's counts-only gate manufactured. It stays RED until
-#    the synthesizers merge.
+# 1. The `jsx-render` heuristic edge. RESOLVED — and NOT by adding an entry here.
+#    It was never a divergence. First it was an UNBUILT feature (the synthesizers,
+#    plan Tasks 21-26); then, once they merged, an UNRUN one — the pipeline stopped
+#    after persisting base edges and never called `run_synthesis`, so every heuristic
+#    edge in the TS baseline still read as "TS has it, we do not". Refusing to
+#    whitelist it was what kept that visible: the fix was to RUN the pass, not to
+#    excuse its absence. Listing it would have turned "we never call our own
+#    synthesizers" into a green gate — exactly the false confidence Phase 2's
+#    counts-only gate manufactured.
+#
+#    The baseline now carries all of TS's synthesized edges (callback, event-emitter,
+#    react-render, jsx-render) and the Rust side reproduces every one at tolerance 0.
+#    That is a real cross-check of our synthesizers against TS's, and it is worth more
+#    than any entry in this file would have been.
 #
 # 2. The default-import binding (`import Article from './Article'`). It was reported
 #    as "TS is internally inconsistent — it binds the identical import to the FILE in

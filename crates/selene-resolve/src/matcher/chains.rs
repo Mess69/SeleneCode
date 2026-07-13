@@ -59,7 +59,7 @@ static CHAIN_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 /// PHP `$this->prop->method()`, encoded `this->prop.method`. It has no `()`, so
-/// [`CHAIN_SHAPE`] misses it — it needs its own deferral predicate.
+/// `CHAIN_SHAPE` misses it — it needs its own deferral predicate.
 static PHP_PROP_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
     #[allow(clippy::unwrap_used)] // compile-time literal, covered by the tests below
     Regex::new(r"^this->\w+\.\w+$").unwrap()
@@ -109,7 +109,7 @@ pub fn split_chain(name: &str) -> Option<(String, String)> {
 
 /// Is this a reference the conformance pass should retry (`resolve_one` step 11)?
 ///
-/// A `calls` reference in a [`CHAIN_LANGUAGES`] language matching [`CHAIN_SHAPE`],
+/// A `calls` reference in a [`CHAIN_LANGUAGES`] language matching `CHAIN_SHAPE`,
 /// or a PHP `this->prop.method`.
 pub fn is_deferrable_chain(r: &UnresolvedRef) -> bool {
     if r.reference_kind != "calls" {
@@ -205,7 +205,7 @@ pub fn match_scoped_call_chain<C: ResolutionContext>(
 ///   miss — a bare-name fallback (see the #760 note on that branch).
 /// - **A bare capitalized constructor** (`Foo().method`): only in the languages
 ///   where an unprefixed capitalized call actually constructs
-///   ([`CONSTRUCTS_VIA_BARE_CALL`]).
+///   (`CONSTRUCTS_VIA_BARE_CALL`).
 pub fn match_dotted_call_chain<C: ResolutionContext>(
     r: &UnresolvedRef,
     ctx: &C,
