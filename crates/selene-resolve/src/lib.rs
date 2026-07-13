@@ -89,6 +89,24 @@
 //! EventEmitter, React re-render, JSX child, Django ORM) — closure-collection,
 //! gin-middleware-chain, mybatis-java-xml, rn-event-channel, the rest.
 //!
+//! # Known gaps, inherited deliberately (not oversights)
+//!
+//! - **Synthesis runs on the FULL-INDEX path only.** An incremental sync does not
+//!   re-run [`synth::run_synthesis`], so synthesized edges are not refreshed when
+//!   a file changes: a callback registered (or removed) since the last full index
+//!   is not reflected until the next one. This is inherited verbatim from the TS
+//!   build (`callback-edge-synthesis.md`, "Remaining work #2") and is recorded
+//!   here rather than silently carried. Closing it means either re-running the
+//!   whole-graph passes on sync (they are whole-graph by nature — the correlation
+//!   is cross-file, so a per-file pass cannot be correct) or scoping each channel
+//!   to the changed files' neighborhoods. Phase 8.
+//! - **Anonymous handlers are not bridged.** `on('e', () => …)` and
+//!   `on('e', function () {})` synthesize nothing, by design: the handler is not a
+//!   node, and attributing the edge to the *enclosing* function would be a WRONG
+//!   edge, not a partial one. Silent beats wrong. (Named handlers —
+//!   `on('e', function onmount() {})` — do bridge.) This is the known frontier;
+//!   see `synth::event_emitter`.
+//!
 //! # Known open hops in v0 — stated, never half-drawn
 //!
 //! The invariant (PRD §8.2) is that dispatch coverage is **end-to-end or not at
@@ -136,6 +154,7 @@ mod matcher;
 mod passes;
 mod resolver;
 mod strip_comments;
+pub mod synth;
 mod types;
 
 pub use builtins::is_built_in_or_external;
@@ -179,6 +198,10 @@ pub use resolver::{
     ReferenceResolver, has_any_possible_match, is_php_include_path_ref, matches_any_import,
 };
 pub use strip_comments::strip_comments_for_regex;
+pub use synth::{
+    INSERT_CHUNK, LineIndex, SYNTH_PASS_ORDER, SynthPassDef, SynthRunFn, registered_synthesizers,
+    run_synthesis, run_synthesis_with, stream_nodes_by_kind, synth_passes,
+};
 pub use types::{
     AliasMap, AliasPattern, GoModule, ImportMapping, ReExport, ResolutionResult, ResolutionStats,
     ResolvedBy, ResolvedRef, WorkspacePackages,

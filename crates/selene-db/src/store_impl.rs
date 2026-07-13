@@ -80,6 +80,15 @@ impl GraphStore for SurrealStore {
         SurrealStore::count_nodes_named(self, name).await
     }
 
+    async fn nodes_by_kind_page(
+        &self,
+        kind: NodeKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        SurrealStore::nodes_by_kind_page(self, kind, after, limit).await
+    }
+
     async fn find_route(
         &self,
         framework: Option<&str>,

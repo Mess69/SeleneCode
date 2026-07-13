@@ -359,6 +359,46 @@ impl SurrealStore {
     /// `node_name` index, so a ubiquitous name is counted **without
     /// materializing its rows** — which is the entire reason an ambiguity
     /// ceiling (`#999`) uses a counter instead of `get_nodes_by_name(..).len()`.
+    /// One page of nodes of `kind`, in **id order**, after `after`.
+    ///
+    /// The comparison is on the record id, which for this table IS the node id
+    /// (`record::id(id)`), so `id > $after` pages stably: no row is dropped at a
+    /// boundary and none is returned twice. See the trait docs for why the
+    /// synthesizers must page rather than materialize (#610).
+    pub async fn nodes_by_kind_page(
+        &self,
+        kind: NodeKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        // Compare and order on `record::id(id)` — the RAW stored key, which for
+        // this table IS `Node.id`. Ordering on the RecordId itself would sort on
+        // the driver's *display* form (backtick-quoted when the key contains a
+        // `:`, which every node id does), so the paging key would not be the id
+        // the caller passes back in as `after` — the loop would never advance.
+        let sql = match after {
+            Some(_) => format!(
+                "SELECT {NODE_FIELDS} FROM node \
+                 WHERE kind = $kind AND record::id(id) > $after \
+                 ORDER BY id LIMIT $limit"
+            ),
+            None => format!(
+                "SELECT {NODE_FIELDS} FROM node WHERE kind = $kind ORDER BY id LIMIT $limit"
+            ),
+        };
+        let mut query = self
+            .db()
+            .query(sql)
+            .bind(("kind", kind.as_str()))
+            .bind(("limit", clamp_i64(limit)));
+        if let Some(a) = after {
+            query = query.bind(("after", a.to_string()));
+        }
+        let mut resp = query.await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        rows.into_iter().map(row_to_node).collect()
+    }
+
     pub async fn count_nodes_named(&self, name: &str) -> Result<u64> {
         let mut resp = self
             .db()
