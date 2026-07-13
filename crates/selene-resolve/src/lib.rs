@@ -134,15 +134,32 @@
 //!
 //! # Build status (Phase 3)
 //!
-//! Landed: the spike (Task 1, `tests/spike_seam.rs`), the skeleton (Task 2), the
-//! [`ReferenceResolver`] ladder (Task 3 — built-in filters, the fast pre-filter,
-//! the language gates, `create_edges`), imports (4–6), the name matcher (7–8),
-//! chained calls + the conformance pass (9), function refs (10), the framework
-//! registry + route contract + strip-comments (11), and the framework resolvers
-//! for flask/fastapi (15), spring (16) and go (17). Still stubs: the remaining
-//! framework resolvers (12–14, 18–20), the synthesizers, and the batch driver
-//! (Part C).
+//! **Complete, and driven.** The ladder (Tasks 3–10), imports (4–6), the framework
+//! registry and all **eleven** framework resolvers (11–20), the **five** synthesizer
+//! channels (21–26), and — the thing that makes the rest of it run — the **pass driver**
+//! ([`resolve_and_persist_batched`], Task 27).
+//!
+//! Both gates are green *through the driver*: TS⇄Rust edge identity at tolerance 0 over
+//! an 18-project corpus, and every framework + synthesizer flow closed end-to-end.
+//!
+//! # The lesson this crate paid for four times
+//!
+//! Four seams shipped with passing unit tests and **no production caller**:
+//! `import_mappings` (which silently disabled ladder step 8 for every language),
+//! `re_exports`, the four project singletons (`go.mod`, aliases, workspace packages,
+//! include dirs), and `run_synthesis` (all five channels). Each was found by a gate
+//! comparing against an independent baseline — never by a unit test, because
+//! **`FakeContext` injects what a stub fails to load, and a seam returning "nothing
+//! found" is indistinguishable from a seam that works and found nothing.**
+//!
+//! So: a test that composes its own pipeline proves the library works. Only a test that
+//! drives [`resolve_and_persist_batched`] proves the product runs. Both gates now do.
+//!
+//! Still open, deliberately: `src/sync.rs` (the scoped re-resolve, failed-ref retry and
+//! orphan sweep) is **Phase 6** — [`resolve_and_persist`] is the entry point it will
+//! call. Synthesis runs on the full-index path only (see the known gaps above).
 
+mod batch;
 mod builtins;
 mod cache;
 mod context;
@@ -157,6 +174,7 @@ mod strip_comments;
 pub mod synth;
 mod types;
 
+pub use batch::{PERSIST_CHUNK, RESOLVE_BATCH, resolve_and_persist, resolve_and_persist_batched};
 pub use builtins::is_built_in_or_external;
 pub use cache::{CACHE_SIZE_ENV, DEFAULT_CACHE_LIMIT, SyncLru, cache_limit, content_cache_limit};
 pub use context::{ResolutionContext, StoreContext};

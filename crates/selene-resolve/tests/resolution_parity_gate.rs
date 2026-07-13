@@ -51,15 +51,14 @@
 //!   <selene>/crates/selene-resolve/tests/fixtures/dispatch/expected.json
 //! ```
 //!
-//! # ⚠ This gate drives the pipeline itself, because `batch.rs` does not exist yet
+//! # This gate drives the PRODUCTION driver
 //!
-//! Plan Task 27 (`src/batch.rs` — the batched persist + pass driver) is **not
-//! built**. [`resolve_project`] below is therefore a driver *in the test*, running
-//! the same four steps the product's driver must run, in the same order. When
-//! `batch.rs` lands, this function becomes a call to it — and the ordering
-//! contract it encodes (**build the resolution context AFTER
-//! `run_framework_extract`**, or `known_names` predates the route/config nodes and
-//! every framework reference is pre-filtered away) must move with it.
+//! [`resolve_project`] calls `resolve_and_persist_batched` — the same entry point an
+//! indexer calls. It used to compose the pipeline itself, which is exactly how a gate can
+//! be green over a product that has no pipeline at all: this crate shipped FOUR seams
+//! whose unit tests passed while nothing invoked them, and a test-composed pipeline is
+//! structurally blind to a fifth. The ordering contract now lives in `batch.rs`, where
+//! production reads it.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
@@ -67,8 +66,8 @@ use std::path::{Path, PathBuf};
 use selene_core::{EdgeKind, Node, NodeKind};
 use selene_db::SurrealStore;
 use selene_extract::Indexer;
-use selene_resolve::frameworks::{detect_frameworks, run_framework_extract};
-use selene_resolve::{ReferenceResolver, StoreContext};
+use selene_resolve::StoreContext;
+use selene_resolve::frameworks::detect_frameworks;
 use serde::Deserialize;
 
 // =============================================================================
@@ -178,13 +177,16 @@ fn endpoint_key(n: &Node) -> String {
     }
 }
 
-/// Index → emit → resolve → persist. **The product's driver in miniature** (see the
-/// module docs: `batch.rs` does not exist yet).
+/// Index, then run **THE PRODUCTION DRIVER**, then read the whole graph back.
+///
+/// This used to be the driver, hand-composed in the test — which is precisely how a gate
+/// can be green over a product that has no pipeline at all. It now calls
+/// `resolve_and_persist_batched`: the same entry point an indexer calls, with the pass
+/// order, the batch loop, the keyed delete and the synthesis tail that live in `batch.rs`.
 async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
     let store = SurrealStore::in_memory().await.expect("store");
     store.apply_schema().await.expect("schema");
 
-    // (1) extraction — nodes, same-file edges, unresolved refs.
     let indexer = Indexer::new(dir.to_path_buf(), store);
     let result = indexer.index_all(None).await;
     assert!(
@@ -193,60 +195,26 @@ async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
     );
     let store = indexer.into_store();
 
-    // (2) framework emission — BEFORE resolution: a reference cannot bind to a
-    //     route node that does not exist yet.
-    let ctx = StoreContext::new(store, dir.to_path_buf())
+    let stats = selene_resolve::resolve_and_persist_batched(&store, dir, None)
+        .await
+        .expect("the driver must never fail an index");
+    assert_eq!(
+        stats.store_read_errors, 0,
+        "{dir:?}: the driver swallowed {} store read error(s). A store outage is otherwise \
+         byte-identical to a repo with nothing to resolve — which would make this gate \
+         green by comparing two empty sets.",
+        stats.store_read_errors
+    );
+
+    // The frameworks the DRIVER detected (it does its own detection — asserting on a list
+    // the test injected would be asserting on the test).
+    let ctx = StoreContext::new(store.clone(), dir.to_path_buf())
         .await
         .expect("ctx");
-    let detected = detect_frameworks(&ctx);
-    let framework_names: Vec<String> = detected.iter().map(|f| f.name().to_string()).collect();
-    run_framework_extract(ctx.store(), &ctx, &detected)
-        .await
-        .expect("framework extract never fails an index");
-
-    // (3) REBUILD the context. Its warm caches (`known_names` above all) predate the
-    //     nodes step 2 just wrote, and a `@Value("${k}")` / `ArticleController@index`
-    //     reference is named after one of them. Skip this and the step-3 pre-filter
-    //     drops every framework reference — silently, with every unit test still green.
-    let store = ctx.into_store();
-    let ctx = StoreContext::new(store, dir.to_path_buf())
-        .await
-        .expect("ctx (post-emission)");
-
-    let pending = ctx
-        .store()
-        .unresolved_pending_batch(0, 100_000)
-        .await
-        .expect("pending");
-    let pending_count = pending.len();
-
-    // (4) the ladder, then the conformance passes.
-    let (resolver, edges) = tokio::task::block_in_place(move || {
-        let mut resolver = ReferenceResolver::new(ctx);
-        let mut hits = Vec::new();
-        for r in &pending {
-            if let Some(hit) = resolver.resolve_one(r) {
-                hits.push(hit);
-            }
-        }
-        hits.extend(resolver.resolve_chained_calls_via_conformance());
-        hits.extend(resolver.resolve_deferred_this_member_refs());
-        let edges = resolver.create_edges(&hits);
-        (resolver, edges)
-    });
-
-    let store = resolver.ctx().store();
-    store.insert_edges(&edges).await.expect("insert edges");
-
-    // (5) SYNTHESIS — and it was NOT being run. The passes existed, their unit tests
-    //     passed, and nothing in any pipeline called them. That is the THIRD instance
-    //     of this exact bug class in this crate (`import_mappings`, the project
-    //     singletons, now this), and the gate caught it the same way both other times:
-    //     TS emitted an edge (`jsx-render`) and we did not.
-    resolver.ctx().clear_caches();
-    selene_resolve::synth::run_synthesis(resolver.ctx().store(), resolver.ctx())
-        .await
-        .expect("synthesis never fails an index");
+    let framework_names: Vec<String> = detect_frameworks(&ctx)
+        .iter()
+        .map(|f| f.name().to_string())
+        .collect();
 
     // --- read the whole graph back, and key it semantically -------------------
     let mut nodes: Vec<Node> = Vec::new();
@@ -281,9 +249,7 @@ async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
                 source: endpoint_key(src),
                 target: endpoint_key(dst),
                 kind: n.edge.kind.as_str().to_string(),
-                // The wire spelling, not the Rust identifier — the baseline carries
-                // TS's (`tree-sitter` / `heuristic`), and serde is the one place both
-                // sides already agree on it.
+                // The wire spelling, not the Rust identifier — the baseline carries TS's.
                 provenance: n
                     .edge
                     .provenance
@@ -299,7 +265,7 @@ async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
         }
     }
     rows.sort();
-    (rows, framework_names, pending_count)
+    (rows, framework_names, stats.total)
 }
 
 // =============================================================================

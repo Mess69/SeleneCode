@@ -111,6 +111,20 @@ pub struct ResolutionStats {
     pub unresolved: usize,
     /// Count per strategy.
     pub by_method: BTreeMap<String, usize>,
+    /// **Store reads that FAILED during this pass.**
+    ///
+    /// Every context read degrades a store malfunction to an empty result (errors are
+    /// collected, never thrown). That is right — but it makes an outage
+    /// **byte-identical to a repo with nothing to resolve**: nothing binds, and nothing
+    /// says why. This counter is the difference, and it is why the number is on the
+    /// stats rather than only in a log line: a resolution pass that swallowed store
+    /// errors is not a resolution pass, it is a lie about one.
+    pub store_read_errors: u64,
+    /// Route/config nodes the framework pass emitted before resolution began.
+    pub framework_nodes: u64,
+    /// Non-fatal warnings (a framework that panicked in `extract`, a synthesis pass that
+    /// failed). Collected, never thrown.
+    pub warnings: Vec<String>,
 }
 
 /// The outcome of a resolution pass.

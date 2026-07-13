@@ -40,6 +40,13 @@
 //! could be wrong while a `FakeContext` never noticed. It gets its own test, against
 //! the real store.
 //!
+//! # This gate drives the PRODUCTION driver
+//!
+//! Every flow below runs through `resolve_and_persist_batched` — the same call an indexer
+//! makes. A gate that composes its own pipeline proves the library works; only a gate that
+//! drives the product proves the product runs. (This crate shipped four seams whose unit
+//! tests passed while nothing called them, so the distinction is not academic.)
+//!
 //! # Completeness — no framework ships ungated
 //!
 //! [`every_registered_framework_is_gated`] keys on `all_framework_resolvers()`: a
@@ -206,7 +213,7 @@ fn fixture_dir(name: &str) -> std::path::PathBuf {
 #[tokio::test(flavor = "multi_thread")]
 async fn every_dispatch_flow_is_closed_end_to_end() {
     for flow in FLOWS {
-        let p = pipeline::index_and_resolve_detected(&fixture_dir(flow.fixture)).await;
+        let p = pipeline::index_and_drive(&fixture_dir(flow.fixture)).await;
 
         let route = p.route(flow.framework, flow.method, flow.path).await;
         let kinds = if flow.class_dispatch {
@@ -246,7 +253,7 @@ async fn every_dispatch_flow_is_closed_end_to_end() {
 async fn spring_config_bridge_closes_on_the_real_pipeline() {
     use selene_core::NodeKind;
 
-    let p = pipeline::index_and_resolve_detected(&fixture_dir("spring")).await;
+    let p = pipeline::index_and_drive(&fixture_dir("spring")).await;
 
     // The yaml key is a node at all — the file-level-only language actually indexed.
     let constants = p.nodes_of_kind(NodeKind::Constant).await;
@@ -364,7 +371,7 @@ const SYNTH_FLOWS: &[SynthFlow] = &[
 #[tokio::test(flavor = "multi_thread")]
 async fn every_synthesized_flow_is_closed_end_to_end() {
     for flow in SYNTH_FLOWS {
-        let p = pipeline::index_and_synthesize_detected(&fixture_dir(flow.fixture)).await;
+        let p = pipeline::index_and_drive(&fixture_dir(flow.fixture)).await;
         let from = p.node_named(flow.from).await;
 
         p.assert_flow(
@@ -418,7 +425,7 @@ async fn synthesis_emits_nothing_on_the_controls() {
     use selene_core::Provenance;
 
     for control in ["callback-control", "event-control", "django-orm-control"] {
-        let p = pipeline::index_and_synthesize_detected(&fixture_dir(control)).await;
+        let p = pipeline::index_and_drive(&fixture_dir(control)).await;
         let synthesized = p.synthesized_edges().await;
 
         assert!(

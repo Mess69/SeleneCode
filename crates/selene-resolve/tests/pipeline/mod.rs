@@ -305,6 +305,43 @@ impl Pipeline {
     }
 }
 
+/// Index, then run **THE PRODUCTION DRIVER** (`resolve_and_persist_batched`).
+///
+/// This is what the two GATES use, and the distinction is the whole point: a gate that
+/// composes the pipeline itself cannot see a driver that does not exist — and this crate
+/// spent a phase with four seams whose only callers were tests. Driving production code
+/// is the difference between "the library works" and "the product runs".
+pub async fn index_and_drive(dir: &Path) -> Pipeline {
+    let store = SurrealStore::in_memory().await.expect("in-memory store");
+    store.apply_schema().await.expect("schema");
+    let indexer = Indexer::new(dir.to_path_buf(), store);
+    let result = indexer.index_all(None).await;
+    assert!(
+        result.files_indexed > 0,
+        "{dir:?} indexed ZERO files — the gate would be comparing nothing"
+    );
+    let store = indexer.into_store();
+
+    // Detection, emission, the ladder, the conformance passes, the caches, synthesis —
+    // all of it, in the order the DRIVER declares, not the order a test remembered.
+    let stats = selene_resolve::resolve_and_persist_batched(&store, dir, None)
+        .await
+        .expect("the driver must never fail an index");
+
+    let ctx = StoreContext::new(store, dir.to_path_buf())
+        .await
+        .expect("store context (post-drive, for queries)");
+    Pipeline {
+        resolver: ReferenceResolver::new(ctx),
+        resolved: stats.resolved,
+        synthesized: stats
+            .by_method
+            .get("callback-synthesis")
+            .copied()
+            .unwrap_or(0) as u64,
+    }
+}
+
 /// [`index_and_resolve`] with the frameworks **detected** rather than injected.
 ///
 /// The coverage gate uses this: injecting the resolver list would test the framework
