@@ -38,12 +38,14 @@
 //! warning, and is skipped. One broken resolver must never fail an index — the
 //! blast radius of a bad regex is one framework, not the whole graph.
 
+pub mod cargo;
 pub mod express;
 pub mod go;
 pub mod java;
 pub mod python;
 pub mod react;
 pub mod routes;
+pub mod rust_fw;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
@@ -244,6 +246,7 @@ fn builtin_resolvers() -> Vec<&'static dyn FrameworkResolver> {
         &python::FastApi,
         &java::Spring,
         &go::Go,
+        &rust_fw::RustResolver,
     ]
 }
 

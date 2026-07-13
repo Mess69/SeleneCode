@@ -48,6 +48,8 @@ pub struct FakeContext {
     go_module: Option<GoModule>,
     workspace: Option<WorkspacePackages>,
     cpp_include_dirs: Vec<String>,
+    /// parent dir → its child directory names (Task 18's cargo glob walk).
+    directories: HashMap<String, Vec<String>>,
 
     // Derived at build time.
     all_files: Vec<String>,
@@ -122,6 +124,17 @@ impl FakeContext {
     /// C/C++ `-I` include directories (Task 5).
     pub fn with_cpp_include_dirs(mut self, dirs: Vec<String>) -> Self {
         self.cpp_include_dirs = dirs;
+        self
+    }
+
+    /// The child directories of `parent` — what a real context reads off the
+    /// filesystem. Task 18's Cargo glob walk (`members = ["crates/*"]`) is the only
+    /// caller, and without this the walk would silently expand to nothing.
+    pub fn with_directory(mut self, parent: &str, children: &[&str]) -> Self {
+        self.directories.insert(
+            parent.to_string(),
+            children.iter().map(|s| s.to_string()).collect(),
+        );
         self
     }
 
@@ -325,8 +338,9 @@ impl ResolutionContext for FakeContext {
         &self.languages
     }
 
-    fn list_directories(&self, _path: &str) -> Vec<String> {
-        Vec::new()
+    fn list_directories(&self, path: &str) -> Vec<String> {
+        self.tick();
+        self.directories.get(path).cloned().unwrap_or_default()
     }
 
     fn import_mappings(&self, path: &str) -> Arc<Vec<ImportMapping>> {
