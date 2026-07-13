@@ -24,6 +24,7 @@
 //! ranking/flow/budget/render decision lives here as a pure function over the graph API, and
 //! `selene-mcp` owns only schemas, dispatch, banners and error classification.
 
+mod boundaries;
 mod budgets;
 mod builder;
 mod error;
@@ -31,6 +32,7 @@ mod flow;
 mod relevance;
 mod stopwords;
 
+pub use boundaries::{Boundary, find_boundaries, render_boundaries};
 pub use budgets::{
     ExploreBudget, FILE_SECTION_PREFIX, HARD_CEILING, MAX_OUTPUT_LENGTH, TRUNCATION_NOTE,
     budget_for, explore_budget, truncate_output, truncate_to_ceiling,
