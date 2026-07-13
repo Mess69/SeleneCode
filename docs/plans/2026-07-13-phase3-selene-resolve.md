@@ -416,6 +416,11 @@ section). **This task performs the move**, and it is the *only* task that touche
   `LANGUAGE_FAMILY` from `selene-extract/src/language.rs` into `selene-core`.
   `detect_language` / `is_source_file` / `is_generated_file` **stay** in `selene-extract` (they
   are extraction policy, not wire types).
+- **Add `Language::from_wire(&str) -> Option<Language>`** — the inverse of `as_str()`, which
+  today does not exist. The resolver reads `node.language` back off the store as a wire string
+  and must parse it (§423); without this, the first executor to cross that boundary invents an
+  ad-hoc parser. Round-trip test it: `from_wire(l.as_str()) == Some(l)` for every variant, and
+  `from_wire("nonsense") == None`.
 - `selene-extract::language` **re-exports** `selene_core::Language` so every existing path
   (`selene_extract::Language`) keeps compiling — no churn in Phase 2's code or tests.
 - **Type both Parts A and B against `selene_core::Language`** — never `&str`, never a
