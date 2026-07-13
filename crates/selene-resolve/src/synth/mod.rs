@@ -72,6 +72,7 @@
 pub mod callback;
 pub mod event_emitter;
 pub mod lineindex;
+pub mod react;
 
 use std::collections::BTreeSet;
 use std::future::Future;
