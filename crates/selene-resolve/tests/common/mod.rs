@@ -32,6 +32,11 @@ pub struct FakeContext {
     supertype_edges: Vec<(String, String)>,
     /// `(container_id, member_id)` pairs of `contains` edges.
     contains_edges: Vec<(String, String)>,
+    /// file path → the import mappings that file declares (Task 3's pre-filter
+    /// escape, Task 6's `resolve_via_import`).
+    import_mappings: HashMap<String, Vec<ImportMapping>>,
+    /// file path → the re-exports that barrel declares (Task 6).
+    re_exports: HashMap<String, Vec<ReExport>>,
     aliases: Option<AliasMap>,
     go_module: Option<GoModule>,
     workspace: Option<WorkspacePackages>,
@@ -71,6 +76,39 @@ impl FakeContext {
     pub fn with_file(mut self, path: &str, content: &str) -> Self {
         self.files.insert(path.to_string(), content.to_string());
         self.rebuild();
+        self
+    }
+
+    /// An import binding declared by `path`.
+    pub fn with_import_mapping(mut self, path: &str, m: ImportMapping) -> Self {
+        self.import_mappings
+            .entry(path.to_string())
+            .or_default()
+            .push(m);
+        self
+    }
+
+    /// A re-export declared by the barrel at `path`.
+    pub fn with_re_export(mut self, path: &str, e: ReExport) -> Self {
+        self.re_exports.entry(path.to_string()).or_default().push(e);
+        self
+    }
+
+    /// A loaded tsconfig alias map.
+    pub fn with_aliases(mut self, m: AliasMap) -> Self {
+        self.aliases = Some(m);
+        self
+    }
+
+    /// A loaded `go.mod`.
+    pub fn with_go_module(mut self, m: GoModule) -> Self {
+        self.go_module = Some(m);
+        self
+    }
+
+    /// Loaded workspace packages.
+    pub fn with_workspace(mut self, w: WorkspacePackages) -> Self {
+        self.workspace = Some(w);
         self
     }
 
@@ -254,12 +292,12 @@ impl ResolutionContext for FakeContext {
         Vec::new()
     }
 
-    fn import_mappings(&self, _path: &str) -> Arc<Vec<ImportMapping>> {
-        Arc::new(Vec::new())
+    fn import_mappings(&self, path: &str) -> Arc<Vec<ImportMapping>> {
+        Arc::new(self.import_mappings.get(path).cloned().unwrap_or_default())
     }
 
-    fn re_exports(&self, _path: &str) -> Arc<Vec<ReExport>> {
-        Arc::new(Vec::new())
+    fn re_exports(&self, path: &str) -> Arc<Vec<ReExport>> {
+        Arc::new(self.re_exports.get(path).cloned().unwrap_or_default())
     }
 
     fn project_aliases(&self) -> Option<&AliasMap> {

@@ -57,21 +57,29 @@
 //!
 //! # Build status (Phase 3)
 //!
-//! Task 1 (the spike, `tests/spike_seam.rs`) and Task 2 (this skeleton) are
-//! landed. The strategies themselves — the `resolve_one` ladder, imports, the
-//! name matcher, chains, function refs, the framework registry, the
-//! synthesizers, and the batch driver — are Tasks 3–33.
+//! Landed: the spike (Task 1, `tests/spike_seam.rs`), the skeleton (Task 2),
+//! and the [`ReferenceResolver`] ladder (Task 3 — built-in filters, the fast
+//! pre-filter, the language gates, `create_edges`). The ladder's strategy steps
+//! are laid down as named stubs, in order, for the tasks that fill them:
+//! imports (4–6), the name matcher (7–8), chains (9), function refs (10), the
+//! framework registry (Part B), the batch driver (Part C).
 
+mod builtins;
 mod cache;
 mod context;
 mod error;
 mod families;
+mod resolver;
 mod types;
 
+pub use builtins::is_built_in_or_external;
 pub use cache::{CACHE_SIZE_ENV, DEFAULT_CACHE_LIMIT, SyncLru, cache_limit, content_cache_limit};
 pub use context::{ResolutionContext, StoreContext};
 pub use error::{ResolveError, Result};
 pub use families::{crosses_known_family, is_known_language_family, same_language_family};
+pub use resolver::{
+    ReferenceResolver, has_any_possible_match, is_php_include_path_ref, matches_any_import,
+};
 pub use types::{
     AliasMap, AliasPattern, GoModule, ImportMapping, ReExport, ResolutionResult, ResolutionStats,
     ResolvedBy, ResolvedRef, WorkspacePackages,
