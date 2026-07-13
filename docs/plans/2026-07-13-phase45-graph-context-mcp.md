@@ -195,8 +195,11 @@ crates/selene-context/
                             change-surface rescue, relevance gate, sort
   src/explore/render.rs     [T12] whole-file rule, clustering, adaptive skeletonization,
                             focused view, gap markers, blast radius
-  src/node_view.rs          [T17] the `node` tool's data+render half (file-mode Read parity,
-                            symbol-mode details/trail/outline)
+  src/node_view.rs          [T12] the `node` tool's data+render half (file-mode Read parity,
+                            symbol-mode details/trail/outline). ⚠ PHASE 4, not Phase 5: the
+                            Phase 4 gate (T13) snapshots it, and a gate cannot snapshot a
+                            component that does not exist yet. Task 17 is the thin MCP
+                            handler over it.
 
 crates/selene-mcp/
   Cargo.toml                rmcp 2.2 (transport-io), schemars, tokio, selene-core, selene-db
@@ -243,7 +246,7 @@ Phase 3 didn't.)
 |---|---|---|
 | `selene-graph/src/lib.rs` | **2** (creates), 3, 4, 13 | Append-only, one `mod`/`pub use` line per task; 13 does the facade+ledger pass. |
 | `selene-graph/src/query.rs` | **2** (creates: `QueryManager<S>` + stats/files), **3** (symbol methods delegate), **4** (adjacency/source delegate) | STRICTLY SEQUENTIAL 2 → 3 → 4. `QueryManager` is the single struct all three extend; 2 lays down the impl block and the method stubs with `// TODO(Task N)`. |
-| `selene-context/src/lib.rs` | **5** (creates), 6–13 | Append-only, one line per task; 13 does the facade+ledger pass. |
+| `selene-context/src/lib.rs` | **5** (creates), 6–13 — **and nothing after 13** | Append-only, one line per task; **13 does the facade+ledger pass and it must be the LAST task that touches this crate**. That is why the node view is Task 12 (Phase 4) and not Task 17: a Phase-5 task adding a module here would leave 13's ledger stale by construction. If a later task ever needs to touch `selene-context`, the ledger pass moves with it. |
 | `selene-context/src/relevance.rs` | **5** (creates: symbol extraction + scoring passes 1–4), **6** (passes 5–11 + BFS + trims) | STRICTLY SEQUENTIAL 5 → 6. 5 lays the full ordered pass list down with stubbed steps. |
 | `selene-context/src/explore/mod.rs` | **11** (creates the 12-step pipeline with every step present as a named stub), **12** (fills step 11: rendering), **9/10** (steps 10's flow + boundary calls are *called from* here — 11 wires them) | STRICTLY SEQUENTIAL 9 → 10 → 11 → 12. 11 never re-orders the pipeline; 12 fills exactly one step. |
 | `selene-context/src/budgets.rs` | **8** (creates), **12** (reads only — never adds a tier) | 8 must land before 11/12 can size anything. |
@@ -254,8 +257,9 @@ Phase 3 didn't.)
 | `tests/fixtures/context/` | **13** owns the tree + its manifest; **5–12** contribute projects | A task adds a project directory; only 13 adds a manifest row + snapshot. **ONE corpus.** Two corpora would mean two truths and a gate certifying the wrong one. |
 
 **Parallelizable after their blocker lands:** T5/T6's `stopwords.rs`, T8's `budgets.rs`, T9's
-`flow.rs`, T10's `boundaries.rs`, T17's `node_view.rs` are each a **fresh file** — only their
-one-line hook into a shared pipeline is sequential. T16/T17/T18's `handlers/*.rs` files are
+`flow.rs`, T10's `boundaries.rs`, T12's `node_view.rs` (independent of T12's `render.rs` — they
+share no state, which is why T12 may be committed as two commits) are each a **fresh file** —
+only their one-line hook into a shared pipeline is sequential. T16/T17/T18's `handlers/*.rs` files are
 task-private; only their `#[tool]` method registration in `server.rs` collides.
 
 **⚠ Layering.** `selene-context` depends on `selene-graph`; `selene-mcp` depends on both.
@@ -284,11 +288,12 @@ Naming these here is what stops a task from half-porting one.
   logic against a `PendingFiles` provider trait whose Phase-5 impl returns empty — but that
   provider is exactly the inert-seam shape, so Task 19 must ship it with a test that feeds a
   **non-empty** fake and asserts the banner bytes. The wiring to a real watcher is Phase 6's.
-- **`selene_status` as an 8th tool → Phase 6.** The map lists 8 tool defs; the roadmap scopes
-  Phase 5 to **7** (explore, node, search, callers, callees, impact, files). `status` reports
-  daemon/journal/watcher state that does not exist until Phase 6. Task 18 ships a
-  **minimal** status *behind the same allowlist mechanism* (files/nodes/edges/languages/
-  last-indexed only), because the not-indexed guidance references it — see Open Question 3.
+- **`selene_status` as an 8th tool → Phase 6** (maintainer ruling, 2026-07-13 — **not** an open
+  question). The map lists 8 tool defs; the roadmap scopes Phase 5 to **7** (explore, node,
+  search, callers, callees, impact, files). `status` reports daemon/journal/watcher state that
+  does not exist until Phase 6. The not-indexed case is carried by **success-shaped guidance in
+  every tool** (Task 19), which is where it belongs — no tool is added to deliver a message the
+  other seven already deliver.
 - **The update-notice append to `instructions`** (`initializeInstructions(base, notice)`) →
   Phase 8 (with telemetry/upgrade). Port the function shape, pass `None`.
 - **`format_subgraph_tree`** (`formatter.ts`) — the map flags it as **unused by MCP** (CLI/
@@ -302,35 +307,51 @@ Naming these here is what stops a task from half-porting one.
 
 ---
 
-## Open coordination points (maintainer decisions — a task must not take these silently)
+## Coordination points — ALL FOUR RATIFIED (maintainer, 2026-07-13). Do NOT re-open.
 
-1. **Branding in the verbatim strings.** `SERVER_INSTRUCTIONS` says "Codegraph", "SQLite
-   knowledge graph", "`.codegraph/`", "`codegraph_explore`", "`codegraph init`". Two of those
-   are now **false** (SurrealDB, not SQLite; `.selene/`, not `.codegraph/`). **Recommended
-   default, which Task 14 implements unless the maintainer says otherwise:** port the strings
-   **verbatim in structure and wording**, applying exactly this mechanical rename and nothing
-   else — `Codegraph`/`CodeGraph`→`Selene`, `codegraph_<tool>`→`selene_<tool>`,
-   `.codegraph/`→`.selene/`, `codegraph init`→`selene index`, and the single factual fix
-   `a SQLite knowledge graph`→`an embedded knowledge graph`. The rename is applied by a
-   **test-asserted table**, so the diff against the TS original is reviewable line by line.
-   Same rename for the `[[codegraph-explore-summary]]` sentinel → `[[selene-explore-summary]]`.
-2. **Tool-visibility default.** TS ships `DEFAULT_MCP_TOOLS = {'explore'}` — a **one-tool**
-   surface (the other six exist but are hidden unless `CODEGRAPH_MCP_TOOLS` names them),
-   because an agent given seven tools uses the wrong one. The roadmap says Phase 5 exposes
-   seven. **Recommended default:** implement the full seven, keep the gating mechanism, and
-   set `DEFAULT_MCP_TOOLS = {explore, node, search, callers, callees, impact, files}` for
-   Phase 5 so the dogfood gate can exercise them — then **re-measure** at Phase 9's A/B and
-   decide whether to narrow to `{explore}` for v1. Flagged because it is a product decision
-   with a measured TS precedent on the other side.
-3. **`status` in Phase 5?** See "Deliberately deferred". The recommendation is a minimal
-   `selene_status` (counts + last-indexed), because the not-indexed guidance text points at
-   it and a dangling reference is exactly the half-bridge this project forbids. If the
-   maintainer prefers 7 tools flat, Task 18 drops it and Task 14's guidance text drops the
-   pointer with it.
-4. **Dogfood repo + question for the Phase 5 gate.** Task 20 proposes two (this repo and
-   `../codegraph`) with concrete questions. If the maintainer wants a third-party repo
-   (Excalidraw/Django, as in the TS benchmarks), say so before Task 20 — it changes the
-   fixture cost, not the design.
+No open questions remain. A task that finds itself wanting to revisit one of these is
+misreading the plan; the answer is here.
+
+1. **Tool visibility follows TS exactly: `explore` is the ONLY default-visible tool.** All seven
+   are implemented and callable; six are hidden behind `SELENE_MCP_TOOLS`. The map is the parity
+   contract, and TS ships this way for a measured reason: an agent facing seven tools reaches for
+   the wrong one, and the product bet is that **`explore` answers in one call**. Task 15 carries
+   the mechanism *and the reason*. (Note the corroboration: the verbatim instructions text says
+   *"There is a single tool"* — it is only true under this default. The two move together.)
+2. **No eighth tool. `selene_status` stays deferred to Phase 6.** The not-indexed case is carried
+   by success-shaped guidance in **every** tool (Task 19) — not by a tool that exists to announce
+   it.
+3. **Branding: port the instructions verbatim, modulo a mechanical rename table.**
+   `SERVER_INSTRUCTIONS` is ported **verbatim in structure and wording**, applying exactly this
+   table and **nothing else** — not a word of guidance, not a reordering, not an "improvement":
+
+   | TS | Selene |
+   |---|---|
+   | `Codegraph` / `CodeGraph` / `codegraph` (prose) | `Selene` / `selene` |
+   | `codegraph_<tool>` | `selene_<tool>` |
+   | `.codegraph/` | `.selene/` |
+   | `codegraph init` | `selene index` |
+   | `[[codegraph-explore-summary]]` | `[[selene-explore-summary]]` |
+   | `a SQLite knowledge graph` | `an embedded knowledge graph` (the one **factual** fix) |
+
+   **Why this is a rule and not a preference:** the server-instructions are the single source of
+   agent-facing guidance and they were **tuned against real agent behavior**. A well-meant
+   rewrite is exactly how that tuning is lost — silently, with every test still green, and the
+   only symptom is an agent that starts reaching for `Read` again. Task 14 keeps the rename as a
+   **test-asserted table** (the TS original lives in a fixture; the test applies the pairs and
+   asserts byte-equality with `SERVER_INSTRUCTIONS`), so the diff against TS stays reviewable
+   line by line, forever.
+4. **Dogfood repos: THREE, and the third is ≥5000 files — NOT optional.** Measured 2026-07-13,
+   `../codegraph` is 311 source files and SeleneCode 165, so **both sit in the `<500` tier**. A
+   two-repo gate would drive `explore_budget == 1` and the small output tiers **only** — the
+   ≥5000-file tiers (where the relationship/completeness meta-text switches on) and the **"3–5
+   calls on a large repo"** half of the sufficiency invariant would be *unit-tested but never
+   driven*. **That is precisely the inert-seam class this project has paid for four times: a code
+   path that compiles, tests green, and is never exercised by anything real.** A gate that only
+   drives the easy tier tests the easy half of the product. Task 20 therefore carries a third
+   repo (**Django or VS Code** — both already in the TS A/B corpus, so the question set is
+   reusable) with its own `must_contain_symbols`, its own zero-Read assertions, and the "3–5
+   calls" bound **measured there**, not assumed from a unit test.
 
 ---
 
@@ -1006,10 +1027,24 @@ pub(crate) const RWR_ITERATIONS: usize = 25;
   overflow the ceiling — assert the count matches what's actually in the text).
 - [ ] Commit: `feat(context): explore pipeline — seeding, file scoring, RWR ranking, blast radius`
 
-### Task 12: `selene-context` — source rendering: whole-file rule, clustering, adaptive skeletonization
+### Task 12: `selene-context` — source rendering (clustering, adaptive skeletonization) **+ the node view**
 
-**Files:** Create: `src/explore/render.rs`, `tests/explore_render_test.rs`. Modify:
-`src/explore/mod.rs` (fill **step 11 only** — strictly after Task 11).
+**Files:** Create: `src/explore/render.rs`, `src/node_view.rs`, `tests/explore_render_test.rs`,
+`tests/node_view_test.rs`. Modify: `src/explore/mod.rs` (fill **step 11 only** — strictly after
+Task 11), `src/lib.rs`.
+
+⚠ **The node view lives in Phase 4, not Phase 5.** It is the second half of what the Phase 4
+gate (Task 13) snapshots — `explore` **and** `node` — and a gate cannot snapshot a component
+that lands four tasks later; the executor would stub it and snapshot nothing, which is
+precisely the Phase-2 failure this plan is written against. Phase 5's Task 17 is then a **thin
+MCP handler** over what this task builds. The two halves also share every rendering primitive
+(line numbering, config-leaf key-only, `validate_path_within_root` — all from Task 4), so
+splitting them across phases would fork them.
+
+**If this task feels too large for one session, split it at the file boundary** —
+`render.rs` (explore) and `node_view.rs` (node) are independent modules with no shared state —
+and commit twice, `feat(context): source rendering …` then `feat(context): node view …`. Both
+must land **before** Task 13. What must **not** happen is the node view slipping into Phase 5.
 
 **This is where the budget is actually spent**, and where `adaptive-explore-sizing.md` earned
 its numbers (OkHttp/Django flipped from *costlier than grep* to ~14–17% cheaper, median **0
@@ -1083,7 +1118,43 @@ pub(crate) const ENVELOPE_KINDS: &[NodeKind];  // file, module, class, struct, i
   ⚠ **Every skeleton test must also assert the file's *symbols* are still listed in the
   header** — a skeleton that hides what's in the file sends the agent to Read, which is the
   regression this whole mechanism exists to prevent.
+**The node view — interfaces:**
+```rust
+// src/node_view.rs — the `node` tool's data+render half. selene-mcp owns dispatch ONLY.
+pub const CONTAINER_NODE_KINDS: &[NodeKind];   // class, struct, interface, trait, protocol,
+                                               // enum, namespace, module
+pub const TRAIL_CAP: usize = 12;
+pub const BODY_BUDGET: usize = 12_000;
+pub const HARD_CAP: usize = 16;     // max bodies packed in a multi-match view
+pub const LIST_CAP: usize = 20;     // max listed candidates
+pub struct NodeArgs { pub symbol: Option<String>, pub file: Option<String>,
+    pub line: Option<u32>, pub include_code: bool, pub offset: Option<usize>,
+    pub limit: Option<usize> }
+pub async fn node_view<S: GraphStore>(cb: &ContextBuilder<S>, args: &NodeArgs) -> Result<String>;
+```
+
+- [ ] **File mode** (`file` **without** `symbol`) is **byte-for-byte Read parity**
+  (`node-file-view.test.ts`, 9 cases — port all 9). Resolution: exact → suffix → substring;
+  **ambiguous** → list ≤25 candidates (**success-shaped**). `offset`/`limit` semantics identical
+  to `Read`; **offset past end** → success-shaped message. Config-leaf languages return **keys
+  only** (#383). Every read goes through `validate_path_within_root` (#527) — the **one**
+  `isError` source here. The slicing itself is Task 4's `read_file_slice`; do not re-implement it.
+- [ ] **Symbol mode**: `find_symbol_matches` (Task 3) → `file`/`line` narrowing (a `line`
+  prefers the **containing** definition, else the **nearest start**) → **1 match** → details +
+  optional body; a **container** kind (`CONTAINER_NODE_KINDS`) returns a **member outline**
+  instead of a body; plus the **trail** (`TRAIL_CAP = 12` callees/callers with `file:line`,
+  **synth edges annotated** with their `synthesizedBy` label — the Phase 3 contract). **N
+  matches** with `include_code` → **all** bodies packed under `BODY_BUDGET = 12_000` /
+  `HARD_CAP = 16`.
+- [ ] **Node-mode output markers** (verbatim): node lists render as
+  `- name (kind) - file:line — via label`.
+- [ ] TDD (node view): the 9 Read-parity cases **including** `1000\t  const v998` (unpadded) and
+  the trailing-newline case; ambiguous-file listing is success-shaped; a container returns an
+  outline, **not** a 2000-line body; the trail annotates a synthesized hop; a `line` inside a
+  method picks the **method**, not its class.
 - [ ] Commit: `feat(context): source rendering — clustering, whole-file rule, adaptive sizing`
+      (and, if split per the note above, a second: `feat(context): node view — Read-parity file
+      mode + symbol mode`)
 
 ### Task 13: **PHASE 4 GATE** — insta snapshots of explore/node output vs the TS shapes
 
@@ -1110,7 +1181,9 @@ gate has **three** independent halves, and all three must pass.
   `tests/fixtures/resolve/synth-*` project from Phase 3 — the flow must cross a `callback` or
   `jsx-render` edge).
 - [ ] **Half 2 — the insta snapshots** (`insta::assert_snapshot!`) of the **full text** of
-  `handle_explore` and the `node` view for each project's query. Reviewed once by a human,
+  `handle_explore` (Task 11/12) **and** `node_view` (Task 12 — it is in Phase 4 precisely so
+  this gate can snapshot it; a gate cannot snapshot a component that lands in a later phase)
+  for each project's query. Reviewed once by a human,
   then frozen. Shape *and* content: the snapshot contains the actual **source lines**, so a
   regression that empties a section shows up as a diff, not as a silently-passing shape.
 - [ ] **Half 3 — the CONTENT ASSERTIONS, which is what makes the gate a gate.** Independent of
@@ -1169,6 +1242,22 @@ pub struct ServerState<S: GraphStore> {
 }
 pub struct ProjectHandle<S: GraphStore> { pub root: PathBuf, pub ctx: ContextBuilder<S>,
                                           pub file_count: u64 }
+
+// ⚠ ToolOutcome is DEFINED HERE, in Task 14 — not in Task 19, which merely classifies INTO it.
+// Every handler (Tasks 16/17/18) returns it, so it must exist before the first handler lands;
+// three executors each inventing their own is a three-way merge that eats two of them.
+pub enum ToolOutcome {
+    Text(String),         // success-shaped — isError:false. THE DEFAULT for every miss.
+    Refusal(String),      // isError:true, no retry note — PathRefusal only.
+    Malfunction(String),  // isError:true + the retry-once note.
+}
+/// Map a ToolOutcome onto the rmcp call-result shape found by the Task 1 spike.
+/// Task 14 ships it with the two isError arms wired and a test pinning BOTH wire shapes;
+/// Task 19 adds the classification rules (input caps, not-indexed guidance, banners) that
+/// decide which arm a given condition takes. Nothing else in the crate constructs an rmcp
+/// error directly.
+pub fn to_call_result(o: ToolOutcome) -> CallToolResult;
+
 // server.rs
 pub struct SeleneMcp<S: GraphStore> { state: ServerState<S>, tool_router: ToolRouter<Self> }
 impl<S: GraphStore + …> ServerHandler for SeleneMcp<S> { fn get_info(&self) -> ServerInfo { … } }
@@ -1201,11 +1290,18 @@ selene serve --mcp [--path P]  # stdio MCP server
 - [ ] **`PROTOCOL_VERSION`**: rmcp 2.2 sends its own (per Task 1). TS pinned `'2024-11-05'`.
   Take the SDK's default and **write the version into the test** so a silent SDK bump is
   visible. Do not hand-roll the JSON-RPC layer — that is what the SDK is for.
-- [ ] **`SERVER_INSTRUCTIONS` — port verbatim, modulo the Open-Question-1 rename table.** The
-  text below is the TS original with the rename applied (`Codegraph`→`Selene`,
-  `codegraph_explore`→`selene_explore`, `.codegraph/`→`.selene/`, `codegraph init`→
-  `selene index`, `a SQLite knowledge graph`→`an embedded knowledge graph`). It is the **one**
-  place agent guidance lives — do not paraphrase, do not "improve", do not duplicate elsewhere.
+💡 **The instructions text and the tool-visibility ruling corroborate each other** — note that
+the verbatim text below literally says *"There is a single tool, `selene_explore`"*. That
+sentence is **only true** under the ratified explore-only default surface (Task 15). If someone
+later widens the default set, this text becomes a lie to the agent — which is the single-source
+-of-guidance invariant failing in the most damaging possible way. The two must move together.
+
+- [ ] **`SERVER_INSTRUCTIONS` — port verbatim, modulo the RATIFIED rename table** (Coordination
+  Point 3, maintainer 2026-07-13). The text below **is** the TS original with that table already
+  applied. It is the **one** place agent guidance lives, and it was **tuned against real agent
+  behavior**: do not paraphrase, do not reorder, do not "improve", do not duplicate elsewhere.
+  A rewrite here fails silently — every test stays green and the only symptom is an agent that
+  starts reaching for `Read` again.
 
 ````
 # Selene — code intelligence over an indexed knowledge graph
@@ -1293,6 +1389,11 @@ maintainer prefers, trim the monorepo bullet until Phase 6 — flag it, don't de
   (as a fixture file) and the rename pairs, applies them, and asserts the result **equals**
   `SERVER_INSTRUCTIONS` byte-for-byte. That way the diff from the TS original stays reviewable
   forever, and an accidental paraphrase fails the build.
+- [ ] **`ToolOutcome` + `to_call_result` ship in THIS task**, with a test that pins **both**
+  wire shapes against the real SDK: `Text` ⇒ `{content:[{type:'text',…}], isError:false}`,
+  `Refusal`/`Malfunction` ⇒ `isError:true` (per the Task 1 spike — if rmcp cannot express one
+  of the two shapes, that is a blocker, not a workaround). Tasks 16/17/18 consume this enum;
+  Task 19 fills in *which condition maps to which arm*.
 - [ ] **Smoke check — this is the anti-inert-seam proof for Phase 5, and it must be in the
   commit.** `tests/initialize_test.rs`: start the **real** `serve_stdio` over an in-memory /
   piped transport, send `initialize`, assert (a) the response arrives **before** any store
@@ -1313,7 +1414,9 @@ success-shaped "not implemented" — never a panic, never an `isError`). Strictl
 ```rust
 pub const TOOL_NAMES: [&str; 7] = ["selene_explore", "selene_node", "selene_search",
     "selene_callers", "selene_callees", "selene_impact", "selene_files"];
-pub const DEFAULT_MCP_TOOLS: &[&str];          // see Open Question 2 — all 7 for Phase 5
+/// ⚠ TS parity, ratified by the maintainer (2026-07-13): the default-visible surface is
+/// **`explore` ALONE**. All seven tools are IMPLEMENTED and callable; six are hidden by default.
+pub const DEFAULT_MCP_TOOLS: &[&str] = &["selene_explore"];
 pub const TINY_REPO_FILE_THRESHOLD: u64 = 500;
 pub const TINY_REPO_TOOLS: [&str; 3] = ["selene_explore", "selene_search", "selene_node"];
 pub fn static_tools() -> Vec<ToolDefinition>;  // NO engine, NO store — the P2 contract
@@ -1324,11 +1427,26 @@ pub fn visible_tools(state: &ServerState<..>) -> Vec<ToolDefinition>;
   destructiveHint: false, idempotentHint: true, openWorldHint: false}`. It must **survive** the
   schema clone and the dynamic-description rewrite — that is precisely what
   `mcp-tool-annotations.test.ts` catches, so port that test.
+- [ ] **The default surface is `explore` ALONE — and the REASON must be written into the code,
+  not just the behavior** (maintainer ruling, 2026-07-13; TS ships `DEFAULT_MCP_TOOLS =
+  {'explore'}`). All seven tools are implemented, schema'd, annotated and dispatchable; six are
+  simply not *listed* by default. Why: **an agent facing seven tools reaches for the wrong
+  one** — it calls `search`, gets names, then Reads the files, and the entire product bet
+  (one `explore` call returns the source *and* the flow *and* the blast radius, so no Read
+  happens) is lost to a plausible-looking tool menu. A hidden tool costs nothing; a wrong tool
+  choice costs the whole session. Write that paragraph into `tools.rs`'s module docs.
 - [ ] **`SELENE_MCP_TOOLS`** (comma-separated short names, a `selene_` prefix is stripped if
-  present) **replaces** the default set entirely — it does not add to it.
+  present) is the reveal mechanism: it **replaces** the default set entirely — it does not add
+  to it. This is how the other six become reachable (and how Tasks 17/18's tests reach them).
 - [ ] **Tiny-repo gate**: with a project open and `file_count < TINY_REPO_FILE_THRESHOLD`
-  (**500**), the surface narrows to `TINY_REPO_TOOLS`. On a small repo, seven tools is worse
-  than three — the agent picks the wrong one.
+  (**500**), the active set is **intersected** with `TINY_REPO_TOOLS`
+  (`{explore, search, node}`) — so it can only ever *narrow* a set widened by
+  `SELENE_MCP_TOOLS`, never widen the default. Port the intersection semantics exactly; the
+  gate and the default are two different mechanisms and conflating them changes what an agent
+  sees on a 400-file repo.
+- [ ] **A call to a hidden tool is `isError: true`** ("disabled tool" — Task 19's list). Hidden
+  ≠ absent: the dispatch arm exists, and refusing it loudly is what keeps a
+  `SELENE_MCP_TOOLS` typo from silently degrading to "tool does nothing".
 - [ ] **Explore's description is DYNAMIC**: append
   `" Budget: make at most {budget} calls for this project ({file_count} files indexed)."` —
   `{budget}` from `explore_budget(file_count)` (Task 8), `{file_count}` **thousands-separated**
@@ -1342,11 +1460,14 @@ pub fn visible_tools(state: &ServerState<..>) -> Vec<ToolDefinition>;
 - [ ] **Tool descriptions** are the *short* pointers; the **guidance lives in the instructions**
   (Global Constraints). Each description says what the tool returns and when to reach for it —
   and `explore` is marked **PRIMARY**, `node` **SECONDARY**, in one line each.
-- [ ] TDD: all 7 listed by default with correct annotations; `SELENE_MCP_TOOLS=explore,node`
-  narrows to 2; the tiny-repo gate at exactly 499/500 files; the `projectPath`-required variant
-  when `project: None`; the dynamic budget line for a 3,000-file project reads
-  `Budget: make at most 2 calls for this project (3,000 files indexed).`; annotations survive
-  the clone.
+- [ ] TDD: **only `selene_explore` is listed by default** (the ruling — assert the list has
+  length 1); `SELENE_MCP_TOOLS=explore,node,search` lists exactly 3; the tiny-repo gate
+  **intersects** (with `SELENE_MCP_TOOLS` naming all 7 on a 400-file repo, the listed set is
+  `{explore, search, node}`) and does **not** fire at exactly 500 files; every listed tool
+  carries the annotations, and they survive the schema clone + the dynamic description; the
+  `projectPath`-required variant when `project: None`; the dynamic budget line for a 3,000-file
+  project reads `Budget: make at most 2 calls for this project (3,000 files indexed).`;
+  `static_tools()` works with **no store constructed**.
 - [ ] Commit: `feat(mcp): tool surface — 7 definitions, annotations, visibility gating`
 
 ### Task 16: `selene-mcp` — the `explore` handler (PRIMARY)
@@ -1360,7 +1481,7 @@ pub fn visible_tools(state: &ServerState<..>) -> Vec<ToolDefinition>;
 pub struct ExploreArgs { pub query: String, pub max_files: Option<usize>,
                          pub project_path: Option<String> }
 pub async fn handle_explore<S: GraphStore>(state: &ServerState<S>, args: ExploreArgs)
-    -> ToolOutcome;   // ToolOutcome = Text(String) | Refusal(String) | Malfunction(String)
+    -> ToolOutcome;   // ⚠ ToolOutcome is TASK 14's — do not redefine it here.
 ```
 
 The handler is **thin**: validate → resolve the project → call
@@ -1376,6 +1497,13 @@ something belongs in `selene-context`.
   long **success-shaped guidance** text (Task 19 owns the exact strings). Never `isError`.
 - [ ] **`max_files`** defaults to the tier's `default_max_files` and is clamped to it as a
   ceiling — a caller cannot ask for more than the budget allows.
+- [ ] **`ExploreInput::include_code` has no tool argument — and that is deliberate.** The MCP
+  schema (`ExploreArgs`) exposes only `query` / `max_files` / `project_path`; the handler
+  **always** passes `include_code: true`. Explore *is* the verbatim source (the instructions
+  promise exactly that), so a caller-suppressible body would let an agent turn the one
+  anti-Read tool into a name-lister and then Read the files. The field stays on `ExploreInput`
+  for tests and for `selene-cli` (Phase 6), not for the wire. Task 11's `ExploreInput` therefore
+  documents `include_code: bool` with **default `true`**.
 - [ ] TDD **through the real server** (not by calling the function directly — that is the inert
   seam again): drive `tools/call` with `{"name":"selene_explore","arguments":{"query":"…"}}`
   over the real transport against a real indexed fixture, and assert the response body contains
@@ -1383,49 +1511,45 @@ something belongs in `selene-context`.
   returns `isError: false` with guidance text.
 - [ ] Commit: `feat(mcp): explore tool handler (PRIMARY)`
 
-### Task 17: `selene-mcp` + `selene-context` — the `node` handler (SECONDARY): Read parity + symbol mode
+### Task 17: `selene-mcp` — the `node` tool handler (SECONDARY): the thin dispatch over Task 12's node view
 
-**Files:** Create: `crates/selene-context/src/node_view.rs`,
-`crates/selene-mcp/src/handlers/node.rs`, `crates/selene-context/tests/node_view_test.rs`.
-Modify: `src/server.rs` (fill `selene_node` only), `selene-context/src/lib.rs`. After Task 15;
-independent of Task 16 **except** for the `server.rs` seam.
+**Files:** Create: `src/handlers/node.rs`, `tests/node_tool_test.rs`. Modify: `src/server.rs`
+(fill `selene_node` only). After Task 15; independent of Task 16 **except** for the `server.rs`
+seam. **The data+render half is Task 12's** (`selene_context::node_view`) — it is Phase 4, it is
+gated by Task 13, and this task must **not** reimplement any of it.
 
 **Interfaces:**
 ```rust
-// selene-context/src/node_view.rs — the data+render half (layering: mcp owns dispatch only)
-pub const CONTAINER_NODE_KINDS: &[NodeKind];   // class, struct, interface, trait, protocol,
-                                               // enum, namespace, module
-pub const TRAIL_CAP: usize = 12;
-pub const BODY_BUDGET: usize = 12_000;
-pub const HARD_CAP: usize = 16;     // max bodies
-pub const LIST_CAP: usize = 20;     // max listed candidates
-pub async fn node_view<S: GraphStore>(cb: &ContextBuilder<S>, args: &NodeArgs) -> Result<String>;
-pub struct NodeArgs { pub symbol: Option<String>, pub file: Option<String>,
-    pub line: Option<u32>, pub include_code: bool, pub offset: Option<usize>,
-    pub limit: Option<usize> }
+#[derive(serde::Deserialize, schemars::JsonSchema)]
+pub struct NodeToolArgs { pub symbol: Option<String>, pub file: Option<String>,
+    pub line: Option<u32>, pub include_code: Option<bool>, pub offset: Option<usize>,
+    pub limit: Option<usize>, pub project_path: Option<String> }
+pub async fn handle_node<S: GraphStore>(state: &ServerState<S>, args: NodeToolArgs)
+    -> ToolOutcome;   // ToolOutcome is Task 14's
 ```
 
-- [ ] **File mode** (`file` **without** `symbol`) is **byte-for-byte Read parity**
-  (`node-file-view.test.ts`, 9 cases — port all 9). Resolution: exact → suffix → substring;
-  **ambiguous** → list ≤25 candidates (**success-shaped**). `offset`/`limit` semantics identical
-  to `Read`; **offset past end** → success-shaped message. Config-leaf languages return **keys
-  only** (#383). Every read goes through `validate_path_within_root` (#527) — the **one**
-  `isError` here.
-- [ ] **Symbol mode**: `find_symbol_matches` (Task 3) → `file`/`line` narrowing (a `line`
-  prefers the **containing** definition, else the **nearest start**) → **1 match** → details +
-  optional body; a **container** kind (`CONTAINER_NODE_KINDS`) returns a **member outline**
-  instead of a body; plus the **trail** (`TRAIL_CAP = 12` callees/callers with `file:line`,
-  **synth edges annotated** with their `synthesizedBy` label). **N matches** with `include_code`
-  → **all** bodies packed under `BODY_BUDGET = 12_000` / `HARD_CAP = 16`.
-- [ ] **Node-mode output markers** (verbatim): node lists render as
-  `- name (kind) - file:line — via label`.
-- [ ] TDD: the 9 Read-parity cases **including** `1000\t  const v998` (unpadded) and the
-  trailing-newline case; ambiguous-file listing is success-shaped; a container returns an
-  outline, not a 2000-line body; the trail annotates a synthesized hop; a `line` inside a
-  method picks the **method**, not its class.
-- [ ] Commit: `feat(mcp): node tool handler — Read-parity file view + symbol mode`
+Thin: validate → resolve the project → map `NodeToolArgs` onto `node_view::NodeArgs` → call
+`selene_context::node_view::node_view` → wrap in `ToolOutcome`. If this file grows past ~120
+lines, something belongs in `selene-context`.
 
-### Task 18: `selene-mcp` — `search`, `callers`, `callees`, `impact`, `files` (+ minimal `status`)
+- [ ] **Neither `symbol` nor `file`** given → **success-shaped** guidance naming both
+  (`Provide either a "symbol" or a "file"…`), never `isError`.
+- [ ] **`include_code`** defaults to **`true`** (the anti-Read invariant: a `node` call that
+  returns metadata without source sends the agent straight to `Read`). `offset`/`limit` default
+  to `None` → Task 4's Read-parity defaults (`limit` = 2000 lines).
+- [ ] **A `GraphError::PathRefusal` out of the node view maps to `ToolOutcome::Refusal`** — the
+  only `isError` this tool can produce. Every other condition (ambiguous file, no match, offset
+  past end) arrives as `Ok(text)` and stays success-shaped.
+- [ ] TDD **through the real server** (a direct function call proves nothing about the wiring —
+  the inert-seam rule): drive `tools/call` with `{"name":"selene_node","arguments":{"file":"…"}}`
+  over the real transport and assert `^\d+\t` numbered source lines in the body; a `..`-escaping
+  path returns `isError: true`; a non-existent symbol returns `isError: false` with guidance.
+  ⚠ `selene_node` is **not** default-visible (Task 15's TS-parity gating) — the test must set
+  `SELENE_MCP_TOOLS=explore,node` (or the tiny-repo surface) to reach it, and **that fact is
+  itself worth one assertion**: calling a hidden tool returns `isError: true` (disabled tool).
+- [ ] Commit: `feat(mcp): node tool handler (SECONDARY) over the Phase-4 node view`
+
+### Task 18: `selene-mcp` — `search`, `callers`, `callees`, `impact`, `files`
 
 **Files:** Create: `src/handlers/query.rs`, `tests/query_tools_test.rs`. Modify: `src/server.rs`
 (fill the remaining `#[tool]` bodies). After Task 15; the `server.rs` seam serializes it against
@@ -1443,16 +1567,20 @@ pub struct NodeArgs { pub symbol: Option<String>, pub file: Option<String>,
   `No callees found for "{s}"`, `No files indexed. Run \`selene index\` first.`
 - [ ] **`files`**: path filter with the #426 normalization (`/`, `.`, `./`, and a backslash path
   all behave) — port `mcp-files-path-normalization.test.ts`. Uses `QueryManager::files()`.
-- [ ] **`status` (minimal — see Open Question 3)**: files/nodes/edges/languages/last-indexed
-  only, from `GraphStore::stats()` + `last_indexed_at()`. Field labels keep the TS spelling
-  where they still mean something (`**Files indexed:**`); the TS `**Backend:**` /
-  `**Journal mode:**` lines are **SQLite-specific and are dropped** — replace with
-  `**Backend:** surrealdb (embedded, rocksdb)`. Everything watcher/daemon-related is **Phase 6**.
+- [ ] **NO eighth tool. `status` is NOT in Phase 5** (maintainer ruling, 2026-07-13): the
+  roadmap scopes this phase to **seven**, and most of what `status` reports (journal mode,
+  watcher state, daemon) does not exist until Phase 6. The **not-indexed** case — the one thing
+  that tempted a status tool into existence — is handled where it belongs: as **success-shaped
+  guidance returned by every tool** (Task 19). Adding a tool to carry a message that every
+  other tool already carries is scope creep at exactly the gate where scope creep is most
+  tempting. Task 19's guidance text therefore **must not** point at a `selene_status` tool.
 - [ ] TDD: an overloaded symbol yields **per-definition sections**; a `file` narrowing miss
   yields a **note plus all groups** (not an error, not an empty result); every "no results" path
   is `isError: false`; the 4 path-normalization cases; `impact` depth clamps at 0 → 1 and
-  11 → 10.
-- [ ] Commit: `feat(mcp): search/callers/callees/impact/files handlers + minimal status`
+  11 → 10. ⚠ These five tools are **hidden by default** (Task 15's ruling) — every test here
+  sets `SELENE_MCP_TOOLS` to expose them, and one asserts that **without** it, the call is
+  refused as a disabled tool.
+- [ ] Commit: `feat(mcp): search/callers/callees/impact/files handlers`
 
 ### Task 19: `selene-mcp` — **the `isError` discipline**, input caps, not-indexed guidance, banners
 
@@ -1466,10 +1594,12 @@ the map's §isError contract, which is a **hard invariant** (PRD §8.2), not a p
 
 **Interfaces:**
 ```rust
+// ⚠ `ToolOutcome` + `to_call_result` already exist — Task 14 defined them. This task adds the
+// CLASSIFICATION (which condition takes which arm), the input caps, the guidance texts, and the
+// banner layer that wraps dispatch. Do not redefine the enum.
 pub const MAX_INPUT_LENGTH: usize = 10_000;   // free-form strings
 pub const MAX_PATH_LENGTH: usize = 4_096;     // path-likes
-pub enum ToolOutcome { Text(String), Refusal(String), Malfunction(String) }
-pub fn to_call_result(o: ToolOutcome) -> CallToolResult;   // per Task 1's rmcp finding
+pub fn classify(e: GraphError) -> ToolOutcome;             // the one place errors become outcomes
 pub trait PendingFiles: Send + Sync { fn pending(&self) -> Vec<PendingFile>;
                                       fn degraded_reason(&self) -> Option<String>; }
 pub struct NoWatcher;   // Phase 5's impl — returns empty. ⚠ INERT-SEAM SHAPE. See below.
@@ -1497,7 +1627,9 @@ file-not-matched; ambiguous-file lists; offset-past-end.
   the agent to **stop calling selene for that project this session** and use its built-in tools
   — because a tool that keeps saying "not indexed" is worse than one that says "stop asking me".
   It must also say **indexing is the user's decision** (do not offer to run it). Port both
-  variants (no-default vs explicit path).
+  variants (no-default vs explicit path). ⚠ **It must NOT reference a `selene_status` tool** —
+  there is none in Phase 5 (ratified). This guidance is returned by **every** tool, which is
+  exactly why no tool needs to exist to deliver it.
 - [ ] **⚠ `NoWatcher` is textbook inert-seam shape** — a provider that returns empty, feeding a
   banner nobody can see. It is allowed **only** because Phase 6 will replace it, and **only**
   with this mitigation, which is not optional: the banner tests inject a **non-empty fake**
@@ -1563,12 +1695,25 @@ must_contain_files   = ["crates/selene-resolve/src/batch.rs",
 max_explore_calls    = 1              # small repo ⇒ explore_budget == 1
 
 [[question]]
-repo      = "../codegraph"            # the TS parity source: a 72k-LOC, 162-file real repo
+repo      = "../codegraph"            # the TS parity source: a 72k-LOC real repo (311 src files)
 query     = "how does an MCP tools/call request reach handleExplore"
 must_contain_symbols = ["MCPSession", "ToolHandler", "execute", "handleExplore"]
 must_contain_flow    = true
 must_contain_files   = ["src/mcp/session.ts", "src/mcp/tools.ts"]
 max_explore_calls    = 1
+
+# ⚠ THE LARGE-TIER ROW — RATIFIED, NOT OPTIONAL (Coordination Point 4).
+# Both repos above are <500 files. Without this row the gate drives explore_budget == 1 and the
+# small output tiers ONLY: the ≥5000-file tiers and the "3–5 calls on a large repo" half of the
+# sufficiency invariant would be unit-tested and NEVER DRIVEN — the inert-seam class, again.
+[[question]]
+repo      = "../django"               # or ../vscode — both are in the TS A/B corpus
+query     = "how does a QuerySet become SQL"
+must_contain_symbols = ["QuerySet", "_fetch_all", "SQLCompiler", "execute_sql", "as_sql"]
+must_contain_flow    = true
+must_contain_files   = ["django/db/models/query.py", "django/db/models/sql/compiler.py"]
+max_explore_calls    = 3              # the LARGE-repo bound — MEASURED here, not assumed
+tier_assertions      = true           # see the large-tier checklist item below
 ```
 
 - [ ] **Drive the PRODUCTION binary, not the library.** The test shells out:
@@ -1588,9 +1733,37 @@ max_explore_calls    = 1
   find** the flow — proving the assertions can distinguish a real answer from output that merely
   exists. A gate that would pass on garbage certifies nothing.
 - [ ] **`explore_budget` is respected**: the number of explore calls needed is ≤
-  `max_explore_calls` (1 for both repos — both are < 500 files… **verify `../codegraph`'s file
-  count**; if it is ≥500, set its budget to 2 and say so in the row, because the invariant is
-  *budget scales with repo size*, not *one call always*).
+  `max_explore_calls`. **Measured 2026-07-13, so it is not the executor's problem:**
+  `../codegraph` = **496 tracked / 311 source files**; SeleneCode = **165 `.rs`** (plus the
+  fixture corpora, which *are* indexed — they are real source). **Both are therefore in the
+  `<500` tier ⇒ `explore_budget == 1`**, and `max_explore_calls = 1` is correct for both rows.
+  Re-measure with `selene index`'s own file count at gate time and record it (the fixture trees
+  grow; if either repo crosses 500, the row's budget becomes 2 — the invariant is *budget scales
+  with repo size*, not *one call always*).
+- [ ] **⚠ THE LARGE-TIER RUN IS NOT OPTIONAL** (ratified — Coordination Point 4). The two small
+  repos exercise `explore_budget == 1`, the `<500` output tier, and the tiny-repo tool gate
+  (which fires below 500 files, narrowing the surface to `{explore, search, node}`). They
+  **never** exercise the ≥5000 tiers or the multi-call budget. The third repo does, and it
+  carries its **own** `must_contain_symbols`, its **own** zero-Read assertions (Half B), and:
+  - **The tier is verified against the real index, not assumed.** Assert
+    `file_count >= 5000` after `selene index` (Django is ~2.8k source files in some layouts —
+    **if the chosen repo indexes below 5000, it is the WRONG REPO for this row**: swap to VS Code
+    and record the measured count. Do not soften the row to fit the repo; that inverts the whole
+    point of the gate).
+  - **The tier's meta-text is DRIVEN**: at ≥5000 files `include_relationships`,
+    `include_additional_files`, `include_completeness_signal` and `include_budget_note` are all
+    **true** — so the output must actually **contain** the relationship section, the
+    additional-files list, the completeness signal and the budget note. On the small repos they
+    are all **false** and must be **absent**. That pair of assertions is the only thing standing
+    between "the tier table is implemented" and "the tier table works" — four output features
+    that no other test in this plan ever renders.
+  - **The "3–5 calls" bound is MEASURED, not assumed**: record the number of `selene_explore`
+    calls the real agent made (Half B) and assert it is **≤ `explore_budget(file_count)`** and
+    **≥1**. This is the *only* place the sufficiency invariant's "scaling to 3–5 on large repos"
+    half is ever exercised against a real agent.
+  - **`max_chars_per_file` monotonicity, observed end-to-end**: the large repo's per-file
+    rendered budget must be **≥** the small repos' (Task 8's invariant, now proven on real
+    output rather than in a unit test).
 
 ---
 
@@ -1601,10 +1774,21 @@ This is the half that is **not** self-deception. It measures what an actual agen
 
 - [ ] **Setup**: register the built binary as an MCP server for a headless agent session
   (`claude mcp add selene -- <target>/debug/selene serve --mcp --path <repo>`, or the equivalent
-  `.mcp.json`), in a **scratch copy** of the repo so no state is shared with this session.
+  `.mcp.json`), in a **scratch copy** of the repo so no state is shared with this session. Run
+  over **all three** repos (two small + the ratified ≥5000-file one). Build with
+  `--release` for the large repo and **index it once**, reusing the `.selene/` across the 3 runs
+  — a debug-build index of a 5k-file repo is the one place this gate can become genuinely slow,
+  and it is a fixture cost, not a measurement.
 - [ ] **Run**: headless, streaming the tool-use log —
   `claude -p "<the question from questions.toml>" --output-format stream-json` — with **the same
-  question text** Half A used. Run **n = 3** per repo (agent runs vary; one run proves nothing).
+  question text** Half A used. Run **n = 3 per repo × 3 repos = 9 runs** (agent runs vary; one
+  run proves nothing, and the ≥2-of-3 rule is **per repo** — a large-tier failure is not
+  averaged away by two small-repo passes).
+  ⚠ **The large repo is where this half earns its keep.** If it is Django, note that Django is
+  the exact repo where the TS build's deterministic probe **lied** (`adaptive-explore-sizing.md`
+  dead end #6: the probe said "0 skeletons, reads flat"; the real agent skeletonized
+  `compiler.py` and Read it straight back). Half A on Django can be green while Half B is red —
+  that is not a flaw in the gate, that **is** the gate.
 - [ ] **Verify zero-Read MECHANICALLY, not by reading the transcript.** Parse the
   `stream-json` output for `tool_use` blocks and **count** them by name. The gate is:
   - `Read` count == **0**, `Grep` count == **0**, `Glob` count == **0**, and **no Task/agent
@@ -1615,11 +1799,18 @@ This is the half that is **not** self-deception. It measures what an actual agen
     rather than answering vacuously with zero tool calls of any kind. ⚠ **A run that reads
     nothing because it answered nothing is a FAILURE, not a pass** — this assertion is what
     separates the two, and it is the one a rushed implementation will forget.
+  - **⚠ A run PASSES only if it satisfies BOTH halves — zero-Read AND answered — and the
+    ≥2-of-3 rule is over PASSING RUNS, not over each criterion separately.** Scoring the two
+    criteria independently is a silent false-green: a zero-Read-but-empty run and a
+    read-everything-but-correct run would score "2/3 zero-Read, 2/3 answered" and the gate would
+    go green on **zero** runs that actually did the thing. Evaluate per run, then count.
   - **Median across the 3 runs** is what's recorded; a single outlier run does not fail the gate,
-    but **≥2 of 3 must be zero-Read**.
+    but **≥2 of 3 runs must PASS** in the conjunctive sense above.
 - [ ] **Record the result** in `docs/benchmarks/2026-07-phase5-dogfood.md`: per repo — file
-  count, tier, `explore_budget`, explore calls made, Read/Grep/Glob/Task counts per run, output
-  chars, wall-clock, and the **verbatim answer** of the median run. This table is the baseline
+  count, **tier**, `explore_budget`, explore calls made, Read/Grep/Glob/Task counts per run,
+  output chars, wall-clock, and the **verbatim answer** of the median run. **All three repos in
+  one table, tier column included** — that table is what makes the budget invariant *visible*
+  (small tier → 1 call, large tier → up to 5) instead of merely asserted, and it is the baseline
   Phase 9's A/B rerun compares against.
 - [ ] **If Half B fails, the phase is not done — and the failure is the finding.** Do not
   "fix" it by weakening the question. Diagnose *what the agent went to Read*, and that names the
@@ -1641,9 +1832,14 @@ This is the half that is **not** self-deception. It measures what an actual agen
 - [ ] **Phase 4 gate** (Task 13): explore/node snapshots + content assertions green on a
       ≥6-project corpus built by the **production** index→resolve pipeline.
 - [ ] **Phase 5 gate** (Task 20): Half A green in CI; Half B recorded in
-      `docs/benchmarks/2026-07-phase5-dogfood.md` with **≥2 of 3 runs at zero Read/Grep/Glob/Task**
-      on **both** dogfood repos.
+      `docs/benchmarks/2026-07-phase5-dogfood.md` with **≥2 of 3 runs PASSING** (zero
+      Read/Grep/Glob/Task **and** answered — conjunctive, per run) on **all three** dogfood repos
+      — including the **≥5000-file** one, whose ≥5000 tier meta-text and multi-call budget are
+      **driven**, not merely unit-tested.
 - [ ] The three crate `lib.rs` ledgers name every deferred item **with its phase and its reason**.
 - [ ] `docs/plans/2026-07-12-selenecode-roadmap.md` Phase 4/5 rows updated to reflect reality
       (the maps are the source of truth for parity; the roadmap for status).
-- [ ] The four **Open coordination points** are resolved and the resolutions recorded here.
+- [ ] **No open coordination points remain** — all four were ratified 2026-07-13 (explore-only
+      default surface; no `status` tool; the verbatim-instructions rename table; three dogfood
+      repos incl. the mandatory ≥5000-file one). A task that wants to re-open one is misreading
+      the plan.
