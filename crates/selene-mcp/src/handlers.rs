@@ -1,0 +1,249 @@
+//! The tool handlers — **every one of them classifies inside itself**.
+//!
+//! A `?` on a store error escaping a handler becomes a JSON-RPC transport failure, not a
+//! failed call (the spike's finding #1). So no handler propagates: each opens the store,
+//! answers, and returns a [`ToolOutcome`].
+
+use std::path::{Path, PathBuf};
+
+use selene_context::{
+    ContextBuilder, NOT_INDEXED, build_node_view, node_not_found, render_node_view,
+};
+use selene_db::SurrealStore;
+use selene_graph::{GraphError, QueryManager};
+
+use crate::outcome::ToolOutcome;
+
+/// Open the graph for a project root.
+///
+/// **Every failure here is guidance, not an error.** No `.selene/`, an unreadable database, a
+/// root that does not exist — all of them mean "there is nothing to explore yet", which is a
+/// thing an agent can act on. An `isError` would end the session.
+async fn open(root: &Path) -> Result<QueryManager<SurrealStore>, ToolOutcome> {
+    let db = root.join(".selene");
+    if !db.exists() {
+        return Err(ToolOutcome::guidance(NOT_INDEXED));
+    }
+    let store = SurrealStore::open(&db)
+        .await
+        .map_err(|e| ToolOutcome::failed(format!("could not open the index: {e}")))?;
+    Ok(QueryManager::new(store, root.to_path_buf()))
+}
+
+/// Resolve the project root for a call: the tool's `projectPath`, else the server's default.
+pub fn resolve_root(default: Option<&PathBuf>, arg: Option<&str>) -> Option<PathBuf> {
+    arg.map(PathBuf::from).or_else(|| default.cloned())
+}
+
+/// The guidance for a call with no project at all.
+fn no_project() -> ToolOutcome {
+    ToolOutcome::guidance(
+        "## No project\n\nThis server has no default project, and no `projectPath` was given.\n\n\
+         Pass `projectPath` pointing at a directory that has been indexed with `selene index`.\n",
+    )
+}
+
+/// **`explore` — the PRIMARY tool.** One call: the flow, the source, the blast radius.
+pub async fn explore(root: Option<PathBuf>, query: &str) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+
+    match ContextBuilder::new(qm).build_context(query).await {
+        Ok(text) => ToolOutcome::guidance(text),
+        // The ONLY things that reach here are a store malfunction and a #527 path refusal —
+        // `selene-context` returns every recoverable condition as an Ok value, on purpose.
+        Err(e) => ToolOutcome::from_error(&e),
+    }
+}
+
+/// **`node` — Read parity + symbol mode.** A missing symbol is guidance, never an error (#173).
+pub async fn node(root: Option<PathBuf>, symbol: &str) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+
+    match build_node_view(&qm, symbol).await {
+        Ok(Some(view)) => ToolOutcome::guidance(render_node_view(&view)),
+        // Not found is an ANSWER, and it says what to do next.
+        Ok(None) => ToolOutcome::guidance(node_not_found(symbol)),
+        Err(e) => ToolOutcome::from_error(&e),
+    }
+}
+
+/// **`search`** — symbols by name.
+pub async fn search(root: Option<PathBuf>, query: &str) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+
+    let hits = match qm.find_all_symbols(query).await {
+        Ok(h) => h,
+        Err(e) => return graph_outcome(&e),
+    };
+    if hits.is_empty() {
+        return ToolOutcome::guidance(format!(
+            "## No symbol matches `{query}`\n\nTry `selene_explore` with a description — it \
+             searches by relevance and finds symbols whose exact name you do not know.\n"
+        ));
+    }
+
+    let mut out = format!("## Symbols matching `{query}`\n\n");
+    for n in hits.iter().take(50) {
+        out.push_str(&format!(
+            "- `{}` — {} ({}:{})\n",
+            n.name,
+            n.kind.as_str(),
+            n.file_path,
+            n.start_line
+        ));
+    }
+    ToolOutcome::guidance(out)
+}
+
+/// **`callers` / `callees`** — grouped by definition site (#764).
+///
+/// ⚠ The Tasks 1–4 review flagged `group_by_definition` as the likeliest fifth inert seam: it
+/// dies quietly if these render a flat list. **It is used here**, and `callers_are_grouped_by_
+/// definition_site` asserts the grouping reaches the output — so the seam is closed rather
+/// than merely noted.
+pub async fn adjacency(root: Option<PathBuf>, symbol: &str, callers: bool) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+
+    let Some(node) = (match qm.find_all_symbols(symbol).await {
+        Ok(h) => h.into_iter().next(),
+        Err(e) => return graph_outcome(&e),
+    }) else {
+        return ToolOutcome::guidance(node_not_found(symbol));
+    };
+
+    let entries = if callers {
+        qm.callers(&node.id, 2).await
+    } else {
+        qm.callees(&node.id, 2).await
+    };
+    let entries = match entries {
+        Ok(e) => e,
+        Err(e) => return graph_outcome(&e),
+    };
+
+    let nodes: Vec<selene_core::Node> = entries.into_iter().map(|e| e.node).collect();
+    if nodes.is_empty() {
+        let what = if callers { "callers" } else { "callees" };
+        return ToolOutcome::guidance(format!("## `{symbol}` has no {what}.\n"));
+    }
+
+    // GROUPED — one heading per definition site, not a flat list (#764).
+    let groups = qm.group_by_definition(nodes).await;
+    let heading = if callers { "Called by" } else { "Calls" };
+    let mut out = format!("## {heading} `{symbol}`\n\n");
+    for g in groups {
+        out.push_str(&format!("### `{}` ({})\n\n", g.qualified_name, g.file_path));
+        for n in &g.nodes {
+            out.push_str(&format!("- `{}` (:{})\n", n.name, n.start_line));
+        }
+        out.push('\n');
+    }
+    ToolOutcome::guidance(out)
+}
+
+/// **`impact`** — what breaks if this changes.
+pub async fn impact(root: Option<PathBuf>, symbol: &str, depth: u32) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+
+    let Some(node) = (match qm.find_all_symbols(symbol).await {
+        Ok(h) => h.into_iter().next(),
+        Err(e) => return graph_outcome(&e),
+    }) else {
+        return ToolOutcome::guidance(node_not_found(symbol));
+    };
+
+    let sub = match qm.impact(&node.id, depth).await {
+        Ok(s) => s,
+        Err(e) => return graph_outcome(&e),
+    };
+
+    let mut out = format!(
+        "## Blast radius of `{}`\n\n**{}** symbols affected.\n\n",
+        node.name,
+        sub.nodes.len()
+    );
+    for n in sub.nodes.values().take(50) {
+        out.push_str(&format!(
+            "- `{}` ({}:{})\n",
+            n.name, n.file_path, n.start_line
+        ));
+    }
+    ToolOutcome::guidance(out)
+}
+
+/// **`files`** — the indexed file list.
+pub async fn files(root: Option<PathBuf>, filter: Option<&str>) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+
+    let files = match qm.files().await {
+        Ok(f) => f,
+        Err(e) => return graph_outcome(&e),
+    };
+    let needle = filter.map(selene_graph::normalize_path).unwrap_or_default();
+
+    let mut out = String::from("## Indexed files\n\n");
+    let mut shown = 0usize;
+    for f in &files {
+        if !needle.is_empty() && !f.path.contains(&needle) {
+            continue;
+        }
+        out.push_str(&format!(
+            "- `{}` — {} ({} symbols)\n",
+            f.path, f.language, f.node_count
+        ));
+        shown += 1;
+        if shown >= 200 {
+            break;
+        }
+    }
+    if shown == 0 {
+        return ToolOutcome::guidance(format!(
+            "## No indexed files match `{}`\n\nRun `selene index` if this project has not been \
+             indexed.\n",
+            needle
+        ));
+    }
+    ToolOutcome::guidance(out)
+}
+
+/// A graph error: a #527 refusal or a genuine malfunction — those, and only those, set
+/// `isError`.
+fn graph_outcome(e: &GraphError) -> ToolOutcome {
+    ToolOutcome::failed(format!("{e}"))
+}

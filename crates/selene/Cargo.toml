@@ -12,6 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 selene-core.workspace = true
+selene-db = { path = "../selene-db", features = ["kv-surrealkv"] }
+selene-extract = { path = "../selene-extract" }
+selene-resolve = { path = "../selene-resolve" }
+selene-mcp = { path = "../selene-mcp" }
+clap = { workspace = true, features = ["derive"] }
+rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+tokio = { workspace = true }
+anyhow = { workspace = true }
 
 [lints]
 workspace = true

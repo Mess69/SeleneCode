@@ -7,6 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { path = "../selene-core" }
+selene-db = { path = "../selene-db", features = ["kv-surrealkv"] }
+selene-graph = { path = "../selene-graph" }
+selene-context = { path = "../selene-context" }
 # Task 1 (spike): the SDK the whole of Phase 5 rides on. Features pinned to what a
 # stdio server needs — `server` (ServerHandler), `macros` (#[tool_router]/#[tool]),
 # `transport-io` (stdio). NOT the http/sse transports: Phase 5 is stdio-only.
@@ -22,6 +26,10 @@ tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] 
 # through a real in-memory client, which needs `RoleClient`/`serve_client`. The shipped
 # binary is a server and must not carry the client half.
 rmcp = { workspace = true, features = ["client"] }
+selene-extract = { path = "../selene-extract" }
+selene-resolve = { path = "../selene-resolve" }
+serde_json = { workspace = true }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

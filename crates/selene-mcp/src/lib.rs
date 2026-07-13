@@ -1,3 +1,22 @@
-//! `selene-mcp` — MCP server (rmcp): tools, transport, server-instructions.
+//! `selene-mcp` — the MCP surface: tool schemas, dispatch, error classification, banners.
 //!
-//! Scaffold stub. Target design: `docs/specs/2026-07-11-rust-graph-db-migration-design.md` (PRD §3, §6).
+//! **It owns nothing else.** Every ranking/flow/budget/render decision lives in
+//! `selene-context` as a pure function over the graph API. A tool handler that starts making
+//! ranking decisions is the beginning of the same logic existing in two places.
+//!
+//! # The one rule that outranks the rest
+//!
+//! **`isError` is RESERVED** — a `PathRefusal` or a genuine malfunction, nothing else. Every
+//! recoverable condition is success-shaped guidance. See [`ToolOutcome`]: one `isError` early
+//! and an agent abandons the tool for the whole session.
+
+mod handlers;
+mod instructions;
+mod outcome;
+mod server;
+mod tools;
+
+pub use instructions::SERVER_INSTRUCTIONS;
+pub use outcome::ToolOutcome;
+pub use server::SeleneMcp;
+pub use tools::{ALL_TOOLS, DEFAULT_VISIBLE, TOOLS_ENV, visible_tools};
