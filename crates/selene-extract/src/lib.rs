@@ -21,6 +21,7 @@ mod generated;
 mod grammars;
 mod helpers;
 mod language;
+mod orchestrator;
 mod rules;
 mod scan;
 mod types;
@@ -32,6 +33,7 @@ pub use helpers::{
     clean_comment_markers, get_child_by_field, get_node_text, get_preceding_docstring,
 };
 pub use language::{Language, detect_language, is_file_level_only, is_source_file};
+pub use orchestrator::{IndexProgress, IndexResult, Indexer, MAX_NESTING_DEPTH, Phase, ProgressFn};
 pub use rules::{
     ClassKind, ImportInfo, LanguageRules, MethodClass, NodeTypeTables, VariableInfo, rules_for,
 };

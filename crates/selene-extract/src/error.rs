@@ -24,6 +24,11 @@ pub enum ErrorCode {
     /// missing-grammar semantics.
     UnsupportedLanguage,
     /// Building/loading a parser failed (a malfunction, not a bad file).
+    /// Also the wire code for an **infrastructure** malfunction the
+    /// orchestrator collects rather than throws: a store error
+    /// (`"store error in <op>: …"`, `orchestrator::push_store_error`) or a
+    /// parse-pool build failure. Chosen because this persisted code set has no
+    /// store variant and these are engine faults, not file content.
     ParserError,
     /// The source failed to parse.
     ParseError,
