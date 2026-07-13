@@ -166,6 +166,30 @@ impl Pipeline {
         hits.remove(0)
     }
 
+    /// The nodes this node points at along [`FLOW_KINDS`].
+    ///
+    /// For the frameworks whose reference is a **precise claim**
+    /// (`Controller@method`, `controller#action`), "a path exists" is not the
+    /// assertion that matters — *which* node it bound to is. Two controllers both
+    /// declaring `index()` is the normal case, and a bare-name bind produces a path
+    /// to the WRONG one that `assert_flow` would happily accept.
+    pub async fn targets_of(&self, id: &str) -> Vec<Node> {
+        let map = self
+            .store()
+            .outgoing_batch(&[id.to_string()], FLOW_KINDS)
+            .await
+            .expect("outgoing");
+        let mut nodes: Vec<Node> = map
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.node)
+            .collect();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        nodes
+    }
+
     /// Every route node, in a deterministic order.
     pub async fn routes(&self) -> Vec<Node> {
         let mut rs = self

@@ -42,9 +42,11 @@ pub mod cargo;
 pub mod express;
 pub mod go;
 pub mod java;
+pub mod laravel;
 pub mod python;
 pub mod react;
 pub mod routes;
+pub mod ruby;
 pub mod rust_fw;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -247,6 +249,8 @@ fn builtin_resolvers() -> Vec<&'static dyn FrameworkResolver> {
         &java::Spring,
         &go::Go,
         &rust_fw::RustResolver,
+        &laravel::Laravel,
+        &ruby::Rails,
     ]
 }
 
