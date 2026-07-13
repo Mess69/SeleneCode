@@ -43,8 +43,8 @@ pub use error::{ContextError, Result};
 pub use flow::{FLOW_KINDS, FlowStep, build_flow_from_named_symbols, describe_hop, render_flow};
 pub use node_view::{NodeView, build_node_view, node_not_found, render_node_view};
 pub use relevance::{
-    Confidence, DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, RelevantContext, ScoredNode,
-    brevity, confidence_of, find_relevant_context, is_test_file, score_candidates, sort_candidates,
-    term_groups, weights,
+    Confidence, DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, RWR_EDGE_KINDS, RelevantContext,
+    ScoredNode, apply_graph_connectivity, brevity, confidence_of, find_relevant_context,
+    is_test_file, pick_diverse_roots, rwr, score_candidates, sort_candidates, term_groups, weights,
 };
 pub use stopwords::{STOPWORDS, extract_search_terms, extract_symbols_from_query};
