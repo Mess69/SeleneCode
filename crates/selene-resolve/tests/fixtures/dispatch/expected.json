@@ -1,0 +1,1153 @@
+{
+  "codegraphCommit": "9ccf5d022cdc4c5f33f2cd374f23fa70401e62f0",
+  "projects": {
+    "aspnet": {
+      "edges": [
+        {
+          "source": "class:ArticleService@Services/ArticleService.cs",
+          "target": "method:ListAsync@Services/ArticleService.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticlesController@Controllers/ArticlesController.cs",
+          "target": "field:_articleService@Controllers/ArticlesController.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticlesController@Controllers/ArticlesController.cs",
+          "target": "method:ArticlesController@Controllers/ArticlesController.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticlesController@Controllers/ArticlesController.cs",
+          "target": "method:GetAll@Controllers/ArticlesController.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:HealthHandler@Services/HealthHandler.cs",
+          "target": "method:Check@Services/HealthHandler.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "field:_articleService@Controllers/ArticlesController.cs",
+          "target": "class:ArticleService@Services/ArticleService.cs",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@Controllers/ArticlesController.cs",
+          "target": "namespace:Blog.Controllers@Controllers/ArticlesController.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@Services/ArticleService.cs",
+          "target": "namespace:Blog.Services@Services/ArticleService.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@Services/HealthHandler.cs",
+          "target": "namespace:Blog.Services@Services/HealthHandler.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:ArticlesController@Controllers/ArticlesController.cs",
+          "target": "class:ArticleService@Services/ArticleService.cs",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:GetAll@Controllers/ArticlesController.cs",
+          "target": "method:ListAsync@Services/ArticleService.cs",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:Blog.Controllers@Controllers/ArticlesController.cs",
+          "target": "class:ArticlesController@Controllers/ArticlesController.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:Blog.Controllers@Controllers/ArticlesController.cs",
+          "target": "import:System.Threading.Tasks@Controllers/ArticlesController.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:Blog.Services@Services/ArticleService.cs",
+          "target": "class:ArticleService@Services/ArticleService.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:Blog.Services@Services/ArticleService.cs",
+          "target": "import:System.Collections.Generic@Services/ArticleService.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:Blog.Services@Services/HealthHandler.cs",
+          "target": "class:HealthHandler@Services/HealthHandler.cs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /api/articles@Controllers/ArticlesController.cs:16",
+          "target": "method:GetAll@Controllers/ArticlesController.cs",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /health@Program.cs:4",
+          "target": "method:Check@Services/HealthHandler.cs",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 19,
+      "crossFileEdges": 4,
+      "frameworks": [],
+      "routes": 2
+    },
+    "axum": {
+      "edges": [
+        {
+          "source": "file:@crates/blog-core/src/lib.rs",
+          "target": "function:core_version@crates/blog-core/src/lib.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/handlers.rs",
+          "target": "function:create_article@src/handlers.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/handlers.rs",
+          "target": "function:list_articles@src/handlers.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/handlers.rs",
+          "target": "import:crate@src/handlers.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/main.rs",
+          "target": "function:app@src/main.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/main.rs",
+          "target": "import:axum@src/main.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/service.rs",
+          "target": "function:create@src/service.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/service.rs",
+          "target": "function:list@src/service.rs",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:create_article@src/handlers.rs",
+          "target": "function:create@src/service.rs",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:list_articles@src/handlers.rs",
+          "target": "function:list@src/service.rs",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /articles@src/main.rs:8",
+          "target": "function:list_articles@src/handlers.rs",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:POST /articles@src/main.rs:8",
+          "target": "function:create_article@src/handlers.rs",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 14,
+      "crossFileEdges": 4,
+      "frameworks": [],
+      "routes": 2
+    },
+    "django": {
+      "edges": [
+        {
+          "source": "class:ArticleDetail@blog/views.py",
+          "target": "method:get@blog/views.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleViewSet@blog/views.py",
+          "target": "method:list@blog/views.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/models.py",
+          "target": "class:Article@blog/models.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/services.py",
+          "target": "class:Article@blog/models.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/services.py",
+          "target": "function:get_article@blog/services.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/services.py",
+          "target": "import:.models@blog/services.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/services.py",
+          "target": "import:.models@blog/services.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "class:ArticleDetail@blog/views.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "class:ArticleViewSet@blog/views.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "file:@blog/views.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:.@blog/urls.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:.@blog/urls.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:.views@blog/urls.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:.views@blog/urls.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:django.urls@blog/urls.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:django.urls@blog/urls.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "import:rest_framework@blog/urls.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "variable:router@blog/urls.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/urls.py",
+          "target": "variable:urlpatterns@blog/urls.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/views.py",
+          "target": "class:ArticleDetail@blog/views.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/views.py",
+          "target": "class:ArticleViewSet@blog/views.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/views.py",
+          "target": "function:article_detail@blog/views.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/views.py",
+          "target": "function:get_article@blog/services.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/views.py",
+          "target": "import:.services@blog/views.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@blog/views.py",
+          "target": "import:.services@blog/views.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@manage.py",
+          "target": "function:main@manage.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@manage.py",
+          "target": "import:sys@manage.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:article_detail@blog/views.py",
+          "target": "function:get_article@blog/services.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:get@blog/views.py",
+          "target": "function:get_article@blog/services.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:list@blog/views.py",
+          "target": "function:get_article@blog/services.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:VIEWSET /articles@blog/urls.py:7",
+          "target": "class:ArticleViewSet@blog/views.py",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:^old/(?P<pk>\\d+)/$@blog/urls.py:13",
+          "target": "function:article_detail@blog/views.py",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:articles/<slug>/@blog/urls.py:11",
+          "target": "class:ArticleDetail@blog/views.py",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:legacy/@blog/urls.py:12",
+          "target": "function:article_detail@blog/views.py",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 27,
+      "crossFileEdges": 12,
+      "frameworks": [],
+      "routes": 5
+    },
+    "express": {
+      "edges": [
+        {
+          "source": "file:@src/app.ts",
+          "target": "constant:router@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:auth@src/middleware.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:auth@src/middleware.ts",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:login@src/service.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:login@src/service.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./middleware@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./middleware@src/app.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./service@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./service@src/app.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:express@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/crypto.ts",
+          "target": "function:hashPassword@src/crypto.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/middleware.ts",
+          "target": "function:auth@src/middleware.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/service.ts",
+          "target": "function:hashPassword@src/crypto.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/service.ts",
+          "target": "function:login@src/service.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/service.ts",
+          "target": "import:./crypto@src/service.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/service.ts",
+          "target": "import:./crypto@src/service.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:login@src/service.ts",
+          "target": "function:hashPassword@src/crypto.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:POST /users/login@src/app.ts:8",
+          "target": "function:login@src/service.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 15,
+      "crossFileEdges": 7,
+      "frameworks": [],
+      "routes": 3
+    },
+    "laravel": {
+      "edges": [
+        {
+          "source": "class:ArticleController@app/Http/Controllers/ArticleController.php",
+          "target": "field:articleService@app/Http/Controllers/ArticleController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleController@app/Http/Controllers/ArticleController.php",
+          "target": "method:index@app/Http/Controllers/ArticleController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleController@app/Http/Controllers/ArticleController.php",
+          "target": "method:store@app/Http/Controllers/ArticleController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleService@app/Services/ArticleService.php",
+          "target": "method:createArticle@app/Services/ArticleService.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleService@app/Services/ArticleService.php",
+          "target": "method:listArticles@app/Services/ArticleService.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:CommentController@app/Http/Controllers/CommentController.php",
+          "target": "method:index@app/Http/Controllers/CommentController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app/Http/Controllers/ArticleController.php",
+          "target": "namespace:App\\Http\\Controllers@app/Http/Controllers/ArticleController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app/Http/Controllers/CommentController.php",
+          "target": "namespace:App\\Http\\Controllers@app/Http/Controllers/CommentController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app/Services/ArticleService.php",
+          "target": "namespace:App\\Services@app/Services/ArticleService.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@routes/api.php",
+          "target": "class:ArticleController@app/Http/Controllers/ArticleController.php",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@routes/api.php",
+          "target": "import:App\\Http\\Controllers\\ArticleController@routes/api.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@routes/api.php",
+          "target": "import:Illuminate\\Support\\Facades\\Route@routes/api.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@routes/api.php",
+          "target": "method:index@app/Http/Controllers/ArticleController.php",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:index@app/Http/Controllers/ArticleController.php",
+          "target": "method:listArticles@app/Services/ArticleService.php",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:store@app/Http/Controllers/ArticleController.php",
+          "target": "method:createArticle@app/Services/ArticleService.php",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:App\\Http\\Controllers@app/Http/Controllers/ArticleController.php",
+          "target": "class:ArticleController@app/Http/Controllers/ArticleController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:App\\Http\\Controllers@app/Http/Controllers/ArticleController.php",
+          "target": "class:ArticleService@app/Services/ArticleService.php",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:App\\Http\\Controllers@app/Http/Controllers/ArticleController.php",
+          "target": "import:App\\Services\\ArticleService@app/Http/Controllers/ArticleController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:App\\Http\\Controllers@app/Http/Controllers/CommentController.php",
+          "target": "class:CommentController@app/Http/Controllers/CommentController.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:App\\Services@app/Services/ArticleService.php",
+          "target": "class:ArticleService@app/Services/ArticleService.php",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /articles@routes/api.php:6",
+          "target": "method:index@app/Http/Controllers/ArticleController.php",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:POST /articles@routes/api.php:7",
+          "target": "method:store@app/Http/Controllers/ArticleController.php",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 21,
+      "crossFileEdges": 7,
+      "frameworks": [],
+      "routes": 2
+    },
+    "rails": {
+      "edges": [
+        {
+          "source": "class:Article@app/models/article.rb",
+          "target": "method:build_from@app/models/article.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Article@app/models/article.rb",
+          "target": "method:recent@app/models/article.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticlesController@app/controllers/articles_controller.rb",
+          "target": "method:create@app/controllers/articles_controller.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticlesController@app/controllers/articles_controller.rb",
+          "target": "method:index@app/controllers/articles_controller.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:CommentsController@app/controllers/comments_controller.rb",
+          "target": "method:index@app/controllers/comments_controller.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app/controllers/articles_controller.rb",
+          "target": "class:ArticlesController@app/controllers/articles_controller.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app/controllers/comments_controller.rb",
+          "target": "class:CommentsController@app/controllers/comments_controller.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app/models/article.rb",
+          "target": "class:Article@app/models/article.rb",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:create@app/controllers/articles_controller.rb",
+          "target": "class:Article@app/models/article.rb",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:create@app/controllers/articles_controller.rb",
+          "target": "method:build_from@app/models/article.rb",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:index@app/controllers/articles_controller.rb",
+          "target": "class:Article@app/models/article.rb",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:index@app/controllers/articles_controller.rb",
+          "target": "method:recent@app/models/article.rb",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /articles@config/routes.rb:2",
+          "target": "method:index@app/controllers/articles_controller.rb",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:POST /articles@config/routes.rb:2",
+          "target": "method:create@app/controllers/articles_controller.rb",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 14,
+      "crossFileEdges": 6,
+      "frameworks": [],
+      "routes": 2
+    },
+    "react": {
+      "edges": [
+        {
+          "source": "file:@src/App.tsx",
+          "target": "file:@src/Article.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "function:App@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "import:./Article@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "import:./Article@src/App.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "import:react-router-dom@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Article.tsx",
+          "target": "function:Article@src/Article.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Article.tsx",
+          "target": "function:useArticle@src/hooks/useArticle.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Article.tsx",
+          "target": "import:./hooks/useArticle@src/Article.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Article.tsx",
+          "target": "import:./hooks/useArticle@src/Article.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Data.tsx",
+          "target": "constant:router@src/Data.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Data.tsx",
+          "target": "file:@src/Article.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Data.tsx",
+          "target": "import:./Article@src/Data.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Data.tsx",
+          "target": "import:./Article@src/Data.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Data.tsx",
+          "target": "import:react-router-dom@src/Data.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Legacy.jsx",
+          "target": "function:Article@src/Article.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Legacy.jsx",
+          "target": "function:Legacy@src/Legacy.jsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Legacy.jsx",
+          "target": "import:./Article@src/Legacy.jsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Legacy.jsx",
+          "target": "import:./Article@src/Legacy.jsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/Legacy.jsx",
+          "target": "import:react-router-dom@src/Legacy.jsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/api.ts",
+          "target": "function:fetchArticle@src/api.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app/articles/mypage.tsx",
+          "target": "function:NotARoute@src/app/articles/mypage.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app/articles/page.tsx",
+          "target": "function:ArticlesIndex@src/app/articles/page.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/hooks/useArticle.ts",
+          "target": "function:fetchArticle@src/api.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/hooks/useArticle.ts",
+          "target": "function:useArticle@src/hooks/useArticle.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/hooks/useArticle.ts",
+          "target": "import:../api@src/hooks/useArticle.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/hooks/useArticle.ts",
+          "target": "import:../api@src/hooks/useArticle.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/pages/_app.tsx",
+          "target": "function:MyApp@src/pages/_app.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/pages/articles/[slug].tsx",
+          "target": "function:ArticlePage@src/pages/articles/[slug].tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/pages/articles/[slug].tsx",
+          "target": "function:useArticle@src/hooks/useArticle.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/pages/articles/[slug].tsx",
+          "target": "import:../../hooks/useArticle@src/pages/articles/[slug].tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/pages/articles/[slug].tsx",
+          "target": "import:../../hooks/useArticle@src/pages/articles/[slug].tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:App@src/App.tsx",
+          "target": "function:Article@src/Article.tsx",
+          "kind": "calls",
+          "provenance": "heuristic",
+          "synthesizedBy": "jsx-render"
+        },
+        {
+          "source": "function:Article@src/Article.tsx",
+          "target": "function:useArticle@src/hooks/useArticle.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:ArticlePage@src/pages/articles/[slug].tsx",
+          "target": "function:useArticle@src/hooks/useArticle.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:useArticle@src/hooks/useArticle.ts",
+          "target": "function:fetchArticle@src/api.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:/article/:slug@src/App.tsx:7",
+          "target": "function:Article@src/Article.tsx",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:/data/article@src/Data.tsx:5",
+          "target": "function:Article@src/Article.tsx",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:/v5/article@src/Legacy.jsx:5",
+          "target": "function:Article@src/Article.tsx",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 35,
+      "crossFileEdges": 13,
+      "frameworks": [],
+      "routes": 6
+    }
+  }
+}
