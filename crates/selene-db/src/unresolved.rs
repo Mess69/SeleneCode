@@ -5,12 +5,22 @@
 //! ## Record identity
 //!
 //! `unresolved_ref` rows carry no natural single-field key: the trait's
-//! `(from_node_id, reference_name)` pair (used by [`SurrealStore::delete_resolved`]/
-//! [`SurrealStore::mark_failed`]) is not declared UNIQUE — a resolution pass
-//! can legitimately insert the same pair more than once before it is cleaned
-//! up. Rows therefore use SurrealDB's auto-generated record id (`CREATE
-//! unresolved_ref CONTENT ..` with no explicit key); callers never see or
-//! need it, matching [`crate::UnresolvedRef`] itself carrying no `id` field.
+//! [`crate::UnresolvedKey`] — `(from_node_id, reference_name, reference_kind)`,
+//! used by [`SurrealStore::delete_resolved`]/[`SurrealStore::mark_failed`] — is
+//! **not** declared UNIQUE, and must not be: the same triple recurs across call
+//! sites on different lines, and resolving the name resolves all of them. Rows
+//! therefore use SurrealDB's auto-generated record id (`CREATE unresolved_ref
+//! CONTENT ..` with no explicit key); callers never see or need it, matching
+//! [`crate::UnresolvedRef`] itself carrying no `id` field.
+//!
+//! **`reference_kind` is load-bearing in that key.** Extraction emits two rows
+//! for one `(from_node_id, reference_name)` pair when a name is both called and
+//! passed as a value in the same body (`register(handler); handler();` → a
+//! `calls` row and a `function_ref` row, `selene-extract/src/fnref.rs`). Keyed
+//! on the pair alone, resolving either row deleted BOTH — silent data loss that
+//! nothing detected, because the pending count still reached 0 and the orphan
+//! sweep was satisfied. `retryable_failed` deduped by the same pair, so the
+//! second kind was unreachable through every door: 2 rows in, 1 row out.
 //!
 //! ## `insert_unresolved`: promoted from `src/files.rs` (Task 6)
 //!
@@ -39,7 +49,9 @@
 //! documented deviation from strict TS parity per this task's brief. A row
 //! that matches more than one queried name (e.g. `names = ["M", "Helper.M"]`
 //! against a row with `reference_name = "Helper.M"`, `name_tail = "M"`) is
-//! deduped by `(from_node_id, reference_name)` across the per-name buckets.
+//! deduped by the full [`crate::UnresolvedKey`] across the per-name buckets —
+//! **kind included**, so a name's `calls` and `function_ref` rows are both
+//! returned rather than collapsed into one.
 //!
 //! ## Chunking
 //!
@@ -174,28 +186,34 @@ impl SurrealStore {
         Ok(out)
     }
 
-    /// Delete refs matching `(from_node_id, reference_name)` keys, chunked at
-    /// `CHUNK`. One `DELETE ... WHERE fromNodeId = $fromN AND
-    /// referenceName = $nameN` statement per key, combined into a single
+    /// Delete refs matching [`crate::UnresolvedKey`] keys, chunked at `CHUNK`.
+    /// One `DELETE ... WHERE fromNodeId = $fromN AND referenceName = $nameN AND
+    /// referenceKind = $kindN` statement per key, combined into a single
     /// multi-statement query per chunk (SurrealQL has no composite-tuple
     /// `IN` list).
-    pub async fn delete_resolved(&self, keys: &[(String, String)]) -> Result<()> {
+    ///
+    /// The `referenceKind` predicate is what keeps a resolved `calls` row from
+    /// deleting its `function_ref` twin — see [`crate::UnresolvedKey`].
+    pub async fn delete_resolved(&self, keys: &[crate::UnresolvedKey]) -> Result<()> {
         self.run_keyed_statements(
             keys,
-            "DELETE unresolved_ref WHERE fromNodeId = $from{i} AND referenceName = $name{i};",
+            "DELETE unresolved_ref WHERE fromNodeId = $from{i} AND referenceName = $name{i} \
+             AND referenceKind = $kind{i};",
             &[],
         )
         .await
     }
 
-    /// Flip refs matching `(from_node_id, reference_name)` keys to
+    /// Flip refs matching [`crate::UnresolvedKey`] keys to
     /// [`crate::RefStatus::Failed`] (kept for [`Self::retryable_failed`] rather than
-    /// deleted). Same chunked multi-statement shape as [`Self::delete_resolved`].
-    pub async fn mark_failed(&self, keys: &[(String, String)]) -> Result<()> {
+    /// deleted). Same chunked multi-statement shape as [`Self::delete_resolved`],
+    /// and kind-scoped for the same reason.
+    pub async fn mark_failed(&self, keys: &[crate::UnresolvedKey]) -> Result<()> {
         self.run_keyed_statements(
             keys,
             "UPDATE unresolved_ref SET status = $status \
-             WHERE fromNodeId = $from{i} AND referenceName = $name{i};",
+             WHERE fromNodeId = $from{i} AND referenceName = $name{i} \
+             AND referenceKind = $kind{i};",
             &[("status", RefStatus::Failed.as_str())],
         )
         .await
@@ -219,7 +237,7 @@ impl SurrealStore {
 
         let cap = clamp_i64(per_name_ceiling);
         let mut out = Vec::new();
-        let mut seen: HashSet<(String, String)> = HashSet::new();
+        let mut seen: HashSet<crate::UnresolvedKey> = HashSet::new();
         for chunk in dedup_names.chunks(CHUNK) {
             let mut sql = String::new();
             for i in 0..chunk.len() {
@@ -243,7 +261,11 @@ impl SurrealStore {
                 let rows: Vec<serde_json::Value> = resp.take(i)?;
                 for row in rows {
                     let r = row_to_unresolved(row)?;
-                    let key = (r.from_node_id.clone(), r.reference_name.clone());
+                    let key = (
+                        r.from_node_id.clone(),
+                        r.reference_name.clone(),
+                        r.reference_kind.clone(),
+                    );
                     if seen.insert(key) {
                         out.push(r);
                     }
@@ -260,14 +282,14 @@ impl SurrealStore {
     }
 
     /// Shared tail of [`Self::delete_resolved`]/[`Self::mark_failed`]: run one
-    /// `template` statement per `(from_node_id, reference_name)` key, `{i}`
-    /// substituted with the key's index, all statements in one chunk combined
-    /// into a single round trip. `extra_binds` are bound once per chunk query
-    /// (e.g. `mark_failed`'s `$status`), on top of the per-key `$from{i}`/
-    /// `$name{i}` binds. Empty `keys` is a no-op (zero queries).
+    /// `template` statement per [`crate::UnresolvedKey`], `{i}` substituted with
+    /// the key's index, all statements in one chunk combined into a single round
+    /// trip. `extra_binds` are bound once per chunk query (e.g. `mark_failed`'s
+    /// `$status`), on top of the per-key `$from{i}`/`$name{i}`/`$kind{i}` binds.
+    /// Empty `keys` is a no-op (zero queries).
     async fn run_keyed_statements(
         &self,
-        keys: &[(String, String)],
+        keys: &[crate::UnresolvedKey],
         template: &str,
         extra_binds: &[(&'static str, &'static str)],
     ) -> Result<()> {
@@ -283,10 +305,11 @@ impl SurrealStore {
             for (key, value) in extra_binds {
                 query = query.bind((*key, *value));
             }
-            for (i, (from, name)) in chunk.iter().enumerate() {
+            for (i, (from, name, kind)) in chunk.iter().enumerate() {
                 query = query
                     .bind((format!("from{i}"), from.clone()))
-                    .bind((format!("name{i}"), name.clone()));
+                    .bind((format!("name{i}"), name.clone()))
+                    .bind((format!("kind{i}"), kind.clone()));
             }
             query.await?.check()?;
         }

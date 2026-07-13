@@ -1531,7 +1531,11 @@ async fn unresolved_pending_count_excludes_failed() {
     assert_eq!(store.unresolved_pending_count().await.unwrap(), 3);
 
     store
-        .mark_failed(&[(b.from_node_id.clone(), b.reference_name.clone())])
+        .mark_failed(&[(
+            b.from_node_id.clone(),
+            b.reference_name.clone(),
+            b.reference_kind.clone(),
+        )])
         .await
         .unwrap();
     assert_eq!(
@@ -1599,6 +1603,7 @@ async fn unresolved_by_files_filters_pending_and_requested_paths() {
         .mark_failed(&[(
             b_failed.from_node_id.clone(),
             b_failed.reference_name.clone(),
+            b_failed.reference_kind.clone(),
         )])
         .await
         .unwrap();
@@ -1636,7 +1641,11 @@ async fn delete_resolved_removes_exact_pairs_only() {
         .unwrap();
 
     store
-        .delete_resolved(&[(a.from_node_id.clone(), a.reference_name.clone())])
+        .delete_resolved(&[(
+            a.from_node_id.clone(),
+            a.reference_name.clone(),
+            a.reference_kind.clone(),
+        )])
         .await
         .unwrap();
 
@@ -1664,7 +1673,11 @@ async fn mark_failed_flips_status_and_pending_batch_stops_returning_it() {
         .unwrap();
 
     store
-        .mark_failed(&[(a.from_node_id.clone(), a.reference_name.clone())])
+        .mark_failed(&[(
+            a.from_node_id.clone(),
+            a.reference_name.clone(),
+            a.reference_kind.clone(),
+        )])
         .await
         .unwrap();
 
@@ -2070,4 +2083,114 @@ async fn unresolved_pending_batch_pages_stably_across_order_key_ties() {
         vec![p0[0].line, p1[0].line],
         "single-row pages replay the two-row page's order"
     );
+}
+
+// =============================================================================
+// F1 regression — the unresolved-row key must carry `reference_kind`
+// =============================================================================
+
+/// One `(from_node_id, reference_name)` pair legitimately carries TWO rows of
+/// DIFFERENT kinds: Phase 2's fn-ref capture emits both a `calls` row and a
+/// `function_ref` row for `register(handler); handler();` in one body
+/// (`selene-extract/src/fnref.rs`).
+///
+/// Keyed by the 2-tuple, resolving the `calls` row **deleted the
+/// `function_ref` row too** — silent data loss that nothing detects (the
+/// pending count still reaches 0, so the orphan sweep is satisfied). The key
+/// is `(from_node_id, reference_name, reference_kind)`; this test pins that.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_resolved_keys_by_kind_and_spares_the_function_ref_twin() {
+    let store = fresh_store().await;
+
+    let mut calls = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    calls.reference_kind = "calls".to_string();
+    let mut fnref = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    fnref.reference_kind = "function_ref".to_string();
+
+    store
+        .insert_unresolved(&[calls.clone(), fnref.clone()])
+        .await
+        .unwrap();
+    assert_eq!(store.unresolved_pending_count().await.unwrap(), 2);
+
+    // The resolver resolved the `calls` ref into a real edge and drains ONLY it.
+    store
+        .delete_resolved(&[(
+            calls.from_node_id.clone(),
+            calls.reference_name.clone(),
+            calls.reference_kind.clone(),
+        )])
+        .await
+        .unwrap();
+
+    let remaining = store.unresolved_pending_batch(0, 10).await.unwrap();
+    assert_eq!(
+        remaining.len(),
+        1,
+        "the `function_ref` twin MUST survive its `calls` sibling's resolution — \
+         keyed by the 2-tuple this was 0 (silent data loss, undetectable because \
+         the pending count still reached 0)"
+    );
+    assert_eq!(
+        remaining[0].reference_kind, "function_ref",
+        "and the survivor is the OTHER kind, not a coin flip"
+    );
+}
+
+/// `mark_failed` had the same 2-tuple shape (it flipped both kinds), and
+/// `retryable_failed` deduped by the same 2-tuple — so the second kind was
+/// unreachable through **every** door: 2 rows in, 1 row out. Both must now key
+/// and dedup by the 3-tuple.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn mark_failed_and_retryable_failed_key_by_kind_so_both_twins_are_reachable() {
+    let store = fresh_store().await;
+
+    let mut calls = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    calls.reference_kind = "calls".to_string();
+    let mut fnref = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    fnref.reference_kind = "function_ref".to_string();
+    store
+        .insert_unresolved(&[calls.clone(), fnref.clone()])
+        .await
+        .unwrap();
+
+    // Fail ONLY the `calls` row.
+    store
+        .mark_failed(&[(
+            calls.from_node_id.clone(),
+            calls.reference_name.clone(),
+            calls.reference_kind.clone(),
+        )])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.unresolved_pending_count().await.unwrap(),
+        1,
+        "only the `calls` row flipped to failed — the `function_ref` twin stays pending"
+    );
+
+    // Now fail the twin too, and assert BOTH are reachable by the retry pipeline.
+    store
+        .mark_failed(&[(
+            fnref.from_node_id.clone(),
+            fnref.reference_name.clone(),
+            fnref.reference_kind.clone(),
+        )])
+        .await
+        .unwrap();
+    let failed = store
+        .retryable_failed(&["handler".to_string()], 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        failed.len(),
+        2,
+        "TWO failed rows went in, TWO must come out — retryable_failed's dedup key \
+         carries `reference_kind`, so the second kind is no longer unreachable"
+    );
+    let mut kinds: Vec<&str> = failed.iter().map(|r| r.reference_kind.as_str()).collect();
+    kinds.sort_unstable();
+    assert_eq!(kinds, vec!["calls", "function_ref"]);
 }

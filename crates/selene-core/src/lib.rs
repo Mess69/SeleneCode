@@ -394,8 +394,15 @@ impl RefStatus {
 /// A reference (call, import, type use, …) whose target symbol could not be
 /// resolved at extraction time, held for a later cross-file resolution pass.
 ///
-/// `(from_node_id, reference_name)` is the natural key the store's
-/// `delete_resolved`/`mark_failed` operations match on.
+/// `(from_node_id, reference_name, reference_kind)` is the natural key the
+/// store's `delete_resolved`/`mark_failed` operations match on. **All three
+/// parts are load-bearing:** one `(from_node_id, reference_name)` pair
+/// legitimately carries rows of more than one kind — extraction's fn-ref
+/// capture emits both a `calls` row and a `function_ref` row for
+/// `register(handler); handler();` in a single body — and keying on the pair
+/// alone made resolving either row silently delete the other.
+/// Note the key is deliberately NOT unique: the same triple repeats across
+/// call sites on different lines, and resolving the name resolves them all.
 /// `file_path`/`language` are denormalized from the source node so the
 /// resolver can batch by file without a join. `name_tail` is the last
 /// dot/`::`-separated segment of `reference_name`, used to index failed

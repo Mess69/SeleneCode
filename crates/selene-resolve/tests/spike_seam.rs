@@ -12,8 +12,19 @@
 //! ============================================================================
 //!
 //! **F1 — `delete_resolved` / `mark_failed` key arity: THE ASSUMPTION FAILED
-//! (as suspected). CONFIRMED SILENT-RECALL BUG.**
-//! `GraphStore::delete_resolved(&[(from_node_id, reference_name)])` keys a row
+//! (as suspected). CONFIRMED SILENT-RECALL BUG. → FIXED 2026-07-13 (`p3-dbfix`).**
+//!
+//! > **RESOLUTION.** The maintainer took the fix rather than working around it.
+//! > `GraphStore`'s key is now `selene_db::UnresolvedKey` =
+//! > `(from_node_id, reference_name, reference_kind)` across `delete_resolved`,
+//! > `mark_failed`, and `retryable_failed`'s dedup. Observed red before the fix:
+//! > 2 rows in → `delete_resolved` left **0** (expected 1), and `retryable_failed`
+//! > returned **1** (expected 2). `f1_delete_resolved_is_kind_scoped_and_spares_the_twin`
+//! > below now pins the CORRECT behavior. The narrative below is kept as the
+//! > record of what the bug was; **Task 27 is unblocked**.
+//!
+//! *What the bug was (historical record — all of this is now fixed):*
+//! `GraphStore::delete_resolved(&[(from_node_id, reference_name)])` keyed a row
 //! by a **2-tuple**; CodeGraph TS keys it by three fields
 //! (`fromNodeId + referenceName + referenceKind`, maps/resolution.md §Wire).
 //! `crates/selene-db/src/unresolved.rs:182` issues
@@ -143,16 +154,16 @@ async fn pending_count<S: GraphStore>(store: &S) -> u64 {
     store.unresolved_pending_count().await.unwrap()
 }
 
-async fn drain_resolved<S: GraphStore>(store: &S, from: &str, name: &str) {
+async fn drain_resolved<S: GraphStore>(store: &S, from: &str, name: &str, kind: &str) {
     store
-        .delete_resolved(&[(from.to_string(), name.to_string())])
+        .delete_resolved(&[(from.to_string(), name.to_string(), kind.to_string())])
         .await
         .unwrap();
 }
 
-async fn fail_refs<S: GraphStore>(store: &S, from: &str, name: &str) {
+async fn fail_refs<S: GraphStore>(store: &S, from: &str, name: &str, kind: &str) {
     store
-        .mark_failed(&[(from.to_string(), name.to_string())])
+        .mark_failed(&[(from.to_string(), name.to_string(), kind.to_string())])
         .await
         .unwrap();
 }
@@ -229,15 +240,18 @@ async fn store_with(nodes: &[Node]) -> SurrealStore {
 
 /// Two pending refs from the SAME node with the SAME name and DIFFERENT kinds
 /// (`calls` + `function_ref` — exactly what Phase 2's fnref capture emits for
-/// `register(handler); handler();`). Resolving the `calls` one drains BOTH,
-/// because the store's delete key has no `reference_kind` component.
+/// `register(handler); handler();`).
 ///
-/// This test asserts the CURRENT (buggy) behavior deliberately: it is the
-/// evidence for Open Coordination Point 1, and it will FAIL — loudly, and in
-/// the right place — the day the trait key is widened to 3 parts. That is the
-/// intended signal, not a regression.
+/// **FIXED (2026-07-13, branch `p3-dbfix`).** This test used to assert the buggy
+/// behavior — resolving the `calls` row drained BOTH, and `retryable_failed`
+/// deduped 2 failed rows down to 1, leaving the `function_ref` unreachable
+/// through every door — as the evidence for Open Coordination Point 1. The
+/// maintainer took the fix: `GraphStore`'s key is now the 3-tuple
+/// `selene_db::UnresolvedKey` = `(from_node_id, reference_name, reference_kind)`.
+/// The assertions below are inverted accordingly and now pin the CORRECT
+/// behavior; they are the resolver-side guard that the store keeps it.
 #[tokio::test(flavor = "multi_thread")]
-async fn f1_delete_resolved_2tuple_drains_both_kinds() {
+async fn f1_delete_resolved_is_kind_scoped_and_spares_the_twin() {
     let caller = node(
         "function:caller",
         "caller",
@@ -255,44 +269,44 @@ async fn f1_delete_resolved_2tuple_drains_both_kinds() {
     store.insert_unresolved(&refs).await.unwrap();
     assert_eq!(pending_count(&store).await, 2);
 
-    // The resolver resolves the `calls` ref and drains its row by the 2-tuple.
-    drain_resolved(&store, "function:caller", "handler").await;
+    // The resolver resolves the `calls` ref and drains ONLY that row.
+    drain_resolved(&store, "function:caller", "handler", "calls").await;
 
-    let remaining = pending_count(&store).await;
     assert_eq!(
-        remaining, 0,
-        "F1: the 2-tuple key drained BOTH rows — the function_ref never gets \
-         resolved, and the pending count still reaches 0, so no orphan sweep \
-         notices. Widening GraphStore's key to (from_node_id, reference_name, \
-         reference_kind) is the fix; it is a maintainer decision (Open \
-         Coordination Point 1). If this assertion now fails with remaining == 1, \
-         the key WAS widened — delete this test and update the plan."
+        pending_count(&store).await,
+        1,
+        "F1: the kind-scoped key drains only the `calls` row — the `function_ref` \
+         twin survives to be resolved on its own terms. (Before the fix this was 0: \
+         silent data loss that nothing detected, because the pending count still \
+         reached 0 and the orphan sweep was satisfied.)"
     );
+    let survivor = store.unresolved_pending_batch(0, 10).await.unwrap();
+    assert_eq!(survivor[0].reference_kind, "function_ref");
 
-    // Same shape for mark_failed: one key flips both rows.
+    // Same shape for mark_failed: the key flips only its own kind...
     let store2 = SurrealStore::in_memory().await.unwrap();
     store2.apply_schema().await.unwrap();
     store2.insert_unresolved(&refs).await.unwrap();
-    fail_refs(&store2, "function:caller", "handler").await;
+    fail_refs(&store2, "function:caller", "handler", "calls").await;
     assert_eq!(
         pending_count(&store2).await,
-        0,
-        "F1: mark_failed flips both kinds too"
+        1,
+        "F1: mark_failed is kind-scoped too — the `function_ref` stays pending"
     );
-    // ...and `retryable_failed` dedups by the SAME 2-tuple (unresolved.rs:246),
-    // so only ONE of the two failed rows is even reachable by the retry pipeline.
-    // The `function_ref` is unreachable through every door.
+
+    // ...and once both are failed, `retryable_failed` returns BOTH (its dedup key
+    // carries `reference_kind`), so neither kind is unreachable.
+    fail_refs(&store2, "function:caller", "handler", "function_ref").await;
     let failed = store2
         .retryable_failed(&["handler".to_string()], 10)
         .await
         .unwrap();
     assert_eq!(
         failed.len(),
-        1,
-        "F1: TWO failed rows went in, ONE comes out — retryable_failed's dedup key \
-         is (from_node_id, reference_name) too, so the second kind is unreachable \
-         through every door in the store. This is the evidence for widening the \
-         key to 3 parts (Open Coordination Point 1)."
+        2,
+        "F1: TWO failed rows in, TWO out — retryable_failed dedups by the full \
+         3-part key, so the `function_ref` is reachable by the retry pipeline. \
+         (Before the fix this was 1.)"
     );
 }
 
