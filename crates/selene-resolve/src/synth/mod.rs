@@ -70,6 +70,7 @@
 //! the store round-trips batched instead of one-per-candidate.
 
 pub mod callback;
+pub mod event_emitter;
 pub mod lineindex;
 
 use std::collections::BTreeSet;
@@ -132,16 +133,23 @@ pub struct SynthPassDef<S: GraphStore> {
 /// **Phase 8 slot:** Go's `contains` + `implements` pre-passes must be inserted
 /// **first**, ahead of everything here — the interface-dispatch passes read the
 /// edges they create.
-pub const SYNTH_PASS_ORDER: &[&str] = &["callback"];
+pub const SYNTH_PASS_ORDER: &[&str] = &["callback", "event-emitter"];
 
 /// The pass table, monomorphized for `S`. Must match [`SYNTH_PASS_ORDER`] exactly
 /// — `registry_agrees_with_the_declared_order` fails the moment they drift.
 pub fn synth_passes<S: GraphStore>() -> Vec<SynthPassDef<S>> {
-    vec![SynthPassDef {
-        name: "callback",
-        languages: JS_FAMILY,
-        run: |s, c| Box::pin(callback::run(s, c)),
-    }]
+    vec![
+        SynthPassDef {
+            name: "callback",
+            languages: JS_FAMILY,
+            run: |s, c| Box::pin(callback::run(s, c)),
+        },
+        SynthPassDef {
+            name: "event-emitter",
+            languages: JS_FAMILY,
+            run: |s, c| Box::pin(event_emitter::run(s, c)),
+        },
+    ]
 }
 
 /// The language gate every v0 pass shares. The observer/emitter/JSX shapes are
@@ -257,7 +265,6 @@ pub(crate) fn node_body(ctx: &dyn ResolutionContext, node: &Node) -> Option<Stri
 }
 
 /// The tightest `method`/`function`/`component` node containing `line` in `file`.
-#[allow(dead_code)] // consumed by Tasks 22–25
 pub(crate) fn enclosing_fn(nodes: &[Node], file: &str, line: u32) -> Option<Node> {
     nodes
         .iter()
