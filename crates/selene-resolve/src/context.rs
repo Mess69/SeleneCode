@@ -46,6 +46,7 @@ use selene_db::GraphStore;
 
 use crate::cache::{SyncLru, cache_limit, content_cache_limit};
 use crate::error::{ResolveError, Result};
+use crate::imports::mappings::{extract_import_mappings, extract_re_exports};
 use crate::types::{AliasMap, GoModule, ImportMapping, ReExport, WorkspacePackages};
 
 // =============================================================================
@@ -370,6 +371,15 @@ impl<S: GraphStore> StoreContext<S> {
         self.store
     }
 
+    /// A file's language, off the warm `files_with_language` cache — a binary search,
+    /// not a store read. The import-mapping loader needs it per file.
+    fn language_of(&self, path: &str) -> Option<Language> {
+        self.files_with_language
+            .binary_search_by(|(p, _)| p.as_str().cmp(path))
+            .ok()
+            .map(|i| self.files_with_language[i].1)
+    }
+
     /// Drive one async store read from the sync strategy layer.
     ///
     /// A store malfunction **degrades to an empty result** rather than unwinding
@@ -598,16 +608,37 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     }
 
     fn import_mappings(&self, path: &str) -> Arc<Vec<ImportMapping>> {
-        // Task 4 wires `imports::mappings::extract_import_mappings` in here; the
-        // cache and the seam exist now so the trait is complete for Parts B/C.
+        // ⚠ This was a STUB returning an empty Vec, and the resolution parity gate
+        // is what found it. An empty mapping list does not fail — it makes the whole
+        // of ladder step 8 (`resolve_via_import`) a silent no-op: Go cross-package
+        // (#388), JVM FQN imports (#314), barrel re-exports (#629), path aliases,
+        // Python module members, Rust paths, C/C++ includes — every one of them reads
+        // this list, and every one of them was inert in the real pipeline while the
+        // strategy tests passed, because `FakeContext` injects the mappings directly.
+        //
+        // The lesson is the fake's: a seam that returns "nothing found" is
+        // indistinguishable from a seam that works and found nothing.
         self.import_mapping_cache
-            .get_or_insert_with(path.to_string(), || Arc::new(Vec::new()))
+            .get_or_insert_with(path.to_string(), || {
+                let Some(language) = self.language_of(path) else {
+                    return Arc::new(Vec::new());
+                };
+                let Some(source) = self.read_file(path) else {
+                    return Arc::new(Vec::new());
+                };
+                Arc::new(extract_import_mappings(path, &source, language))
+            })
     }
 
     fn re_exports(&self, path: &str) -> Arc<Vec<ReExport>> {
-        // Task 4 wires `imports::mappings::extract_re_exports` in here.
+        // Same stub, same consequence: an un-wired barrel loader means a renamed
+        // re-export (`export { signIn as login }`) resolves to nothing, for every
+        // project, silently.
         self.re_export_cache
-            .get_or_insert_with(path.to_string(), || Arc::new(Vec::new()))
+            .get_or_insert_with(path.to_string(), || match self.read_file(path) {
+                Some(source) => Arc::new(extract_re_exports(&source, path)),
+                None => Arc::new(Vec::new()),
+            })
     }
 
     fn project_aliases(&self) -> Option<&AliasMap> {

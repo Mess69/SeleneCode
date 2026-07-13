@@ -1,0 +1,47 @@
+# Justified TS<->Rust RESOLUTION divergences (the Phase 3 parity gate).
+#
+# The gate's tolerance is ZERO. Every difference is either a real bug (fix it — the
+# gate has already caught one that mattered more than everything in this file) or a
+# justified deviation: an entry here, naming its cause and its evidence.
+#
+# MACHINE-CHECKED FROM BOTH SIDES. An entry that matches no observed difference FAILS
+# the gate as stale — a fixed divergence must not leave a permanent whitelist behind,
+# because a whitelist nobody prunes is how a gate quietly stops gating.
+#
+#   [[deviation]]
+#   project = <dir under tests/fixtures/dispatch/>
+#   side    = "rust"  we emit this edge and TS does not
+#           = "ts"    TS emits it and we do not
+#   edge    = the exact edge key, as the gate prints it
+#   reason  = why this is correct-by-design
+#
+# ⚠ WHAT IS DELIBERATELY *NOT* IN THIS FILE
+#
+# The missing `jsx-render` heuristic edge. That is not a divergence — it is an
+# unbuilt feature (the synthesizers, plan Tasks 21-26). Listing it here would turn
+# "we have not built synthesis yet" into a green gate, which is precisely the
+# false confidence Phase 2's counts-only gate manufactured. It stays RED until the
+# synthesizers exist.
+
+[[deviation]]
+project = "react"
+side = "rust"
+edge = "route:/articles@src/app/articles/page.tsx:1 -[references|tree-sitter]-> function:ArticlesIndex@src/app/articles/page.tsx"
+reason = """
+Next.js file-routed pages: we emit an edge from the route node to the page component; \
+TS emits the route node and NOTHING from it. By this phase's own hard invariant \
+(PRD §8.2, dispatch coverage is end-to-end or not at all) TS's route is the \
+half-bridge — it advertises an entry point that reaches nothing, so an agent that \
+follows it lands on a route node and must Read the file to find the component. Ours \
+closes the hop. We are the correct side; this is a deliberate improvement, recorded \
+rather than reverted.
+"""
+
+[[deviation]]
+project = "react"
+side = "rust"
+edge = "route:/articles/:slug@src/pages/articles/[slug].tsx:1 -[references|tree-sitter]-> function:ArticlePage@src/pages/articles/[slug].tsx"
+reason = """
+The `pages/` flavor of the same improvement — see the entry above. Both route \
+flavors (pages/ and app/) are covered so a regression in either shows up here.
+"""

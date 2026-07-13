@@ -117,6 +117,33 @@ impl EdgeRow {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct Deviations {
+    #[serde(default)]
+    deviation: Vec<Deviation>,
+}
+
+/// A justified divergence. **Machine-checked from both sides**: the gate ignores the
+/// edge it names, and FAILS if the entry matches no observed difference — a fixed
+/// divergence must not leave a permanent whitelist behind.
+#[derive(Debug, Clone, Deserialize)]
+struct Deviation {
+    project: String,
+    /// `"rust"` — we emit it, TS does not. `"ts"` — TS emits it, we do not.
+    side: String,
+    edge: String,
+    #[allow(dead_code)] // read by humans; its presence is the point
+    reason: String,
+}
+
+fn load_deviations() -> Vec<Deviation> {
+    let raw =
+        std::fs::read_to_string(corpus_dir().join("deviations.toml")).expect("deviations.toml");
+    toml::from_str::<Deviations>(&raw)
+        .expect("deviations.toml is not valid TOML")
+        .deviation
+}
+
 fn corpus_dir() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/dispatch")
 }
@@ -400,6 +427,8 @@ async fn frameworks_detected_agree() {
 #[tokio::test(flavor = "multi_thread")]
 async fn ts_rust_resolution_edge_parity() {
     let baseline = load_baseline();
+    let deviations = load_deviations();
+    let mut used = vec![false; deviations.len()];
 
     let mut report = String::new();
     let mut only_ts_total = 0usize;
@@ -412,8 +441,25 @@ async fn ts_rust_resolution_edge_parity() {
         let ts: BTreeSet<String> = p.edges.iter().map(EdgeRow::key).collect();
         let rust: BTreeSet<String> = rust_edges.iter().map(EdgeRow::key).collect();
 
-        let only_ts: Vec<&String> = ts.difference(&rust).collect();
-        let only_rust: Vec<&String> = rust.difference(&ts).collect();
+        // A deviation excuses exactly the edge it names, in the project it names, on
+        // the side it names — and is marked USED, so an entry that excuses nothing
+        // fails the gate below as stale.
+        let mut excuse = |side: &str, edge: &String| -> bool {
+            deviations
+                .iter()
+                .position(|d| d.project == *name && d.side == side && d.edge == *edge)
+                .map(|i| {
+                    used[i] = true;
+                    true
+                })
+                .unwrap_or(false)
+        };
+
+        let only_ts: Vec<&String> = ts.difference(&rust).filter(|e| !excuse("ts", e)).collect();
+        let only_rust: Vec<&String> = rust
+            .difference(&ts)
+            .filter(|e| !excuse("rust", e))
+            .collect();
         matched_total += ts.intersection(&rust).count();
         only_ts_total += only_ts.len();
         only_rust_total += only_rust.len();
@@ -434,6 +480,25 @@ async fn ts_rust_resolution_edge_parity() {
             }
         }
     }
+
+    // A stale deviation is a whitelist nobody pruned — the way a gate quietly stops
+    // gating. It fails the gate exactly as loudly as a real diff.
+    let stale: Vec<&Deviation> = deviations
+        .iter()
+        .zip(&used)
+        .filter(|(_, u)| !**u)
+        .map(|(d, _)| d)
+        .collect();
+    assert!(
+        stale.is_empty(),
+        "STALE DEVIATIONS — each of these excuses a difference that no longer exists. \
+         Delete them; a whitelist nobody prunes is how a gate stops gating.\n{}",
+        stale
+            .iter()
+            .map(|d| format!("  {} [{}] {}", d.project, d.side, d.edge))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
 
     assert!(
         report.is_empty(),

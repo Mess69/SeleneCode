@@ -32,6 +32,8 @@ thiserror = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
+# Resolution parity gate: deviations.toml.
+toml.workspace = true
 tokio = { workspace = true }
 tempfile = { workspace = true }
 # Spike (Task 1) only: the JSONC-tolerance bake-off's LOSER, kept so the
