@@ -27,6 +27,8 @@
 
 mod error;
 mod query;
+mod symbols;
 
 pub use error::{GraphError, Result};
 pub use query::{FileInfo, QueryManager, normalize_path, tokenize_project_name};
+pub use symbols::{RUST_PATH_PREFIXES, SymbolGroup, matches_symbol};

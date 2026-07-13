@@ -92,3 +92,47 @@ pub async fn assert_rig_resolved(store: &SurrealStore) {
          shape, and every assertion built on this store would be vacuous"
     );
 }
+
+/// A project with the **same method name in three classes** — the overload case that FTS's
+/// relevance cut silently drops, plus one generated file (whose symbol must sort last).
+pub fn write_overload_fixture(root: &Path) {
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::create_dir_all(root.join("src/generated")).unwrap();
+
+    std::fs::write(
+        root.join("src/alpha.ts"),
+        "export class Alpha {\n\
+         \x20 handle(req: string) {\n\
+         \x20   return req.length;\n\
+         \x20 }\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/beta.ts"),
+        "export class Beta {\n\
+         \x20 handle(req: string) {\n\
+         \x20   return req.trim();\n\
+         \x20 }\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/gamma.ts"),
+        "export class Gamma {\n\
+         \x20 handle(req: string) {\n\
+         \x20   return req;\n\
+         \x20 }\n\
+         }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/generated/delta.ts"),
+        "export class Delta {\n\
+         \x20 handle(req: string) {\n\
+         \x20   return req;\n\
+         \x20 }\n\
+         }\n",
+    )
+    .unwrap();
+}

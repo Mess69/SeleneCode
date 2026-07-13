@@ -9,6 +9,8 @@ license.workspace = true
 [dependencies]
 selene-core = { path = "../selene-core" }
 selene-db = { path = "../selene-db" }
+# Grouped output order is OBSERVABLE (#764) — IndexMap, never HashMap.
+indexmap = { workspace = true }
 thiserror = { workspace = true }
 tokio = { workspace = true }
 tracing = { workspace = true }
