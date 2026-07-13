@@ -39,6 +39,7 @@
 //! blast radius of a bad regex is one framework, not the whole graph.
 
 pub mod cargo;
+pub mod csharp;
 pub mod express;
 pub mod go;
 pub mod java;
@@ -251,6 +252,7 @@ fn builtin_resolvers() -> Vec<&'static dyn FrameworkResolver> {
         &rust_fw::RustResolver,
         &laravel::Laravel,
         &ruby::Rails,
+        &csharp::AspNet,
     ]
 }
 
