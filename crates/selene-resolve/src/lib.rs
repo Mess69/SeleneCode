@@ -69,6 +69,7 @@ mod cache;
 mod context;
 mod error;
 mod families;
+mod imports;
 mod resolver;
 mod types;
 
@@ -77,6 +78,10 @@ pub use cache::{CACHE_SIZE_ENV, DEFAULT_CACHE_LIMIT, SyncLru, cache_limit, conte
 pub use context::{ResolutionContext, StoreContext};
 pub use error::{ResolveError, Result};
 pub use families::{crosses_known_family, is_known_language_family, same_language_family};
+pub use imports::aliases::{apply_aliases, load_project_aliases};
+pub use imports::go_module::load_go_module;
+pub use imports::mappings::{extract_import_mappings, extract_re_exports};
+pub use imports::workspace::{load_workspace_packages, resolve_workspace_import};
 pub use resolver::{
     ReferenceResolver, has_any_possible_match, is_php_include_path_ref, matches_any_import,
 };
