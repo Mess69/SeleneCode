@@ -107,15 +107,37 @@ connectée** doit écraser trois correspondances lexicales isolées.
 `rev13` l'avait dit (« le corpus du gate fait 2 projets, pas les ≥6 spécifiés ») — c'est maintenant
 prouvé dans le produit, pas argumenté dans une revue. **Il avait raison.**
 
-### État du travail en cours
+### État du travail en cours — MESURÉ juste avant la pause
 
-Un agent (`relevance`) était dessus au moment de la pause. Vérifier :
-```bash
-git log --oneline -5                      # a-t-il commité ?
-cat .superpowers/sdd/relevance-report.md  # son rapport (cause racine + prochaine étape)
-git status --short                        # travail non commité éventuel
-```
-Fichiers qu'il touchait : `crates/selene-context/src/{relevance,flow,lib}.rs` + `examples/`.
+Un agent (`relevance`) a produit ~717 lignes (`crates/selene-context/src/{relevance,flow,lib}.rs`
++ `examples/probe.rs`), **commitées en WIP : `faf9b54`**. Ça **compile**. Je l'ai **testé contre le
+vrai binaire** — voici l'état réel, pas une promesse :
+
+| requête | AVANT | APRÈS (`faf9b54`) |
+|---|---|---|
+| Q1 (celle du gate) | `graph_outcome`(!), match_reference, unresolved_content · Flow ❌ · batch.rs ❌ | `UnresolvedReference`, `unresolved`, `GraphStore` · Flow ❌ · batch.rs ❌ |
+| Q2 (nom exact) | resolve_project, index_and_drive, resolve_and_persist_batched · Flow ❌ | **resolve_and_persist_batched en 1er** ✅ · batch.rs ✅ · Flow ❌ |
+| Q3 (prose) | **insert_edges ×3** (bug dédup) · Flow ❌ | ResolutionResult, ResolutionStats · **dédup corrigé** ✅ · batch.rs ✅ · **resolve_one** ✅ · Flow ❌ |
+
+**Acquis :** le bug de déduplication est **corrigé**, les seeds sont nettement plus pertinents, et
+Q2/Q3 atteignent maintenant `batch.rs` / `resolve_one`.
+
+**⚠ NON RÉSOLU, et c'est le cœur : la section Flow ne s'affiche TOUJOURS JAMAIS — sur aucune des
+trois requêtes.** Même Q2, dont le tout premier root est le bon symbole.
+
+**Ce que ça implique pour la suite (l'hypothèse à tester en premier) :**
+`render_flow_section` n'affiche une chaîne que s'il en **prouve** une entre **≥2 roots**. Or les
+roots restent des symboles pertinents **mais non connectés entre eux** (Q1 renvoie des *types* —
+`UnresolvedReference`, `GraphStore` — pas les *fonctions* du flux ; on n'appelle pas un type).
+⇒ Le scoring doit **préférer des seeds qui forment une chaîne d'appels connectée** — pas seulement
+des symboles pertinents pris isolément. C'est la partie du travail qui n'est pas faite.
+⇒ **Vérifier aussi s'il existe un second bug dans `build_flow_from_named_symbols`** : forcer à la
+main les roots `[resolve_and_persist_batched, resolve_one, create_edges, insert_edges]` (qui SONT
+une vraie chaîne d'appels) et voir si Flow s'affiche. **Si non, le bug est aussi dans le flow
+builder, pas seulement dans la sélection des seeds.** Cette expérience est la prochaine étape, elle
+coûte 10 minutes et elle tranche.
+
+Voir aussi `.superpowers/sdd/relevance-report.md` s'il existe.
 
 **Critère de réussite, non négociable : le VRAI BINAIRE répondant à la VRAIE question.** Pas un
 test unitaire. Après chaque changement : rebuild release, relancer les 3 sondes, montrer les seeds
