@@ -106,6 +106,17 @@ impl Pipeline {
             .collect()
     }
 
+    /// Every edge OUT of `id`, for precision assertions.
+    pub async fn store_edges_out_of(&self, id: &str) -> Vec<selene_core::Edge> {
+        self.store()
+            .outgoing(id, &[EdgeKind::Calls, EdgeKind::References], None)
+            .await
+            .expect("outgoing")
+            .into_iter()
+            .map(|n| n.edge)
+            .collect()
+    }
+
     /// Assert the flow is **closed**: a path runs from `from_id` to the node
     /// named `to_name`, and every symbol in `via` lies on it, in order.
     ///
