@@ -112,3 +112,45 @@ async fn the_output_is_byte_identical_across_runs() {
     let c = b.build_context("hashPassword").await.unwrap();
     assert_eq!(a, c, "IndexMap everywhere the order can reach output");
 }
+
+// =============================================================================
+// Task 11 — the explore pipeline: flow, boundaries, blast radius, in order
+// =============================================================================
+
+/// **The Flow section is the spine, and it comes BEFORE the source.** An agent reads
+/// top-down and stops when it has enough; the chain is what replaces reading, and the source
+/// is there to confirm it.
+#[tokio::test(flavor = "multi_thread")]
+async fn explore_renders_the_flow_before_the_source() {
+    let (b, _tmp) = builder().await;
+
+    let out = b.build_context("handleLogin hashPassword").await.unwrap();
+
+    let flow_at = out.find("### Flow").expect(
+        "no Flow section — the agent named two endpoints and got no chain between them, which \
+         is precisely the answer that sends it to Read",
+    );
+    let source_at = out.find("**`src/").expect("a file section");
+
+    assert!(
+        flow_at < source_at,
+        "Flow must come BEFORE the source: the chain is what replaces reading, and an agent \
+         that has to scroll past 200 lines of code to find it will not"
+    );
+    assert!(out.contains("1. `handleLogin`"), "numbered steps:\n{out}");
+    assert!(out.contains("   ↓ calls"), "the hop is named:\n{out}");
+}
+
+/// The blast radius answers "what breaks if I change this" — the agent's second question,
+/// answered without a second tool call.
+#[tokio::test(flavor = "multi_thread")]
+async fn explore_renders_the_blast_radius() {
+    let (b, _tmp) = builder().await;
+    let out = b.build_context("hashPassword").await.unwrap();
+
+    assert!(
+        out.contains("### Blast radius"),
+        "changing hashPassword breaks login, which breaks handleLogin — and an agent that \
+         cannot see that here will ask for it in another call:\n{out}"
+    );
+}

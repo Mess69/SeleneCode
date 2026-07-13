@@ -30,9 +30,12 @@ use selene_core::EdgeKind;
 use selene_db::GraphStore;
 use selene_graph::{QueryManager, number_lines};
 
+use crate::boundaries::{find_boundaries, render_boundaries};
 use crate::budgets::{ExploreBudget, budget_for, truncate_to_ceiling};
 use crate::error::Result;
+use crate::flow::{build_flow_from_named_symbols, render_flow};
 use crate::relevance::{Confidence, FindOptions, RelevantContext, find_relevant_context};
+use crate::stopwords::extract_search_terms;
 
 /// The section prefix a file block starts with. **Load-bearing**: truncation cuts on it, so
 /// it must stay unique and greppable (`budgets::FILE_SECTION_PREFIX`).
@@ -74,19 +77,95 @@ impl<S: GraphStore> ContextBuilder<S> {
             return Ok(self.no_results_handoff(query));
         }
 
+        // ── THE EXPLORE PIPELINE. The section ORDER is the answer's shape, and it is
+        //    deliberate: an agent reads top-down and stops when it has enough.
+        //
+        //      1. summary        — what was asked, what was found
+        //      2. low-confidence — the caveat FIRST, or it reads as a footnote
+        //      3. FLOW           — the spine. If this is right, the agent stops here.
+        //      4. boundaries     — why the flow ends, and where control goes
+        //      5. relationships  — removes the "who calls this" follow-up call
+        //      6. blast radius   — what breaks if this changes
+        //      7. source         — verbatim, numbered, so nothing needs opening
+        //
+        //    Flow before source is the whole bet: the chain is what replaces reading, and the
+        //    source is there to confirm it, not to be searched.
         let mut out = String::new();
         out.push_str(&self.render_summary(query, &ctx, file_count));
 
-        // The honest half: say it BEFORE the content, so the agent reads the caveat first and
-        // weighs what follows — not after, where it reads like a footnote.
         if ctx.confidence == Confidence::Low {
             out.push_str(&self.low_confidence_handoff(query));
         }
 
+        out.push_str(&self.render_flow_section(query, &ctx).await?);
+        out.push_str(&render_boundaries(
+            &find_boundaries(&self.qm, &ctx.subgraph.nodes).await?,
+        ));
         out.push_str(&self.render_relationships(&ctx, &budget));
+        out.push_str(&self.render_blast_radius(&ctx).await?);
         out.push_str(&self.render_files(&ctx, &budget).await?);
 
         Ok(truncate_to_ceiling(&out, &budget))
+    }
+
+    /// **The Flow section** — built from the query's own terms first (the agent named the
+    /// endpoints it cares about), falling back to the ranked roots.
+    async fn render_flow_section(&self, query: &str, ctx: &RelevantContext) -> Result<String> {
+        // 1. The symbols the agent NAMED. If it said "handleLogin … hashPassword", those are
+        //    the endpoints it wants a chain between — not whatever ranked highest.
+        let named = extract_search_terms(query);
+        if named.len() >= 2
+            && let Some(steps) = build_flow_from_named_symbols(&self.qm, &named).await?
+        {
+            return Ok(render_flow(&steps));
+        }
+
+        // 2. Otherwise, the ranked roots: the chain through what we believe the answer is.
+        let roots: Vec<String> = ctx.roots.iter().map(|r| r.node.name.clone()).collect();
+        if roots.len() >= 2
+            && let Some(steps) = build_flow_from_named_symbols(&self.qm, &roots).await?
+        {
+            return Ok(render_flow(&steps));
+        }
+
+        // No provable chain ⇒ NO Flow section. A fabricated spine is worse than none.
+        Ok(String::new())
+    }
+
+    /// **The blast radius** — what breaks if this changes. It is the question an agent asks
+    /// second, and answering it here removes the follow-up call.
+    async fn render_blast_radius(&self, ctx: &RelevantContext) -> Result<String> {
+        let Some(root) = ctx.roots.first() else {
+            return Ok(String::new());
+        };
+        let impact = self.qm.impact(&root.node.id, 2).await?;
+
+        // The root itself is always in its own impact set; one node is not a radius.
+        if impact.nodes.len() <= 1 {
+            return Ok(String::new());
+        }
+
+        let mut files: indexmap::IndexSet<&str> = indexmap::IndexSet::new();
+        for n in impact.nodes.values() {
+            files.insert(n.file_path.as_str());
+        }
+
+        Ok(format!(
+            "### Blast radius
+
+Changing `{}` reaches **{}** symbols across **{}** files: {}
+
+",
+            root.node.name,
+            impact.nodes.len(),
+            files.len(),
+            files
+                .iter()
+                .take(8)
+                .map(|f| format!("`{f}`"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
     }
 
     /// The header: what was asked, what was found, and how confident we are.
