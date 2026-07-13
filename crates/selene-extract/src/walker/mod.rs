@@ -720,10 +720,38 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
     } else if t.method_types.contains(&node_type) {
         // TS/JS #808: a field-shaped method node may be a plain property.
         if rules.classify_method_node(node, s.source()) == Some(MethodClass::Property) {
-            extract_property(rules, s, node);
-            // A field initializer can register callbacks
+            let prop_id = extract_property(rules, s, node);
+            // Walk the initializer so its calls/instantiations attribute to
+            // the PROPERTY (`client = new HttpClient()` → client instantiates
+            // HttpClient; `history = createHistory()` → history calls
+            // createHistory). TS `tree-sitter.ts:996-1006` pushes `propNode.id`
+            // as the scope and hands the `value` field to `visitFunctionBody`;
+            // without this the field subtree is consumed by the property branch
+            // and nothing ever walks it (`resolve_body` only reaches function
+            // bodies), so these edges were missing outright.
+            //
+            // This lives HERE, not in `extract_property`, because TS gates it
+            // here too: the `propertyTypes` (C#/Kotlin/Scala) and `fieldTypes`
+            // (Java/C#) branches at `tree-sitter.ts:1038-1055` call
+            // extract{Property,Field} and then ONLY `scanFnRefSubtree` — they
+            // never walk the value. `classify_method_node` returns
+            // `Property` for TS/JS alone, so no other language reaches this.
+            if let Some(prop_id) = prop_id
+                && let Some(value) = get_child_by_field(node, "value")
+            {
+                s.push_scope(prop_id);
+                s.visit_function_body(value, "");
+                s.pop_scope();
+            }
+            // A field initializer can also register callbacks
             // (`static handlers = { click: onClick }`) — the property branch
-            // consumes the subtree, so scan it for fn-ref candidates.
+            // consumes the subtree, so scan it for fn-ref candidates
+            // (TS `tree-sitter.ts:1007-1010`). Scanned from the CLASS scope
+            // (the stack top here), while the value walk above captured the
+            // same names under the PROPERTY scope: two distinct `from_node_id`s,
+            // so the flush-time dedup on `(from_node_id, name)` keeps both —
+            // exactly as TS does. The class-scoped one is what resolution and
+            // callers/impact traverse.
             body::scan_fn_ref_subtree(s, node, 0);
         } else {
             extract_method(rules, s, node);
@@ -739,7 +767,9 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         // recurses into the alias value); a reclassified one does.
         matched = extract_type_alias(rules, s, node);
     } else if t.property_types.contains(&node_type) && s.is_inside_class_like() {
-        extract_property(rules, s, node);
+        // C#/Kotlin/Scala: TS `tree-sitter.ts:1038-1044` does NOT walk the
+        // value here (unlike the TS/JS field branch above) — don't either.
+        let _ = extract_property(rules, s, node);
         // Property initializers aren't walked — scan for fn-ref candidates
         // (Kotlin `val cb = ::handler` class properties — Task 15b).
         body::scan_fn_ref_subtree(s, node, 0);
@@ -1330,7 +1360,15 @@ fn extract_ts_tuple_contract_names(
 }
 
 /// Class property (C# property_declaration and TS/JS #808 demotions).
-fn extract_property(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
+///
+/// Returns the created node's id — the TS/JS caller pushes it as a scope to
+/// walk the field's initializer (TS `tree-sitter.ts:996-1006`); every other
+/// caller discards it.
+fn extract_property(
+    rules: &'static dyn LanguageRules,
+    s: &mut Session<'_>,
+    node: Node<'_>,
+) -> Option<String> {
     let name = rules.extract_property_name(node, s.source()).or_else(|| {
         get_child_by_field(node, "name")
             .or_else(|| get_child_by_field(node, "property"))
@@ -1341,7 +1379,7 @@ fn extract_property(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
             })
             .map(|n| get_node_text(n, s.source()).to_string())
     });
-    let Some(name) = name else { return };
+    let name = name?;
 
     let extra = NodeExtra {
         docstring: get_preceding_docstring(node, s.source()),
@@ -1352,10 +1390,10 @@ fn extract_property(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
     let created = s.create_node(NodeKind::Property, &name, node, extra);
     // `@Inject() private svc: Foo` — decorator + type-annotation refs on
     // class properties too (Task 8).
-    if let Some(id) = created.and_then(|idx| s.id_of(idx)) {
-        extract_decorators_for(s, node, &id);
-        s.extract_type_annotations(rules, node, &id);
-    }
+    let id = created.and_then(|idx| s.id_of(idx))?;
+    extract_decorators_for(s, node, &id);
+    s.extract_type_annotations(rules, node, &id);
+    Some(id)
 }
 
 /// Class field declarations (Java/C#/PHP shapes — Task 10/14). The generic
