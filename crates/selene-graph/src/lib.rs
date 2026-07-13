@@ -25,10 +25,19 @@
 //!   [`GraphError::PathRefusal`] (#527); everything else is a genuine malfunction. One
 //!   `isError` early and an agent abandons the tool for the session.
 
+mod adjacency;
 mod error;
 mod query;
+mod source;
 mod symbols;
 
+pub use adjacency::{
+    DEFAULT_IMPACT_DEPTH, MAX_DEPTH, MAX_LIMIT, MIN_DEPTH, MIN_LIMIT, clamp_depth, clamp_limit,
+};
 pub use error::{GraphError, Result};
 pub use query::{FileInfo, QueryManager, normalize_path, tokenize_project_name};
+pub use source::{
+    CHAR_BUDGET, CONFIG_LEAF_LANGUAGES, DEFAULT_READ_LIMIT, FileSlice, number_lines,
+    validate_path_within_root,
+};
 pub use symbols::{RUST_PATH_PREFIXES, SymbolGroup, matches_symbol};
