@@ -41,6 +41,7 @@ use tree_sitter::{Node, Parser};
 
 use crate::fnref::{FnRefCandidate, FnRefSpec, fn_ref_spec};
 use crate::helpers::{get_child_by_field, get_node_text, get_preceding_docstring};
+use crate::rules::cpp_preparse::strip_cpp_template_args;
 use crate::rules::{ClassKind, LanguageRules, MethodClass, rules_for};
 use crate::{
     ErrorCode, ExtractionError, ExtractionResult, Language, Severity, UnresolvedReference,
@@ -312,6 +313,15 @@ impl<'s> Session<'s> {
     /// attach refs to them — C# fields do (`rules/csharp.rs`).
     pub(crate) fn id_of(&self, idx: usize) -> Option<String> {
         self.nodes.get(idx).map(|n| n.id.clone())
+    }
+
+    /// `extends`/`implements` refs from `node`'s inheritance clauses.
+    ///
+    /// Exposed for the language hooks that own their type extraction outright and
+    /// so never reach the walker's class/struct path — Go's interface `type_spec`
+    /// (`rules/go.rs`) is the one such case.
+    pub(crate) fn extract_inheritance(&mut self, node: Node<'_>, owner_id: &str) {
+        extract_inheritance(self, node, owner_id);
     }
 
     /// The session's language rules (a `&'static` copy — free to hold
@@ -1070,9 +1080,21 @@ fn extract_class(
     s.pop_scope();
 }
 
-/// One `extends`/`implements` ref at `target`'s position.
+/// One `extends`/`implements` ref named by `target`'s own text.
 fn push_inheritance_ref(s: &mut Session<'_>, class_id: &str, target: Node<'_>, kind: EdgeKind) {
     let name = get_node_text(target, s.source()).trim().to_string();
+    push_inheritance_ref_named(s, class_id, name, target, kind);
+}
+
+/// One `extends`/`implements` ref with an explicit name, positioned at `target`
+/// (the C++ arm rewrites the name to strip template args).
+fn push_inheritance_ref_named(
+    s: &mut Session<'_>,
+    class_id: &str,
+    name: String,
+    target: Node<'_>,
+    kind: EdgeKind,
+) {
     if name.is_empty() {
         return;
     }
@@ -1085,6 +1107,47 @@ fn push_inheritance_ref(s: &mut Session<'_>, class_id: &str, target: Node<'_>, k
         file_path: None,
         language: None,
     });
+}
+
+/// The supertype named by a Kotlin `delegation_specifier`.
+///
+/// `class Foo : Bar` → `user_type` → the type name. `class Foo : Bar()` (the
+/// base's constructor invoked) wraps it one level deeper:
+/// `constructor_invocation` → `user_type` → the type name
+/// (tree-sitter.ts:5462-5479).
+///
+/// **Grammar drift (Kotlin ledger).** We link `tree-sitter-kotlin-ng`; TS ran the
+/// older `tree-sitter-kotlin`. Two shapes differ, and both are handled:
+/// - the specifiers sit under a plural `delegation_specifiers` WRAPPER (the
+///   caller recurses into it), not as direct children of `class_declaration`;
+/// - a `user_type`'s name leaf is an `identifier`, not a `type_identifier`.
+///
+/// Falls back to the widest node available rather than dropping the supertype.
+fn kotlin_delegation_target<'t>(child: Node<'t>) -> Option<Node<'t>> {
+    let mut c = child.walk();
+    let specifiers: Vec<Node<'t>> = child.named_children(&mut c).collect();
+    let user_type = specifiers.iter().find(|c| c.kind() == "user_type");
+    let ctor_invocation = specifiers
+        .iter()
+        .find(|c| c.kind() == "constructor_invocation");
+    let target = user_type.or(ctor_invocation)?;
+
+    let inner_user_type = if target.kind() == "user_type" {
+        *target
+    } else {
+        let mut c2 = target.walk();
+        target
+            .named_children(&mut c2)
+            .find(|c| c.kind() == "user_type")
+            .unwrap_or(*target)
+    };
+    let mut c3 = inner_user_type.walk();
+    Some(
+        inner_user_type
+            .named_children(&mut c3)
+            .find(|c| matches!(c.kind(), "type_identifier" | "identifier"))
+            .unwrap_or(inner_user_type),
+    )
 }
 
 /// The node carrying a C# base type's NAME.
@@ -1114,51 +1177,103 @@ fn csharp_base_type_name_node<'t>(base: Node<'t>) -> Node<'t> {
     }
 }
 
+/// The supertypes named by an `extends`/`implements` clause.
+///
+/// Java wraps multiples in a `type_list` (`super_interfaces` → `type_list` →
+/// `type_identifier`); everything else lists them directly. `single` picks the
+/// TS fallback when there is no `type_list`: the `extends`-family clauses take
+/// only `namedChild(0)` (a class has ONE superclass), while the
+/// `implements`-family takes every named child (tree-sitter.ts:5261-5262 vs
+/// :5310-5311).
+fn inheritance_targets<'t>(clause: Node<'t>, single: bool) -> Vec<Node<'t>> {
+    let mut c = clause.walk();
+    if let Some(type_list) = clause
+        .named_children(&mut c)
+        .find(|n| n.kind() == "type_list")
+    {
+        let mut c2 = type_list.walk();
+        return type_list.named_children(&mut c2).collect();
+    }
+    if single {
+        return clause.named_child(0).into_iter().collect();
+    }
+    let mut c3 = clause.walk();
+    clause.named_children(&mut c3).collect()
+}
+
 /// `extends` / `implements` refs from a type declaration's inheritance clauses —
 /// the core `extractInheritance` pass (tree-sitter.ts:5156-5549).
 ///
-/// **Only the arms the shared parity corpus exercises are wired:** PHP
-/// `base_clause` (ts:5201) + `class_interface_clause` (ts:5304), and C#
-/// `base_list` (ts:5442).
+/// Every arm the v0 languages need is wired, and each is pinned by a parity
+/// fixture (`tests/fixtures/parity/*/inherit.*`).
 ///
-/// The remaining TS arms are **deliberately deferred, not forgotten** — TS/JS
-/// `extends_clause`/`class_heritage` (ts:5199/5517), Java `superclass` /
-/// `super_interfaces` / `extends_interfaces` (ts:5200/5202/5305), Kotlin
-/// `delegation_specifier` (ts:5462), Python class `argument_list` (ts:5328), Go
-/// interface/struct embedding (ts:5345/5361), C++ `base_class_clause` (ts:5284).
-/// The corpus does not exercise inheritance for those languages (task-19 report
-/// §5 names this as the corpus's own coverage gap), so porting them here would
-/// ship behavior no gate proves correct. They land with the fixtures that pin
-/// them.
-///
-/// Two arms are excluded on purpose rather than deferred:
-/// - Rust `trait_bounds` (ts:5380) — [`crate::rules::rust_lang`] already owns
-///   supertrait refs; a second emit here would DOUBLE-COUNT them.
-/// - `enum` base lists (ts:1873) — C#'s `enum E : byte` names a *storage type*,
-///   not a supertype, and TS emits it as `extends:byte`. That is a false
-///   inheritance edge ("silent beats wrong"), so [`extract_enum`] does not call
+/// Two arms are excluded on purpose, both proven by the corpus:
+/// - **Rust `trait_bounds`** (ts:5380) — [`crate::rules::rust_lang`] already owns
+///   supertrait refs (and `impl Trait for Type` → `implements`). A second emit
+///   here would DOUBLE-COUNT: `rust/inherit.rs` is at exact parity with this pass
+///   NOT handling `trait_bounds`, which is the proof.
+/// - **`enum` base lists** (ts:1873) — C#'s `enum E : byte` names a *storage
+///   type*, not a supertype, and TS emits `extends:byte`. That is a false
+///   inheritance edge ("silent beats wrong"), so [`extract_enum`] never calls
 ///   this pass.
+///
+/// Non-v0 arms in the TS source (Scala `with`-mixins, Dart mixins, VB.NET
+/// `Inherits`/`Implements` statements, Objective-C `class_interface`, Swift
+/// `inheritance_specifier`, CFML `component_attribute`) are not ported — those
+/// languages are not in v0.
 fn extract_inheritance(s: &mut Session<'_>, node: Node<'_>, class_id: &str) {
+    let node_kind = node.kind();
     let mut cursor = node.walk();
     let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
     for child in children {
         match child.kind() {
-            // PHP `class C extends Base` — the base type is namedChild(0); PHP
-            // is single-inheritance, so there is exactly one
-            // (tree-sitter.ts:5261-5274).
-            "base_clause" => {
-                if let Some(target) = child.named_child(0) {
+            // The `extends` family, all one shape (tree-sitter.ts:5198-5274):
+            //   TS      `class C extends Base`      → extends_clause
+            //   Java    `class C extends Base`      → superclass
+            //   Ruby    `class C < Base`            → superclass
+            //   PHP     `class C extends Base`      → base_clause
+            //   Java    `interface I extends A, B`  → extends_interfaces (type_list)
+            // A class has exactly one superclass, so the no-type_list fallback
+            // takes namedChild(0) — but Java's `extends_interfaces` DOES carry a
+            // type_list, and an interface may extend many.
+            "extends_clause" | "superclass" | "base_clause" | "extends_interfaces" => {
+                for target in inheritance_targets(child, true) {
                     push_inheritance_ref(s, class_id, target, EdgeKind::Extends);
                 }
             }
 
-            // PHP `implements Serializable, JsonSerializable` — every named
-            // child of the clause is an interface (tree-sitter.ts:5311-5323).
-            "class_interface_clause" => {
+            // The `implements` family (tree-sitter.ts:5302-5324):
+            //   TS    `implements Serializable`               → implements_clause
+            //   PHP   `implements Serializable, JsonSerial…`  → class_interface_clause
+            //   Java  `implements A, B`                       → super_interfaces (type_list)
+            // Every named child is an interface — no namedChild(0) fallback.
+            "implements_clause" | "class_interface_clause" | "super_interfaces" => {
+                for target in inheritance_targets(child, false) {
+                    push_inheritance_ref(s, class_id, target, EdgeKind::Implements);
+                }
+            }
+
+            // C++ `class Derived : public Base, private Other` — the clause holds
+            // access specifiers AND base types; take only the type nodes. A
+            // templated base (`Base<int>`, `ns::Tpl<int>`) arrives as a
+            // `template_type` / `qualified_identifier`; strip the `<…>` args so
+            // the ref matches the bare class the template was declared as, rather
+            // than never resolving (tree-sitter.ts:5284-5300, #1043).
+            "base_class_clause" => {
                 let mut c2 = child.walk();
-                let ifaces: Vec<Node<'_>> = child.named_children(&mut c2).collect();
-                for iface in ifaces {
-                    push_inheritance_ref(s, class_id, iface, EdgeKind::Implements);
+                let bases: Vec<Node<'_>> = child
+                    .named_children(&mut c2)
+                    .filter(|t| {
+                        matches!(
+                            t.kind(),
+                            "type_identifier" | "qualified_identifier" | "template_type"
+                        )
+                    })
+                    .collect();
+                for base in bases {
+                    let raw = get_node_text(base, s.source());
+                    let name = strip_cpp_template_args(raw).into_owned();
+                    push_inheritance_ref_named(s, class_id, name, base, EdgeKind::Extends);
                 }
             }
 
@@ -1173,6 +1288,93 @@ fn extract_inheritance(s: &mut Session<'_>, node: Node<'_>, class_id: &str) {
                     let target = csharp_base_type_name_node(base);
                     push_inheritance_ref(s, class_id, target, EdgeKind::Extends);
                 }
+            }
+
+            // Kotlin `class Foo : Bar, Baz` / `class Foo : Bar()` — the supertype
+            // is a `user_type`, or a `constructor_invocation` wrapping one when the
+            // base's constructor is called (tree-sitter.ts:5460-5480).
+            "delegation_specifier" => {
+                if let Some(target) = kotlin_delegation_target(child) {
+                    push_inheritance_ref(s, class_id, target, EdgeKind::Extends);
+                }
+            }
+
+            // Python `class Child(Base, Mixin):` — the superclass list is an
+            // `argument_list` of identifiers (`attribute` for a dotted
+            // `module.Base`). Gated on `class_definition` so a CALL's argument
+            // list can never be mistaken for a base list (tree-sitter.ts:5326-5341).
+            "argument_list" if node_kind == "class_definition" => {
+                let mut c2 = child.walk();
+                let args: Vec<Node<'_>> = child
+                    .named_children(&mut c2)
+                    .filter(|a| matches!(a.kind(), "identifier" | "attribute"))
+                    .collect();
+                for arg in args {
+                    push_inheritance_ref(s, class_id, arg, EdgeKind::Extends);
+                }
+            }
+
+            // Go interface embedding — `type ReadCloser interface { Reader; Closer }`
+            // (tree-sitter.ts:5343-5357). The embedded interface arrives wrapped in
+            // a `constraint_elem`; newer tree-sitter-go spells the same shape
+            // `type_elem`, so both are accepted.
+            "constraint_elem" | "type_elem" => {
+                let mut c2 = child.walk();
+                if let Some(type_id) = child
+                    .named_children(&mut c2)
+                    .find(|c| c.kind() == "type_identifier")
+                {
+                    push_inheritance_ref(s, class_id, type_id, EdgeKind::Extends);
+                }
+            }
+
+            // Go struct embedding — `type DB struct { *Head; Queryable }`. An
+            // embedded field has NO `field_identifier`: the type IS the name. A
+            // named field (`Name string`) has one, and must not be read as a
+            // supertype (tree-sitter.ts:5359-5376).
+            //
+            // GATED TO GO — and this gate is the fix for a real TS bug. TS does
+            // NOT gate this arm, and C++ spells a member declaration
+            // `field_declaration` too: `class Factory { public: static Widget
+            // create(); };` has no `field_identifier` (the name lives inside the
+            // `function_declarator`), so TS's ungated arm reads the RETURN TYPE as
+            // an embedded base and emits a phantom `extends:Widget` from a class
+            // with no base clause at all. That is the exact false positive pinned
+            // in `deviations.toml` for `cpp/f.cpp` — this is its root cause, and
+            // the language gate is why we do not reproduce it. "Silent beats
+            // wrong" (Global Constraints).
+            "field_declaration" if s.language() == Language::Go => {
+                let mut c2 = child.walk();
+                let has_field_identifier = child
+                    .named_children(&mut c2)
+                    .any(|c| c.kind() == "field_identifier");
+                if !has_field_identifier {
+                    let mut c3 = child.walk();
+                    if let Some(type_id) = child
+                        .named_children(&mut c3)
+                        .find(|c| c.kind() == "type_identifier")
+                    {
+                        push_inheritance_ref(s, class_id, type_id, EdgeKind::Extends);
+                    }
+                }
+            }
+
+            // JavaScript `class Foo extends Bar {}` — `class_heritage` holds a BARE
+            // identifier, with no `extends_clause` wrapper (that is the TS-grammar
+            // shape). Reached through the recursion arm below, where `node` IS the
+            // `class_heritage` (tree-sitter.ts:5499-5513).
+            "identifier" | "type_identifier" if node_kind == "class_heritage" => {
+                push_inheritance_ref(s, class_id, child, EdgeKind::Extends);
+            }
+
+            // Recurse into the containers that WRAP the clauses rather than being
+            // one: TS/JS `class_heritage` (holds extends_clause/implements_clause,
+            // or a bare identifier), and Go's `field_declaration_list` inside a
+            // `struct_type` (tree-sitter.ts:5515-5519). Kotlin's plural
+            // `delegation_specifiers` is the same idea — a wrapper the -ng grammar
+            // adds that TS's grammar did not (see `kotlin_delegation_target`).
+            "field_declaration_list" | "class_heritage" | "delegation_specifiers" => {
+                extract_inheritance(s, child, class_id);
             }
 
             _ => {}
@@ -1341,15 +1543,19 @@ fn extract_type_alias(
         else {
             return true; // TS: `if (!structNode) return true`
         };
+        let id_for_inheritance = id.clone();
         s.push_scope(id);
         let t = rules.tables();
         if kind == NodeKind::Struct {
             // Go-style `type` field first, then the inner struct child (C
-            // typedef struct). INSERTION POINT (Task 7): extract_inheritance
-            // on the inner node (Go struct embedding).
+            // typedef struct).
             if let Some(type_child) = get_child_by_field(node, "type")
                 .or_else(|| find_child_by_types(node, t.struct_types))
             {
+                // Go struct embedding — `type DB struct { *Head; Queryable }`.
+                // The clauses hang off the INNER `struct_type`, not the alias, so
+                // this runs on `type_child` (tree-sitter.ts:2850).
+                extract_inheritance(s, type_child, &id_for_inheritance);
                 let body = get_child_by_field(type_child, t.body_field).unwrap_or(type_child);
                 let mut cursor = body.walk();
                 let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();

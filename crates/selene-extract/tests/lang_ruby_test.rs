@@ -286,3 +286,33 @@ fn resolves_require_relative_parent_segments() {
         "load-path require kept for suffix match: {imports:?}"
     );
 }
+
+/// Inheritance-gap closure — Ruby `class Child < Base` spells the base clause
+/// `superclass`, the same node type Java uses for `extends`
+/// (tree-sitter.ts:5200/5261-5274).
+#[test]
+fn extracts_ruby_superclass_ref() {
+    let code = "class Base\n  def handle\n    1\n  end\nend\n\nclass Child < Base\n  def handle\n    2\n  end\nend\n";
+    let r = extract("inherit.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Extends.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(extends, vec!["Base"]);
+
+    let child = r
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Class && n.name == "Child")
+        .unwrap();
+    assert!(
+        r.unresolved
+            .iter()
+            .any(|u| u.reference_kind == EdgeKind::Extends.as_str() && u.from_node_id == child.id),
+        "derived class must own its extends ref"
+    );
+}

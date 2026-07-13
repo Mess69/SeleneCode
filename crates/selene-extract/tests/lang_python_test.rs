@@ -385,3 +385,34 @@ fn python_constructor_calls_stay_calls_not_instantiates() {
             .any(|u| u.reference_kind == "instantiates")
     );
 }
+
+/// Inheritance-gap closure — Python's superclass list is an `argument_list` of
+/// identifiers, gated on `class_definition` so a CALL's arguments can never be
+/// read as base classes (tree-sitter.ts:5326-5341).
+#[test]
+fn extracts_python_base_class_refs() {
+    let code = "class Base:\n    def handle(self):\n        return 0\n\n\nclass Mixin:\n    pass\n\n\nclass Child(Base, Mixin):\n    def handle(self):\n        return 1\n";
+    let r = extract("inherit.py", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "extends")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(extends, vec!["Base", "Mixin"]);
+}
+
+/// The `class_definition` gate: a plain function call's `argument_list` must not
+/// produce inheritance refs.
+#[test]
+fn python_call_arguments_are_not_base_classes() {
+    let code = "def go():\n    return handle(Base, Mixin)\n";
+    let r = extract("call.py", code);
+    assert!(
+        !r.unresolved.iter().any(|u| u.reference_kind == "extends"),
+        "a call's args leaked as base classes: {:?}",
+        r.unresolved
+    );
+}

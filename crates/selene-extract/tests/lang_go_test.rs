@@ -259,3 +259,41 @@ fn representative_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+/// Inheritance-gap closure — Go has no `extends` keyword; embedding IS its
+/// inheritance. Struct embedding: a field with NO `field_identifier` (the type is
+/// the name). Interface embedding: the embedded interface wrapped in a
+/// `constraint_elem`/`type_elem` (tree-sitter.ts:5343-5376). Both hang off the
+/// INNER `struct_type`/`interface_type`, not the `type_spec` (ts:2850/2894).
+#[test]
+fn extracts_go_struct_and_interface_embedding_refs() {
+    let code = "package main\n\ntype Reader interface {\n\tRead() string\n}\n\ntype Closer interface {\n\tClose()\n}\n\ntype ReadCloser interface {\n\tReader\n\tCloser\n}\n\ntype Base struct {\n\tID string\n}\n\ntype Service struct {\n\tBase\n\tName string\n}\n";
+    let r = extract("inherit.go", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "extends")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    // The two embedded interfaces, then the embedded struct. `ID string` and
+    // `Name string` are NAMED fields — they have a field_identifier and must not
+    // surface as supertypes.
+    assert_eq!(extends, vec!["Reader", "Closer", "Base"]);
+
+    // The struct-embedding ref belongs to the embedding struct.
+    let service = r
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Struct && n.name == "Service")
+        .unwrap();
+    assert!(
+        r.unresolved.iter().any(|u| {
+            u.reference_kind == "extends"
+                && u.from_node_id == service.id
+                && u.reference_name == "Base"
+        }),
+        "embedding struct must own its extends ref"
+    );
+}

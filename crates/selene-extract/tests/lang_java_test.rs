@@ -469,3 +469,29 @@ fn extracts_java_field_type_refs() {
         "field must own its type ref"
     );
 }
+
+/// Inheritance-gap closure — Java uses THREE distinct clauses:
+/// `superclass` (extends), `super_interfaces` (implements) and
+/// `extends_interfaces` (an interface extending another, emitted as `extends`).
+/// The latter two wrap their targets in a `type_list` (tree-sitter.ts:5261/5310).
+#[test]
+fn extracts_java_class_inheritance_refs() {
+    let code = "interface Strategy {\n  String run(String s);\n}\n\ninterface Retryable extends Strategy {\n}\n\nabstract class BaseIter implements java.util.Iterator<String> {\n  abstract int separatorStart(int start);\n}\n\npublic class Splitter extends BaseIter implements Strategy, Retryable {\n  public String run(String s) {\n    return s;\n  }\n}\n";
+    let r = extract("Inherit.java", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let refs = |kind: &str| -> Vec<&str> {
+        r.unresolved
+            .iter()
+            .filter(|u| u.reference_kind == kind)
+            .map(|u| u.reference_name.as_str())
+            .collect()
+    };
+    // `interface Retryable extends Strategy` → extends; `class Splitter extends BaseIter` → extends.
+    assert_eq!(refs("extends"), vec!["Strategy", "BaseIter"]);
+    // BaseIter's qualified generic interface, then BOTH of Splitter's (type_list).
+    assert_eq!(
+        refs("implements"),
+        vec!["java.util.Iterator<String>", "Strategy", "Retryable"]
+    );
+}

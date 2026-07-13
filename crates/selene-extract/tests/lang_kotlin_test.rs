@@ -362,3 +362,25 @@ fn representative_fixture_snapshot() {
         ".durationMs" => "[ms]",
     });
 }
+
+/// Inheritance-gap closure — Kotlin `class Foo : Bar(), Baz`.
+///
+/// Grammar drift (Kotlin ledger): we link `tree-sitter-kotlin-ng`, which nests the
+/// specifiers under a plural `delegation_specifiers` wrapper and names a
+/// `user_type`'s leaf `identifier` (TS's older grammar: direct children,
+/// `type_identifier`). Both shapes are handled; the refs are identical.
+#[test]
+fn extracts_kotlin_delegation_specifier_refs() {
+    let code = "interface Greeter {\n    fun greet(): String\n}\n\nopen class BaseService\n\nclass UserGreeter(private val name: String) : BaseService(), Greeter {\n    override fun greet(): String {\n        return name\n    }\n}\n";
+    let r = extract("Inherit.kt", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "extends")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    // The base whose constructor is invoked (`BaseService()`) AND the bare interface.
+    assert_eq!(extends, vec!["BaseService", "Greeter"]);
+}
