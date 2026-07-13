@@ -391,3 +391,76 @@ async fn an_empty_store_yields_an_empty_context() {
     .await
     .unwrap();
 }
+
+// =============================================================================
+// The seams that were STUBS — pinned, because a stub does not fail, it just
+// resolves nothing
+// =============================================================================
+
+/// **The regression test for the phase's worst bug.**
+///
+/// `import_mappings()` returned an empty `Vec` for a whole phase. Nothing failed:
+/// ladder step 8 (`resolve_via_import`) simply never fired — Go cross-package
+/// (#388), JVM FQNs (#314), barrel re-exports (#629) and the pre-filter's
+/// `matches_any_import` escape, path aliases, Python module members, Rust paths,
+/// C/C++ includes, all inert in production, all green in the unit tests, because
+/// `FakeContext` *injects* the mappings instead of loading them.
+///
+/// So this test asserts the thing a stub cannot do: **actually parse a real file
+/// off disk and come back with bindings.** It fails against the stub.
+#[tokio::test(flavor = "multi_thread")]
+async fn import_mappings_are_loaded_from_the_file_not_stubbed_empty() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::create_dir_all(root.join("blog")).unwrap();
+    std::fs::write(
+        root.join("blog/urls.py"),
+        "from . import views\nfrom .views import ArticleDetail\n",
+    )
+    .unwrap();
+
+    let store = SurrealStore::in_memory().await.unwrap();
+    store.apply_schema().await.unwrap();
+    store
+        .upsert_file(&file_record("blog/urls.py", Language::Python))
+        .await
+        .unwrap();
+
+    let ctx = StoreContext::new(store, root).await.unwrap();
+    let mappings = tokio::task::block_in_place(|| ctx.import_mappings("blog/urls.py"));
+
+    assert!(
+        !mappings.is_empty(),
+        "import_mappings() came back EMPTY for a file that plainly declares two \
+         imports. That is the stub — and a stub here does not fail, it silently \
+         disables the entire import half of the resolver."
+    );
+    assert!(
+        mappings.iter().any(|m| m.local_name == "views"),
+        "`from . import views` must bind `views`: {mappings:?}"
+    );
+    assert!(
+        mappings.iter().any(|m| m.local_name == "ArticleDetail"),
+        "`from .views import ArticleDetail` must bind `ArticleDetail`: {mappings:?}"
+    );
+}
+
+/// The four project singletons were `None`/empty for the same reason, with the same
+/// silence. A missing `go.mod` alone makes **every** Go cross-package call
+/// unresolvable (#388).
+#[tokio::test(flavor = "multi_thread")]
+async fn the_project_singletons_are_loaded_not_left_none() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().to_path_buf();
+    std::fs::write(root.join("go.mod"), "module example.com/blog\n\ngo 1.22\n").unwrap();
+
+    let store = SurrealStore::in_memory().await.unwrap();
+    store.apply_schema().await.unwrap();
+    let ctx = StoreContext::new(store, root).await.unwrap();
+
+    let module = ctx.go_module().expect(
+        "go.mod is right there — a `None` here silently kills every Go \
+                 cross-package resolution in the project (#388)",
+    );
+    assert_eq!(module.module_path, "example.com/blog");
+}

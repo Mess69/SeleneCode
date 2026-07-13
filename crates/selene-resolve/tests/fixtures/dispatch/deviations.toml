@@ -15,13 +15,24 @@
 #   edge    = the exact edge key, as the gate prints it
 #   reason  = why this is correct-by-design
 #
-# ⚠ WHAT IS DELIBERATELY *NOT* IN THIS FILE
+# ⚠ TWO THINGS DELIBERATELY *NOT* IN THIS FILE
 #
-# The missing `jsx-render` heuristic edge. That is not a divergence — it is an
-# unbuilt feature (the synthesizers, plan Tasks 21-26). Listing it here would turn
-# "we have not built synthesis yet" into a green gate, which is precisely the
-# false confidence Phase 2's counts-only gate manufactured. It stays RED until the
-# synthesizers exist.
+# 1. The missing `jsx-render` heuristic edge. Not a divergence — an unbuilt feature
+#    (the synthesizers, plan Tasks 21-26, in flight on `p3-synth`). Listing it here
+#    would turn "we have not built synthesis yet" into a green gate, which is exactly
+#    the false confidence Phase 2's counts-only gate manufactured. It stays RED until
+#    the synthesizers merge.
+#
+# 2. The default-import binding (`import Article from './Article'`). It was reported
+#    as "TS is internally inconsistent — it binds the identical import to the FILE in
+#    two files and to the SYMBOL in a third", and a deviation was authorized on that
+#    basis. THE REPORT WAS WRONG, and the entry is not written, because the claim is
+#    false: TS is consistent. A PascalCase reference from a `.jsx`/`.tsx` file is
+#    claimed by the REACT resolver at ladder step 7, *before* imports at step 8 — which
+#    is why `Legacy.jsx` binds to the symbol and the two `.tsx` files bind to the file.
+#    We diverged only because our own import-mapping loader was stubbed out; with it
+#    wired we reproduce TS exactly, all three files. A deviation asserting a bug in TS
+#    that is actually a bug in us is worse than no ledger at all.
 
 [[deviation]]
 project = "react"
