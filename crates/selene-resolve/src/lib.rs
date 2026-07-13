@@ -248,14 +248,8 @@
 //!   the next one. The channels are whole-graph by nature — the correlation is
 //!   cross-file — so a per-file pass cannot simply be substituted; it is a decision,
 //!   not an omission.
-//! - **A batched persist driver (`resolve_and_persist_batched`) → lands separately, on
-//!   this same phase branch.** As of *this* commit it does not exist, and that is
-//!   stated plainly rather than papered over. TS's
-//!   `resolveAndPersistBatched(onProgress, batchSize = 5000)` streams pending refs in
-//!   batches and drains each with the keyed delete; consumers today drive the seven
-//!   steps above directly (as both gates do). The pieces it composes — `resolve_one`,
-//!   the two second passes, `create_edges`, `delete_resolved`, `run_synthesis` — are
-//!   all public, so it is a convenience wrapper, not a capability gap.
+//! - **Scoped re-resolve, failed-ref retry, orphan sweep (`src/sync.rs`) → Phase 6.**
+//!   [`resolve_and_persist`] is the entry point they will call.
 //!
 //!   It is also the **fourth** candidate for the inert-seam failure above, and it is
 //!   worth naming as such *before* it lands: a batch driver that silently drains zero
@@ -328,9 +322,12 @@
 //! deferrals), and both gates — parity GREEN at tolerance 0, coverage GREEN with every
 //! framework and every channel carrying a closed end-to-end flow.
 //!
-//! **Not here yet:** the batched persist driver (`resolve_and_persist_batched`), which
-//! lands separately on this phase branch — see the deferrals. Nothing else in the
-//! ledger above is outstanding.
+//! **The driver ships here too** ([`resolve_and_persist_batched`], `src/batch.rs`) — and
+//! both gates drive *it*, not a pipeline they compose themselves. Outside tests nothing
+//! calls it yet: `selene-graph` (Phase 4) is its first consumer. That is a sequencing
+//! fact, not a dormant seam — the pass order, the offset-0 loop and the keyed delete now
+//! live in `src/`, where a consumer **inherits** them instead of re-deriving them from a
+//! test.
 //!
 //! `selene-graph` (Phase 4) consumes this crate: it drives the seven-step pipeline
 //! above and walks the edges the ladder and the synthesizers produced.
