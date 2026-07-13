@@ -16,12 +16,15 @@
 //! 0.9, because qualified names carry more information. Re-ordering these steps
 //! silently re-points references across the whole graph.
 
+pub mod method;
 pub mod names;
+pub mod receiver;
 pub mod scoring;
 
 use selene_core::UnresolvedRef;
 
 use crate::context::ResolutionContext;
+use crate::matcher::method::match_method_call;
 use crate::matcher::names::{
     match_by_exact_name, match_by_file_path, match_by_qualified_name, match_fuzzy,
 };
@@ -71,7 +74,12 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     // (swift/scala/dart/objc/pascal are wave 2).
 
     // --- (2) a method call on an inferred receiver type ----------------------
-    // TODO(Task 8): `match_method_call`.
+    // The receiver's type is inferred from its local declaration and then
+    // VALIDATED (the method must exist on it) — so a mis-inference yields no
+    // edge, never a wrong one.
+    if let Some(hit) = match_method_call(r, ctx) {
+        return Some(hit);
+    }
 
     // --- (3) an exact name ----------------------------------------------------
     if let Some(hit) = match_by_exact_name(r, ctx) {

@@ -89,8 +89,12 @@ pub use imports::{
     resolve_via_import,
 };
 pub use matcher::match_reference;
+pub use matcher::method::{match_method_call, resolve_method_on_type};
 pub use matcher::names::{
     match_by_exact_name, match_by_file_path, match_by_qualified_name, match_fuzzy,
+};
+pub use matcher::receiver::{
+    infer_cpp_receiver_type, infer_java_field_receiver_type, infer_local_receiver_type,
 };
 pub use matcher::scoring::{
     AMBIGUOUS_NAME_CEILING_ENV, DEFAULT_AMBIGUOUS_NAME_CEILING, ambiguous_name_ceiling,
