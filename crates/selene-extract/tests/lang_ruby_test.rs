@@ -239,3 +239,50 @@ fn require_still_extracts_as_an_import() {
         .collect();
     assert_eq!(imports, vec!["json", "helper"]);
 }
+
+/// Task-19 parity-gate fix (report §4, BUG 6) — `require_relative 'helper'`
+/// emitted only the bare name, which cannot be matched to a file. TS also emits
+/// the RESOLVED path (against this file's directory), and that is the ref the
+/// resolver hangs the cross-file dependency on (tree-sitter.ts:3470-3498).
+#[test]
+fn emits_resolved_path_ref_for_require_relative() {
+    let code = "\nrequire 'json'\nrequire 'yaml'\nrequire_relative 'helper'\n";
+    let r = extract("ruby/lib.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Imports.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    // Bare gem/stdlib requires stay bare (external — no file to point at); the
+    // relative require ALSO yields the resolved, `.rb`-suffixed file path.
+    assert_eq!(imports, vec!["json", "yaml", "helper", "ruby/helper.rb"]);
+}
+
+/// `..` segments resolve against the requiring file's directory, and a
+/// load-path `require` with a slash is kept as-is for suffix matching.
+#[test]
+fn resolves_require_relative_parent_segments() {
+    let code = "\nrequire 'sidekiq/fetch'\nrequire_relative '../util/text'\n";
+    let r = extract("app/models/user.rb", code);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Imports.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    assert!(
+        imports.contains(&"app/util/text.rb"),
+        "`..` must normalize against the file's dir: {imports:?}"
+    );
+    // A load-path require with a slash resolves by file-path suffix.
+    assert!(
+        imports.contains(&"sidekiq/fetch.rb"),
+        "load-path require kept for suffix match: {imports:?}"
+    );
+}

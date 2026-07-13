@@ -98,6 +98,11 @@ edges:
     target: "method:81f8ada81dc22f976c979162b5761cab"
     kind: contains
     provenance: tree-sitter
-unresolved: []
+unresolved:
+  - fromNodeId: "method:81f8ada81dc22f976c979162b5761cab"
+    referenceName: Item
+    referenceKind: references
+    line: 10
+    column: 20
 errors: []
 durationMs: 0

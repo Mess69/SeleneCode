@@ -307,8 +307,10 @@ impl<'s> Session<'s> {
         Some(self.nodes.len() - 1)
     }
 
-    /// The id of the node at `idx`.
-    fn id_of(&self, idx: usize) -> Option<String> {
+    /// The id of the node at `idx` (the index [`Session::create_node`] returns).
+    /// `pub(crate)` so a language rules hook that creates its own nodes can
+    /// attach refs to them — C# fields do (`rules/csharp.rs`).
+    pub(crate) fn id_of(&self, idx: usize) -> Option<String> {
         self.nodes.get(idx).map(|n| n.id.clone())
     }
 
@@ -1048,7 +1050,12 @@ fn extract_class(
     };
     let Some(id) = s.id_of(idx) else { return };
 
-    // INSERTION POINT (Task 7): extract_inheritance (extends/implements refs).
+    // extends/implements refs (TS core calls it here: tree-sitter.ts:1642).
+    extract_inheritance(s, node, &id);
+    // A C# primary constructor's parameter types are the type's declared
+    // dependencies — and EVERY positional record carries one
+    // (tree-sitter.ts:1645, #237).
+    s.extract_csharp_primary_ctor_param_refs(node, &id);
     extract_decorators_for(s, node, &id);
 
     s.push_scope(id);
@@ -1061,6 +1068,116 @@ fn extract_class(
     // Lombok synthesis (Task 10) runs here, class still on the stack.
     rules.synthesize_members(node, s);
     s.pop_scope();
+}
+
+/// One `extends`/`implements` ref at `target`'s position.
+fn push_inheritance_ref(s: &mut Session<'_>, class_id: &str, target: Node<'_>, kind: EdgeKind) {
+    let name = get_node_text(target, s.source()).trim().to_string();
+    if name.is_empty() {
+        return;
+    }
+    s.add_unresolved(UnresolvedReference {
+        from_node_id: class_id.to_string(),
+        reference_name: name,
+        reference_kind: kind.as_str().to_string(),
+        line: Some(u32::try_from(target.start_position().row).unwrap_or(0) + 1),
+        column: Some(u32::try_from(target.start_position().column).unwrap_or(0)),
+        file_path: None,
+        language: None,
+    });
+}
+
+/// The node carrying a C# base type's NAME.
+///
+/// A `generic_name` (`ClientBase<T>`) unwraps to its `identifier` head, so the
+/// ref matches the bare class the generic was declared as
+/// (tree-sitter.ts:5446-5448).
+///
+/// **Deliberate, count-identical divergence from TS.** A record's
+/// `primary_constructor_base_type` (`record D(int A) : Base(A)`) unwraps to its
+/// type head too. TS takes the node's RAW TEXT and emits the literal `Base(A)` —
+/// primary-constructor argument list included — a name that can never resolve to
+/// the `Base` class node. The Global Constraints' *"silent beats wrong"* rule
+/// forbids porting a malformed name, and the parity gate compares COUNTS per ref
+/// kind, so emitting the correct `Base` holds `refs.extends` at parity while
+/// producing a ref that actually resolves (task-19 report §4, BUG 4).
+fn csharp_base_type_name_node<'t>(base: Node<'t>) -> Node<'t> {
+    match base.kind() {
+        "generic_name" | "primary_constructor_base_type" => get_child_by_field(base, "type")
+            .or_else(|| {
+                let mut c = base.walk();
+                base.named_children(&mut c)
+                    .find(|n| n.kind() == "identifier")
+            })
+            .unwrap_or(base),
+        _ => base,
+    }
+}
+
+/// `extends` / `implements` refs from a type declaration's inheritance clauses —
+/// the core `extractInheritance` pass (tree-sitter.ts:5156-5549).
+///
+/// **Only the arms the shared parity corpus exercises are wired:** PHP
+/// `base_clause` (ts:5201) + `class_interface_clause` (ts:5304), and C#
+/// `base_list` (ts:5442).
+///
+/// The remaining TS arms are **deliberately deferred, not forgotten** — TS/JS
+/// `extends_clause`/`class_heritage` (ts:5199/5517), Java `superclass` /
+/// `super_interfaces` / `extends_interfaces` (ts:5200/5202/5305), Kotlin
+/// `delegation_specifier` (ts:5462), Python class `argument_list` (ts:5328), Go
+/// interface/struct embedding (ts:5345/5361), C++ `base_class_clause` (ts:5284).
+/// The corpus does not exercise inheritance for those languages (task-19 report
+/// §5 names this as the corpus's own coverage gap), so porting them here would
+/// ship behavior no gate proves correct. They land with the fixtures that pin
+/// them.
+///
+/// Two arms are excluded on purpose rather than deferred:
+/// - Rust `trait_bounds` (ts:5380) — [`crate::rules::rust_lang`] already owns
+///   supertrait refs; a second emit here would DOUBLE-COUNT them.
+/// - `enum` base lists (ts:1873) — C#'s `enum E : byte` names a *storage type*,
+///   not a supertype, and TS emits it as `extends:byte`. That is a false
+///   inheritance edge ("silent beats wrong"), so [`extract_enum`] does not call
+///   this pass.
+fn extract_inheritance(s: &mut Session<'_>, node: Node<'_>, class_id: &str) {
+    let mut cursor = node.walk();
+    let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+    for child in children {
+        match child.kind() {
+            // PHP `class C extends Base` — the base type is namedChild(0); PHP
+            // is single-inheritance, so there is exactly one
+            // (tree-sitter.ts:5261-5274).
+            "base_clause" => {
+                if let Some(target) = child.named_child(0) {
+                    push_inheritance_ref(s, class_id, target, EdgeKind::Extends);
+                }
+            }
+
+            // PHP `implements Serializable, JsonSerializable` — every named
+            // child of the clause is an interface (tree-sitter.ts:5311-5323).
+            "class_interface_clause" => {
+                let mut c2 = child.walk();
+                let ifaces: Vec<Node<'_>> = child.named_children(&mut c2).collect();
+                for iface in ifaces {
+                    push_inheritance_ref(s, class_id, iface, EdgeKind::Implements);
+                }
+            }
+
+            // C# `class Movie : BaseItem, IPlugin` — `base_list` merges the base
+            // class AND the interfaces into one colon-separated list, and the
+            // syntax does not distinguish them, so TS emits every entry as
+            // `extends` (tree-sitter.ts:5439-5458).
+            "base_list" => {
+                let mut c2 = child.walk();
+                let bases: Vec<Node<'_>> = child.named_children(&mut c2).collect();
+                for base in bases {
+                    let target = csharp_base_type_name_node(base);
+                    push_inheritance_ref(s, class_id, target, EdgeKind::Extends);
+                }
+            }
+
+            _ => {}
+        }
+    }
 }
 
 fn extract_interface(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
@@ -1076,7 +1193,8 @@ fn extract_interface(rules: &'static dyn LanguageRules, s: &mut Session<'_>, nod
     };
     let Some(id) = s.id_of(idx) else { return };
 
-    // INSERTION POINT (Task 7): interface inheritance refs.
+    // Interface inheritance refs (tree-sitter.ts:1788).
+    extract_inheritance(s, node, &id);
 
     s.push_scope(id);
     let body = resolve_body(rules, node).unwrap_or(node);
@@ -1104,6 +1222,11 @@ fn extract_struct(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
         return;
     };
     let Some(id) = s.id_of(idx) else { return };
+
+    // Struct inheritance + C# primary-ctor deps (tree-sitter.ts:1829, 1833).
+    // A `record struct` lands here via `classify_class_node`.
+    extract_inheritance(s, node, &id);
+    s.extract_csharp_primary_ctor_param_refs(node, &id);
 
     s.push_scope(id);
     let mut cursor = body.walk();
@@ -1490,6 +1613,67 @@ fn extract_field(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: N
         .named_children(&mut cursor)
         .filter(|c| c.kind() == "variable_declarator")
         .collect();
+
+    // PHP `private UserService $userService;` — the grammar wraps each property
+    // in `property_element` → `variable_name` → `name`, NEVER a
+    // `variable_declarator`, so the declarator loop below finds nothing and the
+    // field node was silently dropped (tree-sitter.ts:2015-2042).
+    if declarators.is_empty() {
+        let mut c2 = node.walk();
+        let prop_elements: Vec<Node<'_>> = node
+            .named_children(&mut c2)
+            .filter(|c| c.kind() == "property_element")
+            .collect();
+        if !prop_elements.is_empty() {
+            // The type hint, if present: the first named child that is neither a
+            // modifier nor a property_element (tree-sitter.ts:2020-2025).
+            let mut c3 = node.walk();
+            let type_text = node
+                .named_children(&mut c3)
+                .find(|c| {
+                    !matches!(
+                        c.kind(),
+                        "visibility_modifier"
+                            | "static_modifier"
+                            | "readonly_modifier"
+                            | "property_element"
+                            | "var_modifier"
+                    )
+                })
+                .map(|t| get_node_text(t, s.source()).to_string());
+
+            for elem in prop_elements {
+                let mut c4 = elem.walk();
+                let var_name = elem
+                    .named_children(&mut c4)
+                    .find(|c| c.kind() == "variable_name");
+                let name_node = var_name.and_then(|v| {
+                    let mut c5 = v.walk();
+                    v.named_children(&mut c5).find(|c| c.kind() == "name")
+                });
+                let Some(name_node) = name_node else { continue };
+                let name = get_node_text(name_node, s.source()).to_string();
+                let signature = Some(match &type_text {
+                    Some(t) => format!("{t} ${name}"),
+                    None => format!("${name}"),
+                });
+                let extra = NodeExtra {
+                    docstring: docstring.clone(),
+                    signature,
+                    visibility,
+                    is_static,
+                    ..NodeExtra::default()
+                };
+                s.create_node(NodeKind::Field, &name, elem, extra);
+            }
+            // NOTE: TS returns here WITHOUT calling extractTypeAnnotations
+            // (tree-sitter.ts:2040) — a PHP property's type hint is carried in
+            // the node's `signature`, not emitted as a `references` ref. Adding
+            // one would over-emit vs. the parity baseline.
+            return;
+        }
+    }
+
     for d in declarators {
         let Some(name_node) = get_child_by_field(d, "name").or_else(|| d.named_child(0)) else {
             continue;
@@ -1501,7 +1685,15 @@ fn extract_field(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: N
             is_static,
             ..NodeExtra::default()
         };
-        s.create_node(NodeKind::Field, &name, d, extra);
+        let Some(idx) = s.create_node(NodeKind::Field, &name, d, extra) else {
+            continue;
+        };
+        // The field's declared TYPE is a `references` dependency. The OUTER
+        // declaration is the right scope to search from — the type sits beside
+        // the declarators, not inside them (tree-sitter.ts:2077).
+        if let Some(id) = s.id_of(idx) {
+            s.extract_type_annotations(rules, node, &id);
+        }
     }
 }
 
@@ -1808,6 +2000,110 @@ fn has_function_ancestor(node: Node<'_>) -> bool {
     false
 }
 
+/// `path.posix.normalize` for the `require_relative` join — collapses `.` and
+/// resolves `..` segments, keeping the result relative (tree-sitter.ts:3485).
+fn normalize_posix(p: &str) -> String {
+    let absolute = p.starts_with('/');
+    let mut out: Vec<&str> = Vec::new();
+    for seg in p.split('/') {
+        match seg {
+            "" | "." => {}
+            ".." => {
+                // Pop a real segment; keep a leading `..` (can't escape a
+                // relative root), and drop it entirely on an absolute path.
+                if out.last().is_some_and(|l| *l != "..") {
+                    out.pop();
+                } else if !absolute {
+                    out.push("..");
+                }
+            }
+            s => out.push(s),
+        }
+    }
+    let joined = out.join("/");
+    if absolute {
+        format!("/{joined}")
+    } else {
+        joined
+    }
+}
+
+/// Ruby `require`/`require_relative` → an `imports` ref to the required FILE.
+///
+/// `require "sidekiq/fetch"` is load-path-relative (the resolver suffix-matches
+/// it against file paths); `require_relative "../foo"` resolves against THIS
+/// file's directory. Bare gem/stdlib requires (`require "json"` — no slash) are
+/// skipped: they are external, and there is no file to point at. The path form
+/// (a `/` plus `.rb`) is what makes the ref resolve to a file node, so a file
+/// pulled in ONLY by `require` — not by a resolved constant or call — still
+/// records its cross-file dependency. Port of `emitRubyRequireRefs`
+/// (tree-sitter.ts:3470-3498).
+fn emit_ruby_require_refs(s: &mut Session<'_>, node: Node<'_>, from_id: &str) {
+    let mut cursor = node.walk();
+    let method = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "identifier");
+    let mname = method.map_or("", |m| get_node_text(m, s.source()));
+    if mname != "require" && mname != "require_relative" {
+        return;
+    }
+
+    let mut c2 = node.walk();
+    let Some(arg_list) = node
+        .named_children(&mut c2)
+        .find(|c| c.kind() == "argument_list")
+    else {
+        return;
+    };
+    let mut c3 = arg_list.walk();
+    let Some(str_node) = arg_list
+        .named_children(&mut c3)
+        .find(|c| c.kind() == "string")
+    else {
+        return;
+    };
+    let mut c4 = str_node.walk();
+    let Some(content) = str_node
+        .named_children(&mut c4)
+        .find(|c| c.kind() == "string_content")
+    else {
+        return;
+    };
+    let req = get_node_text(content, s.source()).trim();
+    if req.is_empty() {
+        return;
+    }
+
+    let mut ref_path = if mname == "require_relative" {
+        let dir = s.file_path().rsplit_once('/').map_or("", |(d, _)| d);
+        if dir.is_empty() {
+            normalize_posix(req)
+        } else {
+            normalize_posix(&format!("{dir}/{req}"))
+        }
+    } else {
+        // Load-path require — suffix-matched against the file path as-is.
+        req.to_string()
+    };
+
+    if !ref_path.contains('/') {
+        return; // bare gem/stdlib require — external, nothing to point at
+    }
+    if !ref_path.ends_with(".rb") {
+        ref_path.push_str(".rb");
+    }
+
+    s.add_unresolved(UnresolvedReference {
+        from_node_id: from_id.to_string(),
+        reference_name: ref_path,
+        reference_kind: EdgeKind::Imports.as_str().to_string(),
+        line: Some(u32::try_from(node.start_position().row).unwrap_or(0) + 1),
+        column: Some(u32::try_from(node.start_position().column).unwrap_or(0)),
+        file_path: None,
+        language: None,
+    });
+}
+
 /// Imports: hook first (single-module languages); Python inline
 /// multi-import + from-import per-name refs are core machinery (map §11).
 fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
@@ -1846,6 +2142,14 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
             && let Some(parent_id) = s.scope_id().cloned()
         {
             emit_py_from_import_refs(s, node, &parent_id);
+        }
+        // Ruby `require_relative "helper"` → a SECOND `imports` ref carrying the
+        // resolved FILE path — that is the one the resolver can match to a file
+        // node (the bare name above cannot).
+        if s.language == Language::Ruby
+            && let Some(parent_id) = s.scope_id().cloned()
+        {
+            emit_ruby_require_refs(s, node, &parent_id);
         }
         // INSERTION POINT (Task 9): Rust use-binding refs.
         // INSERTION POINT (Task 14): PHP use refs, Ruby require refs.
