@@ -290,6 +290,9 @@ mod tests {
             type_parameters: vec![],
             return_type: None,
             updated_at: 0,
+            route_method: None,
+            route_path: None,
+            framework: None,
         }
     }
 
