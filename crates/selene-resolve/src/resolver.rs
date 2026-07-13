@@ -49,10 +49,11 @@ pub struct ReferenceResolver<C: ResolutionContext> {
     /// supertype pass (Task 10).
     pub(crate) deferred_this_member_refs: Vec<UnresolvedRef>,
     /// The frameworks detected in this project, in **registry order** — which is
-    /// resolve precedence (step 7). Detected **once**, at construction: `detect`
-    /// reads manifests and probes paths, so doing it per reference would be
-    /// quadratic.
-    frameworks: Vec<&'static dyn FrameworkResolver>,
+    /// resolve precedence (ladder step 7, first hit ≥ 0.9 wins outright).
+    ///
+    /// Detected **once**, at construction, never per reference: `detect` reads
+    /// manifests and probes paths, so doing it per reference would be quadratic.
+    pub(crate) frameworks: Vec<&'static dyn FrameworkResolver>,
 }
 
 impl<C: ResolutionContext> ReferenceResolver<C> {
@@ -62,7 +63,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     /// `createResolver` → `initialize()`. A resolver whose `detect` panics is
     /// caught and excluded (errors collected, never thrown).
     pub fn new(ctx: C) -> Self {
-        let frameworks = detect_frameworks(&ctx as &dyn ResolutionContext);
+        let frameworks = detect_frameworks(&ctx);
         Self {
             ctx,
             deferred_chain_refs: Vec::new(),
@@ -73,9 +74,11 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
 
     /// A resolver over `ctx` with an **explicit** framework list.
     ///
-    /// The seam a framework's own tests inject through: `detect` keys on manifests
-    /// (`pom.xml`, `requirements.txt`), and a unit test should be able to exercise
-    /// `resolve`/`extract` without staging a whole project tree.
+    /// Two callers. It is the seam a framework's own tests inject through —
+    /// `detect` keys on manifests (`pom.xml`, `requirements.txt`), and a unit test
+    /// should be able to exercise `resolve`/`extract` without staging a whole
+    /// project tree. It is also how Part C's driver hands over the frameworks it
+    /// has already detected, instead of detecting them twice.
     pub fn with_frameworks(ctx: C, frameworks: Vec<&'static dyn FrameworkResolver>) -> Self {
         Self {
             ctx,
@@ -145,11 +148,11 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // escape, every renamed re-export silently loses its edge.
         //
         // The `claims_reference` arm is the same kind of escape, for frameworks: a
-        // rails route (`articles#index`), a laravel route (`UserController@index`)
-        // and django's `_iterable_class` name NO declared symbol anywhere. Without
-        // this arm those references are dropped **before** `resolve` is ever
-        // called, and three framework bridges are silently inert — the TS build
-        // shipped that bug twice.
+        // rails route (`articles#index`), a laravel route (`UserController@index`),
+        // django's `_iterable_class` and spring's `app:prefix` name NO declared
+        // symbol anywhere. Without this arm those references are dropped HERE,
+        // before `resolve()` is ever called, and the bridge is silently inert —
+        // the TS build shipped that bug twice.
         let existence_name = r.reference_name.as_str();
         if !has_any_possible_match(existence_name, &self.ctx)
             && !matches_any_import(r, &self.ctx)
@@ -211,16 +214,21 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // Wave 2 (Phase 8): `razor` has no extractor yet.
 
         // --- step 7: the frameworks loop -------------------------------------
-        // In REGISTRY ORDER — which is resolve precedence. A hit at ≥ 0.9 returns
-        // outright; anything weaker competes with imports and name-matching below.
+        // Registry order IS precedence: the first framework to answer with
+        // confidence ≥ 0.9 wins outright (spring's `@Value` → config key at 0.9,
+        // laravel's `Controller@method` at 0.9; rails' `c#a` at 0.85 competes
+        // instead). Anything weaker becomes a candidate and competes on
+        // max-confidence with imports and the name matcher — which is why the
+        // per-framework confidence constants are load-bearing and must not be
+        // rounded.
         //
         // The gate here is deliberately weaker than `gate_language`: a framework
-        // exists to build cross-language bridges (a config key → a Java field), so
-        // only `references`/`imports` results crossing two KNOWN families are
-        // dropped. A `calls` bridge and a config↔code edge both survive.
-        for fw in &self.frameworks {
-            let result = fw.resolve(r, &self.ctx as &dyn ResolutionContext);
-            if let Some(hit) = self.gate_framework_language(result, r) {
+        // exists to build cross-language bridges (a yaml config key → a Java
+        // field), so only `references`/`imports` results crossing two KNOWN
+        // families are dropped. A `calls` bridge and a config↔code edge both
+        // survive.
+        for framework in &self.frameworks {
+            if let Some(hit) = self.gate_framework_language(framework.resolve(r, &self.ctx), r) {
                 if hit.confidence >= 0.9 {
                     return Some(hit);
                 }

@@ -19,7 +19,7 @@ mod common;
 
 use common::{FakeContext, node};
 use selene_core::{Language, Node, NodeKind, RefStatus, UnresolvedRef};
-use selene_resolve::frameworks::python::{FastApi, Flask};
+use selene_resolve::frameworks::python::{DjangoResolver, FastApi, Flask};
 use selene_resolve::frameworks::{FrameworkResolver, all_framework_resolvers};
 use selene_resolve::{ReferenceResolver, ResolvedBy};
 
@@ -389,6 +389,66 @@ fn flask_and_fastapi_are_registered_in_order() {
         "registry order IS resolve precedence, and REGISTRY_ORDER declares flask \
          before fastapi"
     );
+}
+
+/// **The three Python frameworks share `python.rs`, and none of them shadows the
+/// others.** (Asserted at the merge of Batch A and Batch B, where the collision
+/// would have been introduced.)
+///
+/// Detection is not an if/else chain — it is asked of each framework
+/// independently, so a Django project that also pulls in `Flask-Caching` detects
+/// as **both**, which is the truth about that repo. What must never happen is one
+/// framework emitting the *other's* routes: that is how a phantom route is born.
+#[test]
+fn django_and_flask_do_not_shadow_each_other() {
+    // A Django project whose requirements happen to name flask.
+    let django_project = FakeContext::new()
+        .with_file("manage.py", "import django\n")
+        .with_file("requirements.txt", "Django==5.0\nFlask-Caching==2.1\n");
+
+    assert!(
+        DjangoResolver.detect(&django_project),
+        "manage.py is decisive — a flask string in the manifest must not unseat it"
+    );
+    assert!(
+        Flask.detect(&django_project),
+        "and flask IS in this project's manifest, so it detects too — both is the \
+         honest answer, and it costs nothing because…"
+    );
+
+    // …neither framework matches the other's registration syntax.
+    let urls_py = "\
+from django.urls import path
+urlpatterns = [
+    path('articles/<slug>/', ArticleDetail.as_view()),
+]
+";
+    assert!(
+        Flask
+            .extract("blog/urls.py", urls_py, Language::Python)
+            .nodes
+            .is_empty(),
+        "flask found a route in a Django urlconf — a phantom route is a node the \
+         agent gets sent to and then has to read the file to explain"
+    );
+
+    let views_py = "\
+@app.route('/health')
+def health():
+    pass
+";
+    assert!(
+        DjangoResolver
+            .extract("app/views.py", views_py, Language::Python)
+            .nodes
+            .is_empty(),
+        "django found a route in a Flask view module"
+    );
+
+    // And a plain Flask project is not a Django project.
+    let flask_project = FakeContext::new().with_file("requirements.txt", "Flask==3.0\n");
+    assert!(!DjangoResolver.detect(&flask_project));
+    assert!(Flask.detect(&flask_project));
 }
 
 /// A commented-out route emits **nothing**.

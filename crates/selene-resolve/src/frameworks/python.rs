@@ -1,12 +1,48 @@
-//! The Python web frameworks: **Flask** and **FastAPI** (Task 15).
+//! The Python web frameworks: **Django** (Task 14), **Flask** and **FastAPI**
+//! (Task 15). The Django ORM descriptor (Task 26) appends here too.
 //!
-//! (Django appends here — `src/frameworks/python.rs` is shared by Tasks 14, 15
-//! and 26, strictly sequentially. Keep the resolvers as independent units so an
-//! append never has to reshape what is already here.)
+//! # Detection is NOT exclusive, and neither framework shadows the other
 //!
-//! # The decorator route engine
+//! A repo can hold Django *and* Flask (a Django service with a Flask sidecar
+//! script is an ordinary thing), so `detect` is asked of each independently and
+//! both may fire. Nothing here is an if/else chain, and adding Flask did not take
+//! anything away from Django:
 //!
-//! Both frameworks register routes with a decorator on the handler:
+//! - **The detection signals are disjoint.** Django keys on `manage.py` or
+//!   `django` in a manifest; Flask on `flask` in a manifest or a `Flask(` app
+//!   factory; FastAPI on `fastapi` or a `FastAPI(` entrypoint. A Django project
+//!   whose `requirements.txt` happens to name flask detects as **both** — which is
+//!   the truth about that repo, not a bug.
+//! - **The extract regexes only match their own registration syntax.** Django's
+//!   `path(...)`/`re_path(...)`/`router.register(...)` never appear in Flask code;
+//!   Flask's `@bp.route(...)` and FastAPI's `@router.get(...)` never appear in a
+//!   urlconf. So a framework that fires spuriously emits **zero** routes rather
+//!   than wrong ones.
+//! - **Precedence, when both do claim a name:** `REGISTRY_ORDER` puts django ahead
+//!   of flask/fastapi, and `resolve_one` walks it in that order. It only matters
+//!   for a sub-0.9 result (all three resolve below that), so both become
+//!   *candidates* and the highest confidence wins — first-wins only on an exact
+//!   tie. Nothing here can silently outrank the name matcher.
+//!
+//! # The flow Django must close
+//!
+//! ```text
+//! path('articles/<slug>/', ArticleDetail.as_view())
+//!     →  ArticleDetail  →  .get()  →  get_article()  →  Article.objects.filter
+//! ```
+//!
+//! Django's *other* flow — QuerySet → SQL compiler, via the `_iterable_class`
+//! descriptor — is a **separate chain** and belongs to Task 26. This one ends at
+//! the view's own calls.
+//!
+//! `include('api.urls')` names no declared symbol anywhere, so it needs
+//! `claims_reference` — without the claim the pre-filter drops the reference
+//! before `resolve()` is ever called and the include bridge is silently inert.
+//! That hook is the whole reason `claims_reference` exists on the trait.
+//!
+//! # The Flask/FastAPI decorator route engine
+//!
+//! Both register routes with a decorator on the handler:
 //!
 //! ```python
 //! @bp.route('/articles', methods=['POST'])
@@ -34,6 +70,7 @@ use crate::frameworks::{
     route_node,
 };
 use crate::strip_comments::strip_comments_for_regex;
+use crate::types::{ResolvedBy, ResolvedRef};
 
 /// `updated_at` for every node this module emits.
 ///
@@ -43,7 +80,6 @@ use crate::strip_comments::strip_comments_for_regex;
 /// `now` because its nodes are re-emitted per file on re-index; a route node is
 /// re-derived from the same bytes, so there is nothing for a timestamp to say.)
 const NO_CLOCK: i64 = 0;
-use crate::types::ResolvedRef;
 
 /// Compile a literal pattern. Every one is exercised by a test in this file, so a
 /// bad pattern fails a test rather than a run.
@@ -57,7 +93,235 @@ macro_rules! re {
 }
 
 // =============================================================================
-// The shared decorator engine
+// Django
+// =============================================================================
+
+const LANGS: &[Language] = &[Language::Python];
+
+/// `path('x/', view)` / `re_path(r'^x$', view)` / `url(...)`.
+static URLCONF: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used)] // literal; `regexes_compile` covers it
+    Regex::new(r#"\b(path|re_path|url)\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+(?:\s*\([^)]*\))?)"#)
+        .unwrap()
+});
+
+/// DRF: `router.register(r'articles', ArticleViewSet)`.
+///
+/// The **string first argument** is what separates this from
+/// `admin.register(Model, ModelAdmin)`, whose first argument is a class. Without
+/// that discriminator every registered admin model would become a route.
+static DRF_REGISTER: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used)] // literal; `regexes_compile` covers it
+    Regex::new(r#"\.register\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+)"#).unwrap()
+});
+
+/// `include('api.urls')` — the handler expression form that means "another
+/// urlconf", not a view.
+static INCLUDE: LazyLock<Regex> = LazyLock::new(|| {
+    #[allow(clippy::unwrap_used)] // literal; `regexes_compile` covers it
+    Regex::new(r#"^include\s*\(\s*['"]([^'"]+)['"]"#).unwrap()
+});
+
+const MODEL_DIRS: &[&str] = &["models", "app/models", "src/models"];
+const VIEW_DIRS: &[&str] = &["views", "app/views", "src/views"];
+
+pub struct DjangoResolver;
+
+impl FrameworkResolver for DjangoResolver {
+    fn name(&self) -> &'static str {
+        "django"
+    }
+
+    fn languages(&self) -> Option<&'static [Language]> {
+        Some(LANGS)
+    }
+
+    fn detect(&self, ctx: &dyn ResolutionContext) -> bool {
+        if ctx.file_exists("manage.py") {
+            return true;
+        }
+        ["requirements.txt", "setup.py", "pyproject.toml"]
+            .iter()
+            .any(|f| {
+                ctx.read_file(f)
+                    .is_some_and(|s| s.to_lowercase().contains("django"))
+            })
+    }
+
+    /// `include('x.y')` names no symbol — claim it past the pre-filter, or the
+    /// bridge never gets a chance to run. (Task 26 adds `_iterable_class` here.)
+    fn claims_reference(&self, name: &str) -> bool {
+        name.ends_with(".urls")
+    }
+
+    fn extract(&self, path: &str, content: &str, language: Language) -> FrameworkExtraction {
+        if !path.ends_with(".py") {
+            return FrameworkExtraction::default();
+        }
+        let src = strip_comments_for_regex(content, language);
+        let mut out = FrameworkExtraction::default();
+
+        // --- urlconf ---------------------------------------------------------
+        for caps in URLCONF.captures_iter(&src) {
+            let (Some(whole), Some(url), Some(handler)) = (caps.get(0), caps.get(2), caps.get(3))
+            else {
+                continue;
+            };
+            let line = line_of(&src, whole.start());
+            // Path-only router: no HTTP verb. The name is the RAW url string.
+            let node = route_node(
+                &RouteSpec::new(self.name(), None, url.as_str(), path, line),
+                0,
+            );
+
+            let expr = handler.as_str().trim();
+            let (ref_name, kind) = match INCLUDE.captures(expr) {
+                // `include('api.urls')` → another urlconf, not a view.
+                Some(c) => (c[1].to_string(), "imports"),
+                None => (view_name(expr), "references"),
+            };
+            if !ref_name.is_empty() {
+                out.refs
+                    .push(self.mk_ref(&node.id, &ref_name, kind, path, line));
+            }
+            out.nodes.push(node);
+        }
+
+        // --- DRF router.register --------------------------------------------
+        for caps in DRF_REGISTER.captures_iter(&src) {
+            let (Some(whole), Some(prefix), Some(cls)) = (caps.get(0), caps.get(1), caps.get(2))
+            else {
+                continue;
+            };
+            let cls = cls.as_str();
+            // ONLY a ViewSet/View class. `admin.register(Article, ArticleAdmin)`
+            // has a class first arg and never reaches here, but a `register` on
+            // some other registry with a string key might — so gate on the shape
+            // of the second argument too.
+            if !(cls.ends_with("ViewSet") || cls.ends_with("View")) {
+                continue;
+            }
+            let prefix = prefix
+                .as_str()
+                .trim_start_matches('^')
+                .trim_end_matches('$')
+                .trim_end_matches('/');
+            let route_path = format!("/{prefix}");
+            let line = line_of(&src, whole.start());
+
+            let node = route_node(
+                &RouteSpec::new(self.name(), Some("VIEWSET"), &route_path, path, line),
+                0,
+            );
+            let tail = cls.rsplit('.').next().unwrap_or(cls);
+            out.refs
+                .push(self.mk_ref(&node.id, tail, "references", path, line));
+            out.nodes.push(node);
+        }
+
+        out
+    }
+
+    fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
+        let name = r.reference_name.as_str();
+
+        // Views: `*View` / `*ViewSet` — class OR function-based.
+        if name.ends_with("View") || name.ends_with("ViewSet") {
+            return self.pick(
+                r,
+                ctx,
+                &[NodeKind::Class, NodeKind::Function],
+                VIEW_DIRS,
+                0.85,
+            );
+        }
+        // Forms.
+        if name.ends_with("Form") {
+            return self.pick(r, ctx, &[NodeKind::Class], &[], 0.8);
+        }
+        // Models: `*Model`, or a bare Capitalized word (`Article`).
+        if name.ends_with("Model") || is_simple_pascal(name) {
+            return self.pick(r, ctx, &[NodeKind::Class], MODEL_DIRS, 0.8);
+        }
+        None
+    }
+}
+
+impl DjangoResolver {
+    fn mk_ref(&self, from: &str, name: &str, kind: &str, file: &str, line: u32) -> UnresolvedRef {
+        UnresolvedRef {
+            from_node_id: from.to_string(),
+            reference_name: name.to_string(),
+            reference_kind: kind.to_string(),
+            line: Some(line),
+            column: Some(0),
+            candidates: vec![],
+            file_path: file.to_string(),
+            language: Language::Python.as_str().to_string(),
+            status: selene_core::RefStatus::Pending,
+            name_tail: name.rsplit('.').next().unwrap_or(name).to_string(),
+        }
+    }
+
+    /// Preferred-dir, then unique-only. **Ambiguous ⇒ `None`.**
+    fn pick(
+        &self,
+        r: &UnresolvedRef,
+        ctx: &dyn ResolutionContext,
+        kinds: &[NodeKind],
+        dirs: &[&str],
+        confidence: f64,
+    ) -> Option<ResolvedRef> {
+        let hits: Vec<_> = ctx
+            .nodes_by_name(&r.reference_name)
+            .into_iter()
+            .filter(|n| kinds.contains(&n.kind))
+            .collect();
+
+        let chosen = if let Some(n) = hits.iter().find(|n| {
+            dirs.iter().any(|d| {
+                n.file_path.contains(&format!("{d}/")) || n.file_path.contains(&format!("/{d}."))
+            })
+        }) {
+            n
+        } else if hits.len() == 1 {
+            &hits[0]
+        } else {
+            return None;
+        };
+
+        Some(ResolvedRef {
+            original: r.clone(),
+            target_node_id: chosen.id.clone(),
+            confidence,
+            resolved_by: ResolvedBy::Framework,
+        })
+    }
+}
+
+/// The view name out of a urlconf handler expression.
+///
+/// `ArticleDetail.as_view()` → `ArticleDetail`; `views.article_detail` →
+/// `article_detail`; `ArticleDetail.as_view(foo=1)` → `ArticleDetail`.
+fn view_name(expr: &str) -> String {
+    // Strip a trailing call — `.as_view(...)` or `(...)`.
+    let base = match expr.find('(') {
+        Some(i) => &expr[..i],
+        None => expr,
+    };
+    let base = base.strip_suffix(".as_view").unwrap_or(base);
+    base.rsplit('.').next().unwrap_or(base).trim().to_string()
+}
+
+/// `Article` — a bare Capitalized identifier, no underscores, no dots.
+fn is_simple_pascal(s: &str) -> bool {
+    !s.is_empty()
+        && s.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && s.chars().all(|c| c.is_ascii_alphanumeric())
+}
+
+// =============================================================================
+// The shared decorator engine (Flask + FastAPI)
 // =============================================================================
 
 /// `def handler(` / `async def handler(` — the handler a decorator decorates.
@@ -351,5 +615,20 @@ mod tests {
         // No `methods=` at all ⇒ GET.
         let caps = FLASK_ROUTE.captures("@app.route('/x')").unwrap();
         assert!(caps.get(3).is_none());
+    }
+
+    #[test]
+    fn regexes_compile() {
+        assert!(URLCONF.is_match("path('x/', V.as_view())"));
+        assert!(DRF_REGISTER.is_match("router.register(r'a', AViewSet)"));
+        assert!(INCLUDE.is_match("include('api.urls')"));
+    }
+
+    #[test]
+    fn view_names_are_stripped_to_the_last_segment() {
+        assert_eq!(view_name("ArticleDetail.as_view()"), "ArticleDetail");
+        assert_eq!(view_name("ArticleDetail.as_view(x=1)"), "ArticleDetail");
+        assert_eq!(view_name("views.article_detail"), "article_detail");
+        assert_eq!(view_name("article_detail"), "article_detail");
     }
 }
