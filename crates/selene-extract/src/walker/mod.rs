@@ -801,6 +801,25 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         body::scan_fn_ref_subtree(s, node, 0);
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);
+        // TS parity (`tree-sitter.ts:1173-1175`): the import branch does NOT
+        // set `skipChildren` — it extracts the import and KEEPS WALKING.
+        //
+        // This is load-bearing for Ruby, whose `import_types` is `["call"]`
+        // (require/require_relative) — the same node type as its `call_types`.
+        // Because the ladder tests imports BEFORE calls, EVERY class/file-scope
+        // Ruby `call` lands in this branch, including every DSL block
+        // (`RSpec.describe … do … end`, `namespace :x do … end`, Rails
+        // routers/callbacks). Skipping children here consumed those subtrees
+        // whole: the declarations inside a DSL block body were never extracted
+        // (an `RSpec.describe` block's methods simply did not exist as nodes,
+        // so their bodies were never walked either) and the hook-DSL fn-ref
+        // symbols (`before_action :authenticate`) were never captured.
+        //
+        // For every other v0 language an import subtree holds only module
+        // paths and binding names, which no ladder branch matches — so
+        // recursing is inert there (pinned by the per-language import tests +
+        // snapshots).
+        matched = false;
     }
     // TS/JS re-export refs: `export { A, B as C } from './y'` — barrels
     // record a dependency on their source module (Task 8).

@@ -866,6 +866,15 @@ fn normalize_special<'t>(node: Node<'t>, node_type: &str, source: &str) -> Vec<N
                 return Vec::new();
             }
             let m = get_node_text(member, source);
+            // `Foo::class` is a CLASS LITERAL, not a member reference — and
+            // kotlin-ng parses the `class` keyword as an `identifier`, so it
+            // arrives here looking EXACTLY like `Foo::method` (capitalized
+            // receiver, `::` separator). It names no method, so reject it on
+            // the member side. `class` is a hard keyword: it can never be a
+            // Kotlin method name, so this can't shadow a real target.
+            if m == "class" {
+                return Vec::new();
+            }
             if receiver.kind() == "this_expression" || receiver.kind() == "super_expression" {
                 return vec![NormalizedRef::new(format!("this.{m}"), member)];
             }

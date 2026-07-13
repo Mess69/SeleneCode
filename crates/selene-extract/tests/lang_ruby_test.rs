@@ -6,7 +6,7 @@
 //! snapshot. The `extract_bare_call` spec is unit-tested colocated in
 //! `src/rules/ruby.rs` (its consumer is the body walker).
 
-use selene_core::NodeKind;
+use selene_core::{EdgeKind, NodeKind};
 use selene_extract::{ExtractionResult, Language, extract_from_source};
 
 fn extract(path: &str, code: &str) -> ExtractionResult {
@@ -129,7 +129,7 @@ fn module_extracts_as_module_node_with_containment() {
     let contains = r
         .edges
         .iter()
-        .filter(|e| e.source == module.id && e.kind == selene_core::EdgeKind::Contains)
+        .filter(|e| e.source == module.id && e.kind == EdgeKind::Contains)
         .count();
     assert!(
         contains >= 2,
@@ -169,4 +169,73 @@ fn class_scope_constant_assignment_is_extracted() {
     assert_eq!(timeout.qualified_name, "Config::Nested::TIMEOUT");
     // Locals inside method bodies are NOT variables (top-level gate).
     assert!(find(&r, NodeKind::Variable, "local").is_none());
+}
+
+// =============================================================================
+// DSL block bodies (the import-branch regression, #15b review).
+// =============================================================================
+
+#[test]
+fn dsl_block_bodies_are_walked() {
+    // Ruby's `import_types` is `["call"]` (require/require_relative) and the
+    // dispatch ladder checks imports BEFORE calls — so EVERY class/file-scope
+    // Ruby `call` matches the import branch. That branch must NOT skip
+    // children (TS `tree-sitter.ts:1173-1175` leaves `skipChildren` false):
+    // when it did, the entire body of every Ruby DSL block — `RSpec.describe
+    // … do … end`, `namespace :x do … end`, Rails routers — was consumed
+    // without ever being walked, so the declarations inside were INVISIBLE.
+    let code = r#"
+RSpec.describe Calculator do
+  def build_subject
+    Calculator.new
+  end
+end
+"#;
+    let r = extract("spec.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    // The `def` declared inside the block body is a real node. It is a
+    // FUNCTION, not a method: a DSL block is not a class-like scope, and Ruby
+    // (like Python) only promotes a `def` to `method` inside one — so this
+    // pins the scope decision too.
+    let m = r
+        .nodes
+        .iter()
+        .find(|n| n.name == "build_subject")
+        .expect("the `def` inside the DSL block body must be extracted");
+    assert_eq!(m.kind, NodeKind::Function);
+
+    // …and its body is WALKED — attributed to that node. Before the fix the
+    // whole subtree was consumed, so this file produced ZERO refs.
+    // (`Calculator.new` yields a `calls` ref to `Calculator` rather than an
+    // `instantiates` one: Ruby's receiver/method call branch is an explicit
+    // wave-2 gap — see `walker/body.rs`. What this pins is that the body is
+    // reached at all, and that the ref hangs off the right scope.)
+    assert!(
+        r.unresolved.iter().any(|u| {
+            u.reference_kind == EdgeKind::Calls.as_str()
+                && u.reference_name == "Calculator"
+                && u.from_node_id == m.id
+        }),
+        "the block-body def's own body must be walked and attributed to it; refs: {:?}",
+        r.unresolved
+            .iter()
+            .map(|u| (&u.reference_kind, &u.reference_name))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn require_still_extracts_as_an_import() {
+    // The import branch itself must keep working — `require` is why Ruby's
+    // import_types is `["call"]` in the first place.
+    let code = "require 'json'\nrequire_relative 'helper'\n";
+    let r = extract("m.rb", code);
+    let imports: Vec<&str> = r
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Import)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert_eq!(imports, vec!["json", "helper"]);
 }
