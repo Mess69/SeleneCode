@@ -77,7 +77,8 @@ use crate::{Error, Result, SurrealStore};
 pub(crate) const NODE_FIELDS: &str = "\
 kind, name, qualifiedName, filePath, language, startLine, endLine, startColumn, endColumn, \
 docstring, signature, visibility, isExported, isAsync, isStatic, isAbstract, decorators, \
-typeParameters, returnType, updatedAt, record::id(id) AS id";
+typeParameters, returnType, routeMethod, routePath, framework, updatedAt, \
+record::id(id) AS id";
 
 /// Every *stored content* column of the `node` table (i.e. [`NODE_FIELDS`]
 /// minus the `record::id(id)` projection), in the same order. Drives the
@@ -87,7 +88,7 @@ typeParameters, returnType, updatedAt, record::id(id) AS id";
 /// content replace (an omitted optional field is `NONE` in `$input`, so the
 /// stored column is cleared). Must stay in sync with `Node`'s serde shape
 /// and the schema (`src/schema.rs`).
-const NODE_CONTENT_FIELDS: [&str; 20] = [
+const NODE_CONTENT_FIELDS: [&str; 23] = [
     "kind",
     "name",
     "qualifiedName",
@@ -107,6 +108,11 @@ const NODE_CONTENT_FIELDS: [&str; 20] = [
     "decorators",
     "typeParameters",
     "returnType",
+    // Route fields — set only on `NodeKind::Route` nodes emitted by the
+    // framework registry (`selene-resolve`); `None`/absent on every other node.
+    "routeMethod",
+    "routePath",
+    "framework",
     "updatedAt",
 ];
 
@@ -301,6 +307,109 @@ impl SurrealStore {
         Ok(rows.len() as u64)
     }
 
+    /// Route nodes matching the given semantics, via the `node_route` index.
+    ///
+    /// **This is the ONE way to look a route up.** A route's id is the ordinary
+    /// hashed node id (see `selene_core::Node`'s route-field docs) — it does NOT
+    /// encode the method or path, so downstream code must never parse or
+    /// string-build one. `framework`/`method` are optional filters; `path` is
+    /// required (it is the discriminator a caller always knows).
+    ///
+    /// Results are ordered by `(filePath, startLine, name)` so a caller that
+    /// gets several routes back gets them deterministically.
+    pub async fn find_route(
+        &self,
+        framework: Option<&str>,
+        method: Option<&str>,
+        path: &str,
+    ) -> Result<Vec<Node>> {
+        let mut sql = format!(
+            "SELECT {NODE_FIELDS} FROM node \
+             WHERE kind = $kind AND routePath = $path"
+        );
+        if framework.is_some() {
+            sql.push_str(" AND framework = $framework");
+        }
+        if method.is_some() {
+            sql.push_str(" AND routeMethod = $method");
+        }
+        sql.push_str(" ORDER BY filePath, startLine, name");
+
+        let mut query = self
+            .db()
+            .query(sql)
+            .bind(("kind", NodeKind::Route.as_str()))
+            .bind(("path", path.to_string()));
+        if let Some(f) = framework {
+            query = query.bind(("framework", f.to_string()));
+        }
+        if let Some(m) = method {
+            query = query.bind(("method", m.to_string()));
+        }
+        let mut resp = query.await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        rows.into_iter().map(row_to_node).collect()
+    }
+
+    /// Count of **nodes** named exactly `name` — the counterpart to
+    /// [`Self::count_nodes_matching_name_in_files`]'s *file* count (three
+    /// `helper`s in two files: this answers 3, that answers 2).
+    ///
+    /// `count()` + `GROUP ALL` aggregates in the database over the existing
+    /// `node_name` index, so a ubiquitous name is counted **without
+    /// materializing its rows** — which is the entire reason an ambiguity
+    /// ceiling (`#999`) uses a counter instead of `get_nodes_by_name(..).len()`.
+    /// One page of nodes of `kind`, in **id order**, after `after`.
+    ///
+    /// The comparison is on the record id, which for this table IS the node id
+    /// (`record::id(id)`), so `id > $after` pages stably: no row is dropped at a
+    /// boundary and none is returned twice. See the trait docs for why the
+    /// synthesizers must page rather than materialize (#610).
+    pub async fn nodes_by_kind_page(
+        &self,
+        kind: NodeKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        // Compare and order on `record::id(id)` — the RAW stored key, which for
+        // this table IS `Node.id`. Ordering on the RecordId itself would sort on
+        // the driver's *display* form (backtick-quoted when the key contains a
+        // `:`, which every node id does), so the paging key would not be the id
+        // the caller passes back in as `after` — the loop would never advance.
+        let sql = match after {
+            Some(_) => format!(
+                "SELECT {NODE_FIELDS} FROM node \
+                 WHERE kind = $kind AND record::id(id) > $after \
+                 ORDER BY id LIMIT $limit"
+            ),
+            None => format!(
+                "SELECT {NODE_FIELDS} FROM node WHERE kind = $kind ORDER BY id LIMIT $limit"
+            ),
+        };
+        let mut query = self
+            .db()
+            .query(sql)
+            .bind(("kind", kind.as_str()))
+            .bind(("limit", clamp_i64(limit)));
+        if let Some(a) = after {
+            query = query.bind(("after", a.to_string()));
+        }
+        let mut resp = query.await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        rows.into_iter().map(row_to_node).collect()
+    }
+
+    pub async fn count_nodes_named(&self, name: &str) -> Result<u64> {
+        let mut resp = self
+            .db()
+            .query("SELECT count() FROM node WHERE name = $name GROUP ALL")
+            .bind(("name", name.to_string()))
+            .await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        // No rows at all == no node carries that name.
+        Ok(rows.first().and_then(|r| r["count"].as_u64()).unwrap_or(0))
+    }
+
     /// Shared helper for the single-predicate `WHERE field = $v` lookups
     /// above.
     async fn select_nodes_where(
@@ -368,6 +477,12 @@ mod tests {
             decorators: vec!["#[inline]".to_string()],
             type_parameters: vec!["T".to_string()],
             return_type: Some("bool".to_string()),
+            // Route fields Some(..) so no `skip_serializing_if` fires — this
+            // test's contract is "every field of Node appears in the DB field
+            // lists", which only holds on a node where nothing is skipped.
+            route_method: Some("GET".to_string()),
+            route_path: Some("/full".to_string()),
+            framework: Some("express".to_string()),
             updated_at: 42,
         };
 

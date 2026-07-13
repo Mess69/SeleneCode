@@ -94,6 +94,6 @@ pub use schema::SCHEMA_VERSION;
 pub use selene_core::{FileRecord, RefStatus, UnresolvedRef};
 pub use store::{
     Direction, GraphStats, GraphStore, NeighborEntry, ReplaceStats, SearchCandidate, Subgraph,
-    TraversalOptions,
+    TraversalOptions, UnresolvedKey,
 };
 pub use surreal::{DATABASE_DIRNAME, SurrealStore};

@@ -1,0 +1,92 @@
+# Justified TS<->Rust RESOLUTION divergences (the Phase 3 parity gate).
+#
+# The gate's tolerance is ZERO. Every difference is either a real bug (fix it — the
+# gate has already caught one that mattered more than everything in this file) or a
+# justified deviation: an entry here, naming its cause and its evidence.
+#
+# MACHINE-CHECKED FROM BOTH SIDES. An entry that matches no observed difference FAILS
+# the gate as stale — a fixed divergence must not leave a permanent whitelist behind,
+# because a whitelist nobody prunes is how a gate quietly stops gating.
+#
+#   [[deviation]]
+#   project = <dir under tests/fixtures/dispatch/>
+#   side    = "rust"  we emit this edge and TS does not
+#           = "ts"    TS emits it and we do not
+#   edge    = the exact edge key, as the gate prints it
+#   reason  = why this is correct-by-design
+#
+# ⚠ TWO THINGS DELIBERATELY *NOT* IN THIS FILE
+#
+# 1. The `jsx-render` heuristic edge. RESOLVED — and NOT by adding an entry here.
+#    It was never a divergence. First it was an UNBUILT feature (the synthesizers,
+#    plan Tasks 21-26); then, once they merged, an UNRUN one — the pipeline stopped
+#    after persisting base edges and never called `run_synthesis`, so every heuristic
+#    edge in the TS baseline still read as "TS has it, we do not". Refusing to
+#    whitelist it was what kept that visible: the fix was to RUN the pass, not to
+#    excuse its absence. Listing it would have turned "we never call our own
+#    synthesizers" into a green gate — exactly the false confidence Phase 2's
+#    counts-only gate manufactured.
+#
+#    The baseline now carries all of TS's synthesized edges (callback, event-emitter,
+#    react-render, jsx-render) and the Rust side reproduces every one at tolerance 0.
+#    That is a real cross-check of our synthesizers against TS's, and it is worth more
+#    than any entry in this file would have been.
+#
+# 2. The default-import binding (`import Article from './Article'`). It was reported
+#    as "TS is internally inconsistent — it binds the identical import to the FILE in
+#    two files and to the SYMBOL in a third", and a deviation was authorized on that
+#    basis. THE REPORT WAS WRONG, and the entry is not written, because the claim is
+#    false: TS is consistent. A PascalCase reference from a `.jsx`/`.tsx` file is
+#    claimed by the REACT resolver at ladder step 7, *before* imports at step 8 — which
+#    is why `Legacy.jsx` binds to the symbol and the two `.tsx` files bind to the file.
+#    We diverged only because our own import-mapping loader was stubbed out; with it
+#    wired we reproduce TS exactly, all three files. A deviation asserting a bug in TS
+#    that is actually a bug in us is worse than no ledger at all.
+
+[[deviation]]
+project = "react"
+side = "rust"
+edge = "route:/articles@src/app/articles/page.tsx:1 -[references|tree-sitter]-> function:ArticlesIndex@src/app/articles/page.tsx"
+reason = """
+Next.js file-routed pages: we emit an edge from the route node to the page component; \
+TS emits the route node and NOTHING from it. By this phase's own hard invariant \
+(PRD §8.2, dispatch coverage is end-to-end or not at all) TS's route is the \
+half-bridge — it advertises an entry point that reaches nothing, so an agent that \
+follows it lands on a route node and must Read the file to find the component. Ours \
+closes the hop. We are the correct side; this is a deliberate improvement, recorded \
+rather than reverted.
+"""
+
+[[deviation]]
+project = "react"
+side = "rust"
+edge = "route:/articles/:slug@src/pages/articles/[slug].tsx:1 -[references|tree-sitter]-> function:ArticlePage@src/pages/articles/[slug].tsx"
+reason = """
+The `pages/` flavor of the same improvement — see the entry above. Both route \
+flavors (pages/ and app/) are covered so a regression in either shows up here.
+"""
+
+[[deviation]]
+project = "flask"
+side = "rust"
+edge = "file:@app.py -[imports|tree-sitter]-> file:@services.py"
+reason = """
+`from services import create_article`: both engines bind `create_article` to the \
+function (that edge matches). We ALSO resolve the module-source reference \
+(`services`) to the module's FILE, giving a file→file dependency edge; TS emits that \
+edge only when the imported NAME is itself a module (`from . import views`), not when \
+it is a symbol. Ours is a true edge — app.py genuinely depends on services.py, and \
+file→file dependency edges are what impact analysis walks — so this is a superset, \
+not a wrong answer. Recorded rather than suppressed. If parity with TS's narrower \
+model is preferred, the fix is to gate `resolve_python_absolute_module` on the ref \
+being the imported name rather than the source module; say the word.
+"""
+
+[[deviation]]
+project = "fastapi"
+side = "rust"
+edge = "file:@main.py -[imports|tree-sitter]-> file:@services.py"
+reason = """
+The same finding as the `flask` entry above, in the fastapi project — kept as its own \
+entry so that a fix in one project cannot silently mask the other.
+"""

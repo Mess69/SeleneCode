@@ -2,9 +2,12 @@
 //!
 //! Shared domain types for SeleneCode's code-intelligence graph: the node and
 //! edge kinds, provenance, the [`Node`] / [`Edge`] records that every other
-//! crate reads and writes, and the extraction row records ([`FileRecord`],
+//! crate reads and writes, the extraction row records ([`FileRecord`],
 //! [`UnresolvedRef`], [`RefStatus`]) that `selene-extract` produces and
-//! `selene-db` stores.
+//! `selene-db` stores, and the [`Language`] registry + [`LanguageFamily`] table
+//! that extraction, resolution and the framework registry all key on
+//! (decision D1, 2026-07-13 — see `src/language.rs` for why it lives here and
+//! not in `selene-extract`).
 //!
 //! Ported faithfully from the CodeGraph TypeScript implementation
 //! (`src/types.ts`). These wire strings are the contract shared by extractors,
@@ -17,6 +20,9 @@ use std::str::FromStr;
 
 mod ids;
 pub use ids::{EXTRACTION_VERSION, file_node_id, hash_content, node_id};
+
+mod language;
+pub use language::{ALL_LANGUAGES, Language, LanguageFamily};
 
 // =============================================================================
 // NodeKind (22)
@@ -291,6 +297,45 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_type: Option<String>,
 
+    // -------------------------------------------------------------------
+    // Route fields ([`NodeKind::Route`] only — `None` on every other node)
+    // -------------------------------------------------------------------
+    //
+    // A route's SEMANTICS live here, in first-class indexed fields — **not**
+    // encoded into its id. The id is the ordinary hashed [`node_id`] like every
+    // other node (the only id exception in the system remains the literal
+    // `file:<path>`), so downstream code matches a route with an indexed query
+    // (`WHERE kind = 'route' AND routeMethod = $m AND routePath = $p`, i.e.
+    // `GraphStore::find_route`) and NEVER by parsing an id string. The
+    // CodeGraph TS build did the opposite (`route:{file}:{line}:{METHOD}:{path}`
+    // as the id); this is a deliberate divergence (maintainer decision,
+    // 2026-07-13) — ids stay opaque, semantics become queryable.
+    //
+    // All three are `Option` + `skip_serializing_if`, so an ordinary node's
+    // serialized JSON is **byte-identical** to what it was before these fields
+    // existed. That is load-bearing: Phase 2's insta snapshots and its
+    // count-parity baseline compare serialized nodes, and a field that
+    // serialized as `null` everywhere would move all of them.
+    //
+    // NOTE the id-uniqueness consequence: the hash input is
+    // `(file, kind, name, start_line)` — it does NOT include these fields. Some
+    // frameworks emit several routes from ONE line (axum `.route("/x",
+    // get(h).post(h2))`, rails `resources :articles`), and those are separated
+    // ONLY by `name`. Hence the `"{METHOD} {path}"` name spelling is not
+    // cosmetic; it is what keeps route ids distinct.
+    /// The route's HTTP verb, **uppercased** (`"GET"`, `"POST"`, …), or `"ANY"`
+    /// for a verb-less registration. `None` for a path-only router (django
+    /// `path()`, React Router) and for every non-route node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_method: Option<String>,
+    /// The route's path/prefix, exactly as written in the source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<String>,
+    /// The framework resolver that emitted this node (its `name()`, e.g.
+    /// `"express"`). `None` for every node the language extractors produce.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+
     /// When the node was last updated (unix millis).
     pub updated_at: i64,
 }
@@ -388,8 +433,15 @@ impl RefStatus {
 /// A reference (call, import, type use, …) whose target symbol could not be
 /// resolved at extraction time, held for a later cross-file resolution pass.
 ///
-/// `(from_node_id, reference_name)` is the natural key the store's
-/// `delete_resolved`/`mark_failed` operations match on.
+/// `(from_node_id, reference_name, reference_kind)` is the natural key the
+/// store's `delete_resolved`/`mark_failed` operations match on. **All three
+/// parts are load-bearing:** one `(from_node_id, reference_name)` pair
+/// legitimately carries rows of more than one kind — extraction's fn-ref
+/// capture emits both a `calls` row and a `function_ref` row for
+/// `register(handler); handler();` in a single body — and keying on the pair
+/// alone made resolving either row silently delete the other.
+/// Note the key is deliberately NOT unique: the same triple repeats across
+/// call sites on different lines, and resolving the name resolves them all.
 /// `file_path`/`language` are denormalized from the source node so the
 /// resolver can batch by file without a join. `name_tail` is the last
 /// dot/`::`-separated segment of `reference_name`, used to index failed

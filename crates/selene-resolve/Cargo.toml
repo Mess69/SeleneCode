@@ -7,6 +7,44 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { workspace = true }
+# The GraphStore TRAIT only — the resolver is generic over `S: GraphStore` and
+# never names SurrealStore (Phase 3 Global Constraints). SurrealStore appears
+# in dev-dependencies, for integration tests, and nowhere else.
+selene-db = { workspace = true }
+regex = { workspace = true }
+# Pass-level panic containment (see the workspace note).
+futures = { workspace = true }
+# Lookaround only (Lua/Luau receiver pattern #1124) — see the root Cargo.toml note.
+fancy-regex = { workspace = true }
+lru = { workspace = true }
+tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# tsconfig/jsconfig JSONC tolerance: comments AND trailing commas. Picked at the
+# Task 1 spike (F7) over jsonc-parser — it is a serde Deserializer, so the alias
+# map deserializes into a typed struct with no hand-rolled AST walk. A parser
+# that chokes here makes EVERY aliased import in a repo silently unresolvable.
+json5 = { workspace = true }
+thiserror = { workspace = true }
+# The runtime HANDLE only. `ResolutionContext` is sync (see src/context.rs's
+# sync/async seam docs); `StoreContext` drives the async GraphStore through
+# `Handle::block_on`, which is legal because the resolver runs under
+# `spawn_blocking`. No executor is created here — the caller owns the runtime.
+tokio = { workspace = true }
+
+[dev-dependencies]
+# Resolution parity gate: deviations.toml.
+toml.workspace = true
+tokio = { workspace = true }
+tempfile = { workspace = true }
+# Spike (Task 1) only: the JSONC-tolerance bake-off's LOSER, kept so the
+# assertion that both parse stays executable. json5 is a real dependency now.
+jsonc-parser = { workspace = true }
+# Spike (Task 1) only: the F4 real-repo warm-cache measurement indexes this repo
+# with the real extractor. selene-resolve NEVER depends on selene-extract at
+# build time — the pipeline is extract -> resolve (decision D2).
+selene-extract = { workspace = true }
 
 [lints]
 workspace = true

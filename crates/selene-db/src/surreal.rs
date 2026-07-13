@@ -52,9 +52,15 @@ const MAX_INDEX_BUILD_WAIT: Duration = Duration::from_secs(600);
 /// The embedded-SurrealDB [`crate::GraphStore`] backend.
 ///
 /// Holds a `Surreal<Db>` client over an `engine::local` datastore (in-memory or
-/// on-disk depending on the constructor). Cheap to `clone` conceptually (the
-/// client is `Arc`-backed) but not `Clone` here yet — nothing needs it.
-#[derive(Debug)]
+/// on-disk depending on the constructor). **`Clone` is cheap**: `Surreal<Db>` is
+/// `Arc`-backed, so a clone is a refcount bump onto the SAME database — not a second
+/// connection and not a copy of anything.
+///
+/// It became `Clone` for the resolution driver (`selene-resolve::batch`), which needs
+/// one handle for `StoreContext` (which takes the store by value, so its sync strategy
+/// layer can `block_on` it) while continuing to write through its own. Both handles are
+/// the same database; there is no second view and nothing to keep in sync.
+#[derive(Debug, Clone)]
 pub struct SurrealStore {
     db: Surreal<Db>,
 }

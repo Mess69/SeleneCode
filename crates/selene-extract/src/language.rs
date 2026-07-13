@@ -9,6 +9,11 @@
 //! semantics. Detection stays total so file counts and language stats are
 //! stable across waves.
 //!
+//! **`Language` itself now lives in `selene-core`** (decision D1) and is
+//! re-exported here. What stays is extraction POLICY: the `EXTENSION_MAP`, the
+//! detection order, the `.h` sniffers, and `is_file_level_only` — which files we
+//! index and which of them yield symbol nodes.
+//!
 //! Deviation from TS (documented): `detectLanguage`/`isSourceFile` carried an
 //! `overrides` parameter for `codegraph.json` custom extension maps (#906).
 //! v0 has no project-config loader yet, so the Rust signatures omit it — the
@@ -18,103 +23,13 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-
-/// Every language the extension map can name. Wire strings are the lowercase
-/// TS `Language` union values ([`Language::as_str`]); `Unknown` is the
-/// explicit "no mapping" value, never an error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Language {
-    Typescript,
-    Tsx,
-    Javascript,
-    Jsx,
-    Arkts,
-    Python,
-    Go,
-    Rust,
-    Java,
-    Kotlin,
-    C,
-    Cpp,
-    CSharp,
-    Razor,
-    Php,
-    Ruby,
-    Swift,
-    Dart,
-    Yaml,
-    Twig,
-    Liquid,
-    Svelte,
-    Vue,
-    Astro,
-    R,
-    Pascal,
-    Scala,
-    Lua,
-    Luau,
-    Objc,
-    Solidity,
-    Cfml,
-    Cfscript,
-    Xml,
-    Cobol,
-    Vbnet,
-    Erlang,
-    Properties,
-    Terraform,
-    Nix,
-    Unknown,
-}
-
-impl Language {
-    /// The lowercase wire string (TS `Language` union value).
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            Language::Typescript => "typescript",
-            Language::Tsx => "tsx",
-            Language::Javascript => "javascript",
-            Language::Jsx => "jsx",
-            Language::Arkts => "arkts",
-            Language::Python => "python",
-            Language::Go => "go",
-            Language::Rust => "rust",
-            Language::Java => "java",
-            Language::Kotlin => "kotlin",
-            Language::C => "c",
-            Language::Cpp => "cpp",
-            Language::CSharp => "csharp",
-            Language::Razor => "razor",
-            Language::Php => "php",
-            Language::Ruby => "ruby",
-            Language::Swift => "swift",
-            Language::Dart => "dart",
-            Language::Yaml => "yaml",
-            Language::Twig => "twig",
-            Language::Liquid => "liquid",
-            Language::Svelte => "svelte",
-            Language::Vue => "vue",
-            Language::Astro => "astro",
-            Language::R => "r",
-            Language::Pascal => "pascal",
-            Language::Scala => "scala",
-            Language::Lua => "lua",
-            Language::Luau => "luau",
-            Language::Objc => "objc",
-            Language::Solidity => "solidity",
-            Language::Cfml => "cfml",
-            Language::Cfscript => "cfscript",
-            Language::Xml => "xml",
-            Language::Cobol => "cobol",
-            Language::Vbnet => "vbnet",
-            Language::Erlang => "erlang",
-            Language::Properties => "properties",
-            Language::Terraform => "terraform",
-            Language::Nix => "nix",
-            Language::Unknown => "unknown",
-        }
-    }
-}
+// The `Language` enum itself lives in `selene-core` (decision D1, 2026-07-13):
+// it is a shared WIRE type — resolution gates on it, the framework registry keys
+// on it, the store persists it — and keeping it here would force
+// `selene-resolve` to depend on `selene-extract` (backwards layering, and a
+// cycle once frameworks emit nodes). Re-exported so every `selene_extract::
+// Language` path keeps working unchanged.
+pub use selene_core::Language;
 
 /// The FULL `EXTENSION_MAP`, ported verbatim (extraction-langs.md §Wire;
 /// see the TS source's per-extension rationale comments — `.mts/.cts` #366,

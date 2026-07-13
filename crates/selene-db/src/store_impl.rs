@@ -76,6 +76,28 @@ impl GraphStore for SurrealStore {
         SurrealStore::count_nodes_matching_name_in_files(self, name).await
     }
 
+    async fn count_nodes_named(&self, name: &str) -> Result<u64> {
+        SurrealStore::count_nodes_named(self, name).await
+    }
+
+    async fn nodes_by_kind_page(
+        &self,
+        kind: NodeKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<Node>> {
+        SurrealStore::nodes_by_kind_page(self, kind, after, limit).await
+    }
+
+    async fn find_route(
+        &self,
+        framework: Option<&str>,
+        method: Option<&str>,
+        path: &str,
+    ) -> Result<Vec<Node>> {
+        SurrealStore::find_route(self, framework, method, path).await
+    }
+
     // -------------------------------------------------------------------
     // Edges (src/edges.rs)
     // -------------------------------------------------------------------
@@ -196,11 +218,11 @@ impl GraphStore for SurrealStore {
         SurrealStore::unresolved_by_files(self, paths).await
     }
 
-    async fn delete_resolved(&self, keys: &[(String, String)]) -> Result<()> {
+    async fn delete_resolved(&self, keys: &[crate::UnresolvedKey]) -> Result<()> {
         SurrealStore::delete_resolved(self, keys).await
     }
 
-    async fn mark_failed(&self, keys: &[(String, String)]) -> Result<()> {
+    async fn mark_failed(&self, keys: &[crate::UnresolvedKey]) -> Result<()> {
         SurrealStore::mark_failed(self, keys).await
     }
 

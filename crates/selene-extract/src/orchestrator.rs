@@ -294,6 +294,17 @@ impl<S: GraphStore> Indexer<S> {
         &self.store
     }
 
+    /// Take the store back once indexing is done.
+    ///
+    /// The pipeline is extract → resolve, and the resolve stage needs to **own**
+    /// the store (`StoreContext::new` consumes it). Without this the store would
+    /// be stranded inside the `Indexer` and the two stages could not be chained
+    /// at all — which is exactly what the framework end-to-end tests, and Part
+    /// C's driver, have to do.
+    pub fn into_store(self) -> S {
+        self.store
+    }
+
     /// Full-project index (map §2 minus the WASM machinery — module docs):
     /// scan → batched read+parse on the rayon pool → ordered sequential
     /// commit, all inside deferred-FTS bulk mode. Never returns `Err`:

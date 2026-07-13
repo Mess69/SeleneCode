@@ -45,6 +45,9 @@ fn node_full(
         decorators: vec![],
         type_parameters: vec![],
         return_type: None,
+        route_method: None,
+        route_path: None,
+        framework: None,
         updated_at: 0,
     }
 }

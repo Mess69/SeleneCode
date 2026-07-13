@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SeleneCode is **local-first code intelligence, in Rust** — the Rust port of [CodeGraph](../codegraph). It parses any supported codebase with tree-sitter, stores symbols/edges/files in an **embedded graph database**, and exposes a knowledge graph to AI agents over **MCP**. Per-project data lives in `.selene/`. Extraction is **deterministic** (AST-derived, never LLM-summarized). The goal is a **single static binary** that serves as installer, indexer, and MCP server.
 
-**Status: extraction complete (Phase 2).** `selene-core` (the data model), `selene-db` (Phase 1 — `GraphStore` + SurrealDB embedded), and `selene-extract` (Phase 2 — tree-sitter extraction over the 12 v0 languages, scan pipeline, orchestrator) are implemented and tested; the remaining layer crates are stubs. The full target architecture is the PRD: `docs/specs/2026-07-11-rust-graph-db-migration-design.md`. Read it before designing anything — it is the source of truth for the crate boundaries, the DB decision, and the invariants below.
+**Status: resolution complete (Phase 3).** `selene-core` (the data model), `selene-db` (Phase 1 — `GraphStore` + SurrealDB embedded), `selene-extract` (Phase 2 — tree-sitter extraction over the 12 v0 languages, scan pipeline, orchestrator) and `selene-resolve` (Phase 3 — the `resolve_one` ladder, imports, the name matcher, 11 framework resolvers, 4 dynamic-dispatch synthesizer channels + the Django ORM descriptor) are implemented and tested; the remaining layer crates are stubs. Phase 3 is held by **two gates**: a TS↔Rust resolution-parity gate on edge *identity* (tolerance 0) and a dispatch-coverage gate asserting whole *flows* — see `crates/selene-resolve/src/lib.rs`. The full target architecture is the PRD: `docs/specs/2026-07-11-rust-graph-db-migration-design.md`. Read it before designing anything — it is the source of truth for the crate boundaries, the DB decision, and the invariants below.
 
 ## Build, Test, Run
 
@@ -42,7 +42,15 @@ files → selene-extract (tree-sitter) → selene-db (nodes/edges/files)
 - `selene-core` — shared types. `NodeKind` (22) / `EdgeKind` (12) are exhaustive enums; their `as_str()` and serde output are the wire contract and must not drift. Also `Provenance`, `Visibility`, `Node`, `Edge`, `Error`.
 - `selene-db` — everything DB is behind a **`GraphStore` trait** (a seam for tests/mocking, not a portability layer). Sole backend: **SurrealDB embedded**. **Decision (2026-07-12):** SurrealQL-max — traversal logic is pushed into SurrealQL (recursive `.{1..n}(->calls->fn)`, shortest-path); the permissive fallback (IndraDB/redb + Tantivy) from PRD §5.2 is **dropped**, and the PRD §5.4 spike is resolved accordingly.
 - `selene-extract` — tree-sitter extraction over **natively-linked** grammars (the WASM layer — worker pool, parser resets, OOM retries — is deleted, not ported), rayon fan-out with an **ordered** DB commit, the scan pipeline (git fast path + FS fallback), and incremental re-index. Emits **zero cross-file edges**: anything beyond the file leaves as an `UnresolvedReference` for Phase 3. Its `lib.rs` carries the public-interface ledger, the deferrals, and the known parity deviations.
-- `selene-resolve`, `selene-graph`, `selene-context`, `selene-mcp`, `selene-sync`, `selene-installer`, `selene-cli` — stubs; each crate's `lib.rs` names its role + PRD section.
+- `selene-resolve` — Phase 3, **implemented**. Binds every cross-file reference: the
+  `resolve_one` ladder (order *is* behavior), import + name matching, the framework
+  registry (11 v0 frameworks, data-driven — adding one is a file plus a registry row),
+  and the dynamic-dispatch synthesizers. Route nodes keep **hashed** ids like every
+  other node; their semantics live in indexed fields (`route_method`/`route_path`/
+  `framework`) and are queried, never parsed out of an id. Its `lib.rs` carries the
+  public-interface ledger, the deferrals, the two gates, and the deviation-ledger
+  pointer (`tests/fixtures/dispatch/deviations.toml` is the single authority).
+- `selene-graph`, `selene-context`, `selene-mcp`, `selene-sync`, `selene-installer`, `selene-cli` — stubs; each crate's `lib.rs` names its role + PRD section.
 
 Shared third-party deps and their versions are declared once in the root `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 

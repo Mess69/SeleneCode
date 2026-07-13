@@ -286,6 +286,11 @@ impl<'s> Session<'s> {
             decorators,
             type_parameters: Vec::new(),
             return_type: extra.return_type,
+            // Route fields are never set by a language extractor: only the
+            // framework registry (`selene-resolve`) emits `NodeKind::Route`.
+            route_method: None,
+            route_path: None,
+            framework: None,
             updated_at: self.updated_at,
         };
 
@@ -529,6 +534,9 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
         decorators: Vec::new(),
         type_parameters: Vec::new(),
         return_type: None,
+        route_method: None,
+        route_path: None,
+        framework: None,
         updated_at: s.updated_at,
     };
     s.id_index

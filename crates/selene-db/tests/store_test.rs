@@ -168,6 +168,9 @@ fn node(name: &str, file_path: &str) -> Node {
         decorators: vec![],
         type_parameters: vec![],
         return_type: None,
+        route_method: None,
+        route_path: None,
+        framework: None,
         updated_at: 0,
     }
 }
@@ -197,6 +200,9 @@ fn maximal_node(name: &str, file_path: &str) -> Node {
         decorators: vec!["#[inline]".to_string()],
         type_parameters: vec!["T".to_string()],
         return_type: Some("bool".to_string()),
+        route_method: None,
+        route_path: None,
+        framework: None,
         updated_at: 42,
     }
 }
@@ -1531,7 +1537,11 @@ async fn unresolved_pending_count_excludes_failed() {
     assert_eq!(store.unresolved_pending_count().await.unwrap(), 3);
 
     store
-        .mark_failed(&[(b.from_node_id.clone(), b.reference_name.clone())])
+        .mark_failed(&[(
+            b.from_node_id.clone(),
+            b.reference_name.clone(),
+            b.reference_kind.clone(),
+        )])
         .await
         .unwrap();
     assert_eq!(
@@ -1599,6 +1609,7 @@ async fn unresolved_by_files_filters_pending_and_requested_paths() {
         .mark_failed(&[(
             b_failed.from_node_id.clone(),
             b_failed.reference_name.clone(),
+            b_failed.reference_kind.clone(),
         )])
         .await
         .unwrap();
@@ -1636,7 +1647,11 @@ async fn delete_resolved_removes_exact_pairs_only() {
         .unwrap();
 
     store
-        .delete_resolved(&[(a.from_node_id.clone(), a.reference_name.clone())])
+        .delete_resolved(&[(
+            a.from_node_id.clone(),
+            a.reference_name.clone(),
+            a.reference_kind.clone(),
+        )])
         .await
         .unwrap();
 
@@ -1664,7 +1679,11 @@ async fn mark_failed_flips_status_and_pending_batch_stops_returning_it() {
         .unwrap();
 
     store
-        .mark_failed(&[(a.from_node_id.clone(), a.reference_name.clone())])
+        .mark_failed(&[(
+            a.from_node_id.clone(),
+            a.reference_name.clone(),
+            a.reference_kind.clone(),
+        )])
         .await
         .unwrap();
 
@@ -2069,5 +2088,227 @@ async fn unresolved_pending_batch_pages_stably_across_order_key_ties() {
         vec![all[0].line, all[1].line],
         vec![p0[0].line, p1[0].line],
         "single-row pages replay the two-row page's order"
+    );
+}
+
+// =============================================================================
+// F1 regression — the unresolved-row key must carry `reference_kind`
+// =============================================================================
+
+/// One `(from_node_id, reference_name)` pair legitimately carries TWO rows of
+/// DIFFERENT kinds: Phase 2's fn-ref capture emits both a `calls` row and a
+/// `function_ref` row for `register(handler); handler();` in one body
+/// (`selene-extract/src/fnref.rs`).
+///
+/// Keyed by the 2-tuple, resolving the `calls` row **deleted the
+/// `function_ref` row too** — silent data loss that nothing detects (the
+/// pending count still reaches 0, so the orphan sweep is satisfied). The key
+/// is `(from_node_id, reference_name, reference_kind)`; this test pins that.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn delete_resolved_keys_by_kind_and_spares_the_function_ref_twin() {
+    let store = fresh_store().await;
+
+    let mut calls = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    calls.reference_kind = "calls".to_string();
+    let mut fnref = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    fnref.reference_kind = "function_ref".to_string();
+
+    store
+        .insert_unresolved(&[calls.clone(), fnref.clone()])
+        .await
+        .unwrap();
+    assert_eq!(store.unresolved_pending_count().await.unwrap(), 2);
+
+    // The resolver resolved the `calls` ref into a real edge and drains ONLY it.
+    store
+        .delete_resolved(&[(
+            calls.from_node_id.clone(),
+            calls.reference_name.clone(),
+            calls.reference_kind.clone(),
+        )])
+        .await
+        .unwrap();
+
+    let remaining = store.unresolved_pending_batch(0, 10).await.unwrap();
+    assert_eq!(
+        remaining.len(),
+        1,
+        "the `function_ref` twin MUST survive its `calls` sibling's resolution — \
+         keyed by the 2-tuple this was 0 (silent data loss, undetectable because \
+         the pending count still reached 0)"
+    );
+    assert_eq!(
+        remaining[0].reference_kind, "function_ref",
+        "and the survivor is the OTHER kind, not a coin flip"
+    );
+}
+
+/// `mark_failed` had the same 2-tuple shape (it flipped both kinds), and
+/// `retryable_failed` deduped by the same 2-tuple — so the second kind was
+/// unreachable through **every** door: 2 rows in, 1 row out. Both must now key
+/// and dedup by the 3-tuple.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn mark_failed_and_retryable_failed_key_by_kind_so_both_twins_are_reachable() {
+    let store = fresh_store().await;
+
+    let mut calls = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    calls.reference_kind = "calls".to_string();
+    let mut fnref = unresolved_ref("function:caller", "handler", "src/a.rs", RefStatus::Pending);
+    fnref.reference_kind = "function_ref".to_string();
+    store
+        .insert_unresolved(&[calls.clone(), fnref.clone()])
+        .await
+        .unwrap();
+
+    // Fail ONLY the `calls` row.
+    store
+        .mark_failed(&[(
+            calls.from_node_id.clone(),
+            calls.reference_name.clone(),
+            calls.reference_kind.clone(),
+        )])
+        .await
+        .unwrap();
+    assert_eq!(
+        store.unresolved_pending_count().await.unwrap(),
+        1,
+        "only the `calls` row flipped to failed — the `function_ref` twin stays pending"
+    );
+
+    // Now fail the twin too, and assert BOTH are reachable by the retry pipeline.
+    store
+        .mark_failed(&[(
+            fnref.from_node_id.clone(),
+            fnref.reference_name.clone(),
+            fnref.reference_kind.clone(),
+        )])
+        .await
+        .unwrap();
+    let failed = store
+        .retryable_failed(&["handler".to_string()], 10)
+        .await
+        .unwrap();
+    assert_eq!(
+        failed.len(),
+        2,
+        "TWO failed rows went in, TWO must come out — retryable_failed's dedup key \
+         carries `reference_kind`, so the second kind is no longer unreachable"
+    );
+    let mut kinds: Vec<&str> = failed.iter().map(|r| r.reference_kind.as_str()).collect();
+    kinds.sort_unstable();
+    assert_eq!(kinds, vec!["calls", "function_ref"]);
+}
+// =============================================================================
+// F2 regression — a real NODE count for the ambiguity ceiling
+// =============================================================================
+
+/// `count_nodes_matching_name_in_files` counts distinct FILES (honest name,
+/// pinned by its own test above). The `AMBIGUOUS_NAME_CEILING` (#999) guard
+/// compares against a **candidate-node** count, so it needs a different
+/// primitive — wired to the file count, the guard could never fire (the spike
+/// measured 2 001 nodes named `get` over 201 files answering 201, i.e. below
+/// the 500 ceiling).
+///
+/// The two primitives answer **different questions**; this pins both, on a
+/// fixture where they differ.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn count_nodes_named_counts_nodes_while_the_file_primitive_counts_files() {
+    let store = fresh_store().await;
+
+    // 3 nodes named `helper`, spread over only 2 files.
+    let a1 = node("helper", "src/a.rs");
+    let mut a2 = node("helper", "src/a.rs");
+    a2.id = "function:helper2".to_string();
+    let mut b1 = node("helper", "src/b.rs");
+    b1.id = "function:helper3".to_string();
+    store.insert_nodes(&[a1, a2, b1]).await.unwrap();
+
+    assert_eq!(
+        store.count_nodes_named("helper").await.unwrap(),
+        3,
+        "count_nodes_named answers the NODE count — the population the #999 \
+         ambiguity ceiling is defined against"
+    );
+    assert_eq!(
+        store
+            .count_nodes_matching_name_in_files("helper")
+            .await
+            .unwrap(),
+        2,
+        "the file-count primitive keeps its own honest semantics (2 files) — the \
+         two questions are different and both have callers"
+    );
+    assert_eq!(
+        store.count_nodes_named("nonexistent").await.unwrap(),
+        0,
+        "an absent name counts 0, it does not error"
+    );
+}
+
+// =============================================================================
+// nodes_by_kind_page — the streaming primitive the synthesizers page through
+// =============================================================================
+
+/// Paging over 250 nodes with limit 100 yields 3 pages, no duplicates, no gaps,
+/// and a stable order.
+///
+/// `get_nodes_by_kind` materializes every node of a kind, which is how the TS
+/// build OOM'd on large repos (#610) — the whole-graph synthesizer passes scan
+/// every method/function/class in the project, so they page instead.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn nodes_by_kind_page_pages_stably_with_no_gaps_or_duplicates() {
+    let store = fresh_store().await;
+
+    let mut nodes = Vec::new();
+    for i in 0..250 {
+        let mut n = node(&format!("f{i:03}"), "src/a.rs");
+        n.id = format!("function:f{i:03}");
+        nodes.push(n);
+    }
+    store.insert_nodes(&nodes).await.unwrap();
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = store
+            .nodes_by_kind_page(NodeKind::Function, after.as_deref(), 100)
+            .await
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        pages += 1;
+        after = page.last().map(|n| n.id.clone());
+        seen.extend(page.into_iter().map(|n| n.id));
+    }
+
+    assert_eq!(pages, 3, "250 nodes at limit 100 = 3 pages");
+    assert_eq!(seen.len(), 250, "no row dropped at a page boundary");
+
+    let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
+    assert_eq!(unique.len(), 250, "no row returned twice");
+
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(seen, sorted, "pages come back in id order — the paging key");
+}
+
+/// An empty store pages to nothing, and a kind with no rows is an empty page,
+/// not an error.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn nodes_by_kind_page_on_an_absent_kind_is_empty() {
+    let store = fresh_store().await;
+    assert!(
+        store
+            .nodes_by_kind_page(NodeKind::Route, None, 10)
+            .await
+            .unwrap()
+            .is_empty()
     );
 }
