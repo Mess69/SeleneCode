@@ -31,7 +31,7 @@ use selene_core::UnresolvedRef;
 /// a pipeline-order regression that is invisible today and mis-binds tomorrow.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ResolvedBy {
-    /// `exact-match` — [`crate::matcher`]'s name match (Task 7).
+    /// `exact-match` — the name matcher's name match (Task 7).
     ExactMatch,
     /// `import` — bound through an import mapping (Tasks 5/6).
     Import,

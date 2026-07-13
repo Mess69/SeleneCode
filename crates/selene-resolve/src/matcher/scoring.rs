@@ -85,7 +85,7 @@ pub fn path_proximity_from_dirs(ref_dirs: &[&str], other: &str) -> i32 {
     ((shared as i32) * 15).min(80)
 }
 
-/// [`path_proximity_from_dirs`] for a single pair of paths.
+/// `path_proximity_from_dirs` for a single pair of paths.
 pub fn path_proximity(from: &str, to: &str) -> i32 {
     let parts: Vec<&str> = from.split('/').collect();
     let dirs = &parts[..parts.len().saturating_sub(1)];

@@ -220,7 +220,7 @@ pub trait FrameworkResolver: Send + Sync {
 /// alphabetical and must not be "tidied" into alphabetical: it is
 /// first-match-wins order.
 ///
-/// Tasks 12–20 each add their resolver to [`builtin_resolvers`]; this list is
+/// Tasks 12–20 each add their resolver to `builtin_resolvers`; this list is
 /// the contract they must match, and `registry_order_matches_the_contract`
 /// (tests/fw_registry_test.rs) fails if a resolver is registered out of order
 /// or under a name not listed here.

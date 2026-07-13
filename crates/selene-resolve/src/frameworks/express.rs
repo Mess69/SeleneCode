@@ -20,7 +20,7 @@
 //! the call with a regex `\(([^)]+)\)`, which stops at the arrow's *own* closing
 //! paren. Every inline-handler route therefore captured a truncated argument list
 //! and bound to nothing. The fix is a **balanced, string-aware paren scan**
-//! ([`super::match_delim`]) — not a cleverer regex.
+//! (`match_delim`) — not a cleverer regex.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
