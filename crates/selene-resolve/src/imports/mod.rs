@@ -19,11 +19,12 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-use selene_core::Language;
+use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
 use crate::imports::aliases::apply_aliases;
 use crate::imports::workspace::resolve_workspace_import;
+use crate::types::{ImportMapping, ReExport, ResolvedBy, ResolvedRef};
 
 // =============================================================================
 // EXTENSION_RESOLUTION
@@ -626,4 +627,880 @@ mod tests {
              branch (Task 6), not through extension probing. See the doc comment."
         );
     }
+}
+
+// =============================================================================
+// resolve_via_import (Task 6)
+// =============================================================================
+
+/// How deep a re-export chase may go before it gives up. A barrel-of-barrels is
+/// real; an infinite one is a cycle, and the `visited` set catches that — this
+/// cap catches the pathological-but-acyclic case.
+pub const REEXPORT_MAX_DEPTH: usize = 8;
+
+/// Node kinds that own static members reachable as `Container.member` (#825).
+const STATIC_MEMBER_CONTAINERS: [NodeKind; 6] = [
+    NodeKind::Class,
+    NodeKind::Struct,
+    NodeKind::Interface,
+    NodeKind::Enum,
+    NodeKind::Trait,
+    NodeKind::Protocol,
+];
+
+/// What `find_exported_symbol` is looking for in a module.
+#[derive(Debug, Clone)]
+struct Want {
+    is_default: bool,
+    is_namespace: bool,
+    exported_name: String,
+    member_name: Option<String>,
+}
+
+fn imported(r: &UnresolvedRef, target: &str, confidence: f64) -> ResolvedRef {
+    ResolvedRef {
+        // ⚠ The STORED ROW, unmutated — the keyed delete matches on it (#760).
+        original: r.clone(),
+        target_node_id: target.to_string(),
+        confidence,
+        resolved_by: ResolvedBy::Import,
+    }
+}
+
+/// A Java/Kotlin `import com.example.Bar` → the `Bar` declared in package
+/// `com.example`, through the **qualified-name index** — confidence **0.95**.
+///
+/// Ladder step 5, ahead of the frameworks and the name matcher: a JVM FQN is
+/// unambiguous even when several `Bar` classes exist in different packages,
+/// which is exactly the collision the path-proximity matcher cannot resolve
+/// (#314). JVM imports are decoupled from filenames (a Kotlin `Utils.kt` can
+/// export `Bar`), so the JS-style filesystem walk misses them entirely.
+pub fn resolve_jvm_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
+    if r.reference_kind != "imports" {
+        return None;
+    }
+    let lang = Language::from_wire(&r.language)?;
+    if !matches!(lang, Language::Java | Language::Kotlin) {
+        return None;
+    }
+
+    let fqn = r.reference_name.as_str();
+    let last_dot = fqn.rfind('.')?;
+    if last_dot == 0 {
+        return None;
+    }
+    let (pkg, sym) = (&fqn[..last_dot], &fqn[last_dot + 1..]);
+    // A wildcard import names no single symbol — it punts to name-matching.
+    if sym == "*" {
+        return None;
+    }
+
+    let candidates = ctx.nodes_by_qualified_name(&format!("{pkg}::{sym}"));
+    let best = match candidates.len() {
+        0 => return None,
+        1 => candidates.into_iter().next()?,
+        _ => pick_closest_jvm_candidate(candidates, &r.file_path)?,
+    };
+    Some(imported(r, &best.id, 0.95))
+}
+
+/// Among same-FQN candidates, the one **closest to the importing file** by
+/// shared directory prefix, preferring an `expect` declaration on a tie.
+///
+/// Kotlin Multiplatform: an `expect` declaration and its `actual`s share one FQN
+/// across source sets (commonMain / androidMain / appleMain). Taking the first
+/// candidate let a single platform `actual` absorb every common-side import, so
+/// the `expect` — the canonical API a commonMain file imports — looked unused.
+fn pick_closest_jvm_candidate(candidates: Vec<Node>, from_path: &str) -> Option<Node> {
+    let from_dirs: Vec<&str> = from_path.split('/').collect();
+    let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
+
+    let shared_prefix = |p: &str| -> usize {
+        let parts: Vec<&str> = p.split('/').collect();
+        let dirs = &parts[..parts.len().saturating_sub(1)];
+        from_dirs
+            .iter()
+            .zip(dirs.iter())
+            .take_while(|(a, b)| a == b)
+            .count()
+    };
+    let is_expect = |n: &Node| n.decorators.iter().any(|d| d == "expect");
+
+    let mut best: Option<Node> = None;
+    let mut best_prox = 0usize;
+    for c in candidates {
+        let prox = shared_prefix(&c.file_path);
+        let take = match &best {
+            None => true,
+            Some(b) => prox > best_prox || (prox == best_prox && is_expect(&c) && !is_expect(b)),
+        };
+        if take {
+            best_prox = prox;
+            best = Some(c);
+        }
+    }
+    best
+}
+
+/// Bind a reference through the imports its file declares.
+///
+/// Ladder step 8. The branch order below **is the contract** — the ecosystem
+/// branches each own their reference shapes completely, and several of them
+/// deliberately **do not fall through** on a miss (a path-shaped reference that
+/// finds no file must not then go name-matching: a wrong edge is worse than
+/// none, #660).
+pub fn resolve_via_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
+    let lang = Language::from_wire(&r.language)?;
+
+    // --- C/C++ `#include` → a file→file edge -------------------------------
+    if matches!(lang, Language::C | Language::Cpp) && r.reference_kind == "imports" {
+        return resolve_c_include(r, lang, ctx);
+    }
+
+    // Wave 2 (Phase 8), each a NO-FALLTHROUGH branch of its own: COBOL
+    // copybooks, Nix path imports (`import ./x.nix`).
+
+    // --- PHP include/require → a file→file edge ----------------------------
+    if crate::resolver::is_php_include_path_ref(r) {
+        // NO FALLTHROUGH on a miss (#660): falling back to the symbol matcher
+        // would mis-connect `inc/db.php` to an unrelated `db.php` elsewhere.
+        return resolve_php_include(r, ctx);
+    }
+
+    let imports = ctx.import_mappings(&r.file_path);
+
+    // --- Go cross-package (`pkga.FuncX`) ------------------------------------
+    if lang == Language::Go
+        && let Some(hit) = resolve_go_cross_package(r, &imports, ctx)
+    {
+        return Some(hit);
+    }
+
+    // --- Java/Kotlin (`Foo.bar()` / bare `Foo`, through an imported FQN) -----
+    if matches!(lang, Language::Java | Language::Kotlin)
+        && let Some(hit) = resolve_jvm_imported_reference(r, lang, &imports, ctx)
+    {
+        return Some(hit);
+    }
+
+    // --- Python module members + absolute dotted modules ---------------------
+    if lang == Language::Python {
+        if let Some(hit) = resolve_python_module_member(r, &imports, ctx) {
+            return Some(hit);
+        }
+        if let Some(hit) = resolve_python_absolute_module(r, ctx) {
+            return Some(hit);
+        }
+    }
+
+    // --- Rust `crate::a::b::Item` / `self::` / `super::` ---------------------
+    if lang == Language::Rust
+        && r.reference_name.contains("::")
+        && let Some(hit) = resolve_rust_path_reference(r, ctx)
+    {
+        return Some(hit);
+    }
+
+    // Wave 2: Lua/Luau `require(...)`.
+
+    // --- whole-module / namespace imports → the module FILE ------------------
+    if matches!(
+        lang,
+        Language::Python
+            | Language::Typescript
+            | Language::Tsx
+            | Language::Javascript
+            | Language::Jsx
+            | Language::Arkts
+    ) && let Some(hit) = resolve_module_import_to_file(r, lang, &imports, ctx)
+    {
+        return Some(hit);
+    }
+
+    // --- the generic loop: a name bound by an import --------------------------
+    for imp in imports.iter() {
+        let matches_bare = r.reference_name == imp.local_name;
+        let matches_member = r
+            .reference_name
+            .starts_with(&format!("{}.", imp.local_name));
+        if !matches_bare && !matches_member {
+            continue;
+        }
+
+        let Some(resolved_path) = resolve_import_path(&imp.source, &r.file_path, lang, ctx) else {
+            continue;
+        };
+
+        let want = Want {
+            is_default: imp.is_default,
+            is_namespace: imp.is_namespace,
+            exported_name: if imp.is_default {
+                "default".to_string()
+            } else {
+                imp.exported_name.clone()
+            },
+            member_name: if imp.is_namespace {
+                Some(
+                    r.reference_name
+                        .replacen(&format!("{}.", imp.local_name), "", 1),
+                )
+            } else {
+                None
+            },
+        };
+
+        let Some(target) =
+            find_exported_symbol(&resolved_path, &want, lang, ctx, &mut HashSet::new(), 0)
+        else {
+            continue;
+        };
+
+        // #825 — `Foo.bar()` on a NAMED class import: `find_exported_symbol`
+        // resolved `Foo` to the class, so descend into it and bind the MEMBER.
+        // Without this the edge points at the class, `create_edges` then promotes
+        // the call to `instantiates`, and the static method shows zero callers
+        // and a hollow impact radius.
+        if !imp.is_namespace
+            && matches_member
+            && let Some(member) = resolve_static_member(&target, r, &imp.local_name, ctx)
+        {
+            return Some(imported(r, &member.id, 0.9));
+        }
+
+        return Some(imported(r, &target.id, 0.9));
+    }
+
+    None
+}
+
+/// C/C++: the same-dir sibling first (**0.92**), then the `-I`-resolved path
+/// (**0.9**).
+///
+/// A quoted `#include "X.h"` searches the INCLUDING file's own directory first
+/// (the C standard's quoted-include order). Without that preference the include-dir
+/// heuristic picks an arbitrary same-named header — a `windows/.../RNCAsyncStorage.h`
+/// absorbing the include meant for the `apple/.../RNCAsyncStorage.h` next door —
+/// and the real local header ends up with no dependents at all.
+fn resolve_c_include<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    lang: Language,
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    let from_dir = parent_dir(&r.file_path);
+    let sibling_path = join_rel(&from_dir, &r.reference_name);
+    if let Some(node) = file_node_at(&sibling_path, ctx) {
+        return Some(imported(r, &node.id, 0.92));
+    }
+
+    let resolved = resolve_import_path(&r.reference_name, &r.file_path, lang, ctx)?;
+    let node = file_node_at(&resolved, ctx)?;
+    Some(imported(r, &node.id, 0.9))
+}
+
+/// PHP `include`/`require` → the included file (**0.9**), or nothing.
+///
+/// PHP resolves an include relative to the INCLUDING file's directory (the
+/// common case for procedural codebases); `php.ini`'s `include_path` is not
+/// modeled. The literal may omit `.php`.
+fn resolve_php_include<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
+    let from_dir = parent_dir(&r.file_path);
+    let base = join_rel(&from_dir, &r.reference_name);
+
+    let path = if ctx.file_exists(&base) {
+        base
+    } else {
+        let mut found = None;
+        for ext in extensions_for(Language::Php) {
+            let candidate = format!("{base}{ext}");
+            if ctx.file_exists(&candidate) {
+                found = Some(candidate);
+                break;
+            }
+        }
+        found?
+    };
+
+    let node = file_node_at(&path, ctx)?;
+    Some(imported(r, &node.id, 0.9))
+}
+
+/// Go `pkga.FuncX` — the receiver names an imported PACKAGE DIRECTORY, not a
+/// symbol (**0.9**).
+///
+/// The generic file-based lookup cannot follow that: an import maps to a
+/// *directory* containing one or more `.go` files (#388). The candidate must be
+/// an **exported** Go node whose **immediate parent directory** is exactly the
+/// package dir — matching loosely would let `pkga.FuncX` land on a `FuncX`
+/// declared in `pkga/subpkg/`.
+fn resolve_go_cross_package<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    imports: &[ImportMapping],
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    let module = ctx.go_module()?;
+    let dot = r.reference_name.find('.')?;
+    if dot == 0 {
+        return None;
+    }
+    let receiver = &r.reference_name[..dot];
+    let member = &r.reference_name[dot + 1..];
+    if member.is_empty() {
+        return None;
+    }
+
+    for imp in imports {
+        if imp.local_name != receiver {
+            continue;
+        }
+        // Only an IN-MODULE import maps to a directory we know.
+        let pkg_dir = if imp.source == module.module_path {
+            String::new()
+        } else if let Some(rest) = imp.source.strip_prefix(&format!("{}/", module.module_path)) {
+            rest.to_string()
+        } else {
+            continue;
+        };
+
+        for node in ctx.nodes_by_name(member) {
+            if node.language != Language::Go.as_str() || node.is_exported != Some(true) {
+                continue;
+            }
+            if parent_dir(&node.file_path.replace('\\', "/")) == pkg_dir {
+                return Some(imported(r, &node.id, 0.9));
+            }
+        }
+    }
+    None
+}
+
+/// Java/Kotlin: a reference whose receiver is the simple name of an imported FQN
+/// (**0.9**).
+///
+/// `import com.example.Foo;` + `Foo.bar()` → the FQN becomes a **path suffix**
+/// (`com/example/Foo.java`), which uniquely identifies the right symbol when
+/// several classes share a simple name (#314). The file may live under any source
+/// root (`src/main/java/`, `src/`, …), so it is matched by suffix, never by exact
+/// path. `import static com.example.Foo.bar;` uses the OWNER's path instead.
+fn resolve_jvm_imported_reference<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    lang: Language,
+    imports: &[ImportMapping],
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    let ext = if lang == Language::Kotlin {
+        ".kt"
+    } else {
+        ".java"
+    };
+
+    for imp in imports {
+        let matches_bare = imp.local_name == r.reference_name;
+        let matches_qualified = r
+            .reference_name
+            .starts_with(&format!("{}.", imp.local_name));
+        if !matches_bare && !matches_qualified {
+            continue;
+        }
+
+        let fqn_path = format!("{}{ext}", imp.source.replace('.', "/"));
+        let member_name = if matches_bare {
+            imp.local_name.clone()
+        } else {
+            r.reference_name[imp.local_name.len() + 1..].to_string()
+        };
+
+        let candidates = ctx.nodes_by_name(&member_name);
+        for node in &candidates {
+            if node.language != lang.as_str() {
+                continue;
+            }
+            let fp = node.file_path.replace('\\', "/");
+            if fp.ends_with(&fqn_path) {
+                return Some(imported(r, &node.id, 0.9));
+            }
+        }
+
+        // `import static com.example.Util.helper;` — the FQN's tail IS the
+        // member, so the owner class's path is what identifies it.
+        if matches_bare
+            && let Some(dot) = imp.source.rfind('.')
+            && dot > 0
+        {
+            let owner_path = format!("{}{ext}", imp.source[..dot].replace('.', "/"));
+            for node in &candidates {
+                if node.language != lang.as_str() {
+                    continue;
+                }
+                let fp = node.file_path.replace('\\', "/");
+                if fp.ends_with(&owner_path) {
+                    return Some(imported(r, &node.id, 0.9));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Python `certs.where()` — the receiver names an imported **module** (a file),
+/// not a symbol (**0.85**).
+///
+/// The generic symbol lookup would search the *package* for `certs` instead of
+/// looking **inside** the module. `method` is deliberately excluded from the
+/// accepted kinds, so `mod.foo` can never land on a same-named class method.
+fn resolve_python_module_member<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    imports: &[ImportMapping],
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    let dot = r.reference_name.find('.')?;
+    if dot == 0 {
+        return None;
+    }
+    let receiver = &r.reference_name[..dot];
+    // The IMMEDIATE member of the module: the first segment after the receiver.
+    let member = r.reference_name[dot + 1..].split('.').next()?;
+    if member.is_empty() {
+        return None;
+    }
+
+    for imp in imports {
+        if imp.local_name != receiver {
+            continue;
+        }
+        // `import mod` binds the module at `source`; `from . import certs` /
+        // `from pkg import mod` bind a SUBMODULE whose dotted path is the source
+        // joined with the imported name.
+        let module_path = if imp.is_namespace {
+            imp.source.clone()
+        } else if imp.source.ends_with('.') {
+            format!("{}{}", imp.source, imp.local_name)
+        } else {
+            format!("{}.{}", imp.source, imp.local_name)
+        };
+
+        // `resolve_import_path` only maps RELATIVE dotted paths; an ABSOLUTE
+        // package path resolves to nothing there, so fall back to the dotted
+        // module-file lookup. Without this, `module.func()` after
+        // `from pkg import module` dropped its `calls` edge even though the
+        // import edge resolved (#578).
+        let resolved = resolve_import_path(&module_path, &r.file_path, Language::Python, ctx)
+            .or_else(|| {
+                find_python_module_file(&module_path, &r.file_path, ctx).map(|n| n.file_path)
+            });
+
+        let Some(resolved) = resolved else { continue };
+        if resolved == r.file_path {
+            continue;
+        }
+
+        let target = ctx.nodes_in_file(&resolved).into_iter().find(|n| {
+            n.name == member
+                && matches!(
+                    n.kind,
+                    NodeKind::Function | NodeKind::Class | NodeKind::Variable | NodeKind::Constant
+                )
+        });
+        if let Some(t) = target {
+            return Some(imported(r, &t.id, 0.85));
+        }
+    }
+    None
+}
+
+/// A Python ABSOLUTE dotted module import (`import a.b.c`) → its file (**0.9**).
+///
+/// The Django `AppConfig.ready(): import myapp.signals` pattern, and any
+/// side-effect module import.
+fn resolve_python_absolute_module<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    if r.reference_kind != "imports" {
+        return None;
+    }
+    let node = find_python_module_file(&r.reference_name, &r.file_path, ctx)?;
+    Some(imported(r, &node.id, 0.9))
+}
+
+/// The file node for a Python dotted module path `a.b.c`: a module file ending
+/// in `a/b/c.py`, or a package `a/b/c/__init__.py`.
+///
+/// Suffix-matched, so a package rooted under `src/` still resolves. `None` for
+/// stdlib/external modules (no matching repo file), so `import os` creates no
+/// edge.
+fn find_python_module_file<C: ResolutionContext>(
+    module: &str,
+    exclude: &str,
+    ctx: &C,
+) -> Option<Node> {
+    if module.is_empty() || module.starts_with('.') {
+        return None; // relative imports are handled elsewhere
+    }
+    let rel = module.replace('.', "/");
+    let last_seg = module.rsplit('.').next()?;
+
+    let ends_with = |p: &str, want: &str| p == want || p.ends_with(&format!("/{want}"));
+
+    let module_file = ctx
+        .nodes_by_name(&format!("{last_seg}.py"))
+        .into_iter()
+        .find(|n| {
+            n.kind == NodeKind::File
+                && n.file_path != exclude
+                && ends_with(&n.file_path, &format!("{rel}.py"))
+        });
+    if module_file.is_some() {
+        return module_file;
+    }
+
+    ctx.nodes_by_name("__init__.py").into_iter().find(|n| {
+        n.kind == NodeKind::File
+            && n.file_path != exclude
+            && ends_with(&n.file_path, &format!("{rel}/__init__.py"))
+    })
+}
+
+/// Rust `crate::m::Item` / `self::sub::Item` / `super::m::func` → the leaf symbol
+/// in the module's file (**0.9**).
+///
+/// Disambiguates the common-name `pub use self::read::read` re-export that
+/// name-matching lands on the wrong same-named symbol.
+fn resolve_rust_path_reference<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    let segments: Vec<&str> = r
+        .reference_name
+        .split("::")
+        .filter(|s| !s.is_empty())
+        .collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let leaf = segments[segments.len() - 1];
+    let mod_segs = &segments[..segments.len() - 1];
+
+    let file = resolve_rust_module_file(mod_segs, &r.file_path, ctx)?;
+    if file == r.file_path {
+        return None;
+    }
+
+    let target = ctx.nodes_in_file(&file).into_iter().find(|n| {
+        n.name == leaf
+            && matches!(
+                n.kind,
+                NodeKind::Function
+                    | NodeKind::Struct
+                    | NodeKind::Enum
+                    | NodeKind::Trait
+                    | NodeKind::TypeAlias
+                    | NodeKind::Constant
+                    | NodeKind::Method
+                    | NodeKind::Class
+                    | NodeKind::Interface
+            )
+    })?;
+    Some(imported(r, &target.id, 0.9))
+}
+
+/// The crate-root directory (the one holding `lib.rs`/`main.rs`), walking up.
+///
+/// Capped at **64** levels — a repo nested deeper than that is pathological, and
+/// an uncapped walk on a symlinked tree does not terminate.
+fn rust_crate_root_dir<C: ResolutionContext>(from_file: &str, ctx: &C) -> Option<String> {
+    let mut dir = parent_dir(from_file);
+    for _ in 0..64 {
+        let lib = join_rel(&dir, "lib.rs");
+        let main = join_rel(&dir, "main.rs");
+        if ctx.file_exists(&lib) || ctx.file_exists(&main) {
+            return Some(dir);
+        }
+        if dir.is_empty() {
+            return None;
+        }
+        dir = parent_dir(&dir);
+    }
+    None
+}
+
+/// The directory under which THIS file's module declares its submodules.
+///
+/// `mod.rs`/`lib.rs`/`main.rs` own their directory; `foo.rs`'s submodules live
+/// in `foo/`.
+fn rust_self_module_dir(from_file: &str) -> String {
+    let dir = parent_dir(from_file);
+    let base = from_file.rsplit('/').next().unwrap_or(from_file);
+    if matches!(base, "mod.rs" | "lib.rs" | "main.rs") {
+        return dir;
+    }
+    let stem = base.strip_suffix(".rs").unwrap_or(base);
+    join_rel(&dir, stem)
+}
+
+/// Walk module segments down from `start_dir`, mapping each to `<seg>.rs` or
+/// `<seg>/mod.rs`. `None` if any segment has no file.
+fn resolve_rust_under<C: ResolutionContext>(
+    start_dir: Option<String>,
+    rest: &[&str],
+    ctx: &C,
+) -> Option<String> {
+    let mut dir = start_dir?;
+    let mut target: Option<String> = None;
+    for seg in rest {
+        if matches!(*seg, "self" | "crate" | "super") {
+            continue;
+        }
+        let as_file = join_rel(&dir, &format!("{seg}.rs"));
+        let as_mod = join_rel(&dir, &format!("{seg}/mod.rs"));
+        if ctx.file_exists(&as_file) {
+            target = Some(as_file);
+        } else if ctx.file_exists(&as_mod) {
+            target = Some(as_mod);
+        } else {
+            return None;
+        }
+        dir = join_rel(&dir, seg);
+    }
+    target
+}
+
+/// A Rust module path (segments WITHOUT the leaf symbol) → the last module
+/// segment's file.
+fn resolve_rust_module_file<C: ResolutionContext>(
+    segments: &[&str],
+    from_file: &str,
+    ctx: &C,
+) -> Option<String> {
+    let first = *segments.first()?;
+
+    match first {
+        "crate" => resolve_rust_under(rust_crate_root_dir(from_file, ctx), &segments[1..], ctx),
+        "self" => resolve_rust_under(Some(rust_self_module_dir(from_file)), &segments[1..], ctx),
+        "super" => {
+            let supers = segments.iter().take_while(|s| **s == "super").count();
+            let mut dir = Some(rust_self_module_dir(from_file));
+            for _ in 0..supers {
+                dir = dir.filter(|d| !d.is_empty()).map(|d| parent_dir(&d));
+            }
+            resolve_rust_under(dir, &segments[supers..], ctx)
+        }
+        // A BARE path. In expression position (`submodule::item()` — the
+        // router-assembly and general cross-module-call pattern) the prefix is a
+        // SUBMODULE of the current module, i.e. 2018 `self::`-relative — so try
+        // self-relative FIRST, then crate-relative for 2015-edition / crate-root
+        // items. An external crate path (`serde::de::Error`) misses both and
+        // falls through to name-matching.
+        _ => resolve_rust_under(Some(rust_self_module_dir(from_file)), segments, ctx)
+            .or_else(|| resolve_rust_under(rust_crate_root_dir(from_file, ctx), segments, ctx)),
+    }
+}
+
+/// A whole-MODULE import → that module's file (**0.9**) — a file→file dependency.
+///
+/// The imported name is a module, not a symbol, so there is nothing to bind to —
+/// but importing a module IS a dependency on it. It is also the backstop for the
+/// Python module-member path and for TS namespace usage: it records the
+/// dependency even when the used member is re-exported elsewhere, or the usage is
+/// module-level code that is not extracted as a call. A NAMED TS/JS import binds a
+/// symbol, not a module, and is deliberately left alone.
+fn resolve_module_import_to_file<C: ResolutionContext>(
+    r: &UnresolvedRef,
+    lang: Language,
+    imports: &[ImportMapping],
+    ctx: &C,
+) -> Option<ResolvedRef> {
+    if r.reference_kind != "imports" || r.reference_name.contains('.') {
+        return None;
+    }
+
+    for imp in imports {
+        if imp.local_name != r.reference_name {
+            continue;
+        }
+
+        let module_path = if imp.is_namespace || imp.is_default {
+            // `import * as ns from './x'` / `import x from './x'` — the
+            // dependency is on the module FILE. A default import binds a
+            // (possibly renamed) local to whatever the module default-exports, so
+            // the binding name is not findable as a symbol. An external module
+            // resolves to no file, so `import React from 'react'` creates no edge.
+            imp.source.clone()
+        } else if lang == Language::Python {
+            // `from . import certs` — the imported NAME is a submodule of the source.
+            if imp.source.ends_with('.') {
+                format!("{}{}", imp.source, imp.local_name)
+            } else {
+                format!("{}.{}", imp.source, imp.local_name)
+            }
+        } else {
+            // A named TS/JS import binds a symbol, not a module.
+            continue;
+        };
+
+        if let Some(resolved) = resolve_import_path(&module_path, &r.file_path, lang, ctx)
+            && resolved != r.file_path
+            && let Some(node) = file_node_at(&resolved, ctx)
+        {
+            return Some(imported(r, &node.id, 0.9));
+        }
+
+        // Python's absolute `from a.b import submodule` (a FastAPI router
+        // aggregator's `from app.api.routes import authentication`):
+        // `resolve_import_path` maps only RELATIVE dotted paths.
+        if lang == Language::Python
+            && let Some(node) = find_python_module_file(&module_path, &r.file_path, ctx)
+        {
+            return Some(imported(r, &node.id, 0.9));
+        }
+    }
+    None
+}
+
+/// The symbol a module exports under `want` — chasing re-exports.
+///
+/// Order: a **direct hit** in the file, then **named** re-exports (following the
+/// rename), then **wildcard** re-exports (the barrel-of-barrels case). Capped at
+/// [`REEXPORT_MAX_DEPTH`], with a `visited` set so a cyclic barrel terminates.
+fn find_exported_symbol<C: ResolutionContext>(
+    file_path: &str,
+    want: &Want,
+    lang: Language,
+    ctx: &C,
+    visited: &mut HashSet<String>,
+    depth: usize,
+) -> Option<Node> {
+    if depth > REEXPORT_MAX_DEPTH || !visited.insert(file_path.to_string()) {
+        return None;
+    }
+
+    let nodes = ctx.nodes_in_file(file_path);
+
+    // 1. A direct hit: the symbol is declared right here.
+    let direct = if want.is_default {
+        // A Svelte/Vue single-file component IS the module's default export, but
+        // extracts as kind `component` — so prefer it, then fall back to an
+        // exported function/class (the `export default fn` case). Without the
+        // component branch, `export { default as X } from './X.svelte'` never
+        // resolves and the component shows a false 0 callers (#629).
+        nodes
+            .iter()
+            .find(|n| n.is_exported == Some(true) && n.kind == NodeKind::Component)
+            .or_else(|| {
+                nodes.iter().find(|n| {
+                    n.is_exported == Some(true)
+                        && matches!(n.kind, NodeKind::Function | NodeKind::Class)
+                })
+            })
+    } else if want.is_namespace
+        && let Some(member) = &want.member_name
+    {
+        nodes
+            .iter()
+            .find(|n| n.name == *member && n.is_exported == Some(true))
+    } else {
+        nodes
+            .iter()
+            .find(|n| n.name == want.exported_name && n.is_exported == Some(true))
+    };
+    if let Some(hit) = direct {
+        return Some(hit.clone());
+    }
+
+    // 2. A re-export hit: this file forwards the symbol somewhere else.
+    let re_exports = ctx.re_exports(file_path);
+    if re_exports.is_empty() {
+        return None;
+    }
+
+    let target_name = if want.is_default {
+        "default"
+    } else {
+        want.exported_name.as_str()
+    };
+
+    // Named re-exports first — and the RENAME is followed: to chase `login`
+    // through `export { signIn as login } from './auth'`, look for `signIn`.
+    for rex in re_exports.iter() {
+        if let ReExport::Named {
+            exported_name,
+            original_name,
+            source,
+        } = rex
+            && exported_name == target_name
+            && let Some(next) = resolve_import_path(source, file_path, lang, ctx)
+        {
+            let chained = Want {
+                is_default: original_name == "default",
+                is_namespace: false,
+                exported_name: original_name.clone(),
+                member_name: None,
+            };
+            if let Some(hit) = find_exported_symbol(&next, &chained, lang, ctx, visited, depth + 1)
+            {
+                return Some(hit);
+            }
+        }
+    }
+
+    // 3. Wildcard re-exports last — try every forwarding source.
+    for rex in re_exports.iter() {
+        if let ReExport::Wildcard { source } = rex
+            && let Some(next) = resolve_import_path(source, file_path, lang, ctx)
+            && let Some(hit) = find_exported_symbol(&next, want, lang, ctx, visited, depth + 1)
+        {
+            return Some(hit);
+        }
+    }
+
+    None
+}
+
+/// `Container.member` on a NAMED class import → the member node (#825).
+///
+/// Members carry a `Container::member` qualified name, so look up
+/// `{container.qualified_name}::{member}` **within the container's own file** —
+/// the file filter is what disambiguates same-named classes in other modules.
+/// `None` when the container is not a member-owning kind or the member is absent,
+/// so the caller falls back to the container itself.
+fn resolve_static_member<C: ResolutionContext>(
+    container: &Node,
+    r: &UnresolvedRef,
+    local_name: &str,
+    ctx: &C,
+) -> Option<Node> {
+    if !STATIC_MEMBER_CONTAINERS.contains(&container.kind) {
+        return None;
+    }
+    // The first segment after the receiver: `Foo.bar.baz` → `bar`.
+    let member = r.reference_name[local_name.len() + 1..].split('.').next()?;
+    if member.is_empty() {
+        return None;
+    }
+
+    let candidates: Vec<Node> = ctx
+        .nodes_by_qualified_name(&format!("{}::{member}", container.qualified_name))
+        .into_iter()
+        .filter(|n| n.file_path == container.file_path)
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    // A CALL prefers a callable member when several nodes share the qualified
+    // name (a static property and a method can collide).
+    if r.reference_kind == "calls"
+        && let Some(callable) = candidates
+            .iter()
+            .find(|n| matches!(n.kind, NodeKind::Method | NodeKind::Function))
+    {
+        return Some(callable.clone());
+    }
+    candidates.into_iter().next()
+}
+
+/// The `file`-kind node at `path`.
+fn file_node_at<C: ResolutionContext>(path: &str, ctx: &C) -> Option<Node> {
+    ctx.nodes_in_file(path)
+        .into_iter()
+        .find(|n| n.kind == NodeKind::File)
 }

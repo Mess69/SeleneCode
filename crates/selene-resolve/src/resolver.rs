@@ -26,6 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::builtins::{capitalize_ascii, is_built_in_or_external};
 use crate::context::ResolutionContext;
 use crate::families::{crosses_known_family, same_language_family};
+use crate::imports::{resolve_jvm_import, resolve_via_import};
 use crate::types::ResolvedRef;
 
 /// The reference resolver: one instance per index/sync pass.
@@ -128,9 +129,8 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // are existence-checked with the dot stripped; Nix path imports bypass
         // the check entirely (they name a FILE, not a symbol).
 
-        // Steps 7, 8 and 10 push here; steps 9 and 12 reduce over it. It is
-        // `mut` the moment Task 6 lands its first `candidates.push(..)`.
-        let candidates: Vec<ResolvedRef> = Vec::new();
+        // Steps 7, 8 and 10 push here; steps 9 and 12 reduce over it.
+        let mut candidates: Vec<ResolvedRef> = Vec::new();
 
         // --- step 4: `function_ref` — a dedicated, strictly-gated path --------
         if r.reference_kind == "function_ref" {
@@ -142,10 +142,12 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         }
 
         // --- step 5: JVM FQN imports -----------------------------------------
-        // TODO(Task 6): `resolve_jvm_import` — returns directly, ahead of the
-        // frameworks and the name matcher (a `com.example.Bar` import is
-        // unambiguous through the qualified-name index even when several `Bar`s
-        // exist in different packages).
+        // Returns DIRECTLY, ahead of the frameworks and the name matcher: a
+        // `com.example.Bar` import is unambiguous through the qualified-name
+        // index even when several `Bar`s exist in different packages (#314).
+        if let Some(hit) = resolve_jvm_import(r, &self.ctx) {
+            return Some(hit);
+        }
 
         // --- step 6: Razor `@using` ------------------------------------------
         // Wave 2 (Phase 8): `razor` has no extractor yet.
@@ -156,8 +158,13 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         //     if res.confidence >= 0.9 { return res }  else { candidates.push(res) }
 
         // --- step 8: import-based resolution ---------------------------------
-        // TODO(Task 6): `resolve_via_import`, under `gate_language`; ≥ 0.9
-        // returns immediately, else it becomes a candidate.
+        // ≥ 0.9 returns immediately; anything weaker competes as a candidate.
+        if let Some(hit) = self.gate_language(resolve_via_import(r, &self.ctx), r) {
+            if hit.confidence >= 0.9 {
+                return Some(hit);
+            }
+            candidates.push(hit);
+        }
 
         // --- step 9: path-only refs — NEVER fall through to name matching -----
         // A PHP `include 'inc/db.php'` resolves to a FILE through import
@@ -215,7 +222,6 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     ///   which is why its imports survive this gate.
     /// - Everything else (`calls`, `extends`, …) passes: cross-language `calls`
     ///   bridges are real (React Native JS → native).
-    #[allow(dead_code)] // Tasks 6/7/10 wire this into their ladder steps.
     fn gate_language(&self, result: Option<ResolvedRef>, r: &UnresolvedRef) -> Option<ResolvedRef> {
         let result = result?;
         let (Some(target_lang), Some(ref_lang)) = (

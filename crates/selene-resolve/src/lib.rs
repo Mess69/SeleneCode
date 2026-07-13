@@ -83,7 +83,10 @@ pub use imports::cpp_includes::load_cpp_include_dirs;
 pub use imports::go_module::load_go_module;
 pub use imports::mappings::{extract_import_mappings, extract_re_exports};
 pub use imports::workspace::{load_workspace_packages, resolve_workspace_import};
-pub use imports::{is_external_import, resolve_import_path};
+pub use imports::{
+    REEXPORT_MAX_DEPTH, is_external_import, resolve_import_path, resolve_jvm_import,
+    resolve_via_import,
+};
 pub use resolver::{
     ReferenceResolver, has_any_possible_match, is_php_include_path_ref, matches_any_import,
 };
