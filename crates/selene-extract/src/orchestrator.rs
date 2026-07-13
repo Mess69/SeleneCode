@@ -109,7 +109,7 @@ const PARSE_STACK_SIZE: usize = 16 * 1024 * 1024;
 /// Maximum bracket-nesting depth accepted before a source is rejected as
 /// adversarial (module docs: an upper-bound proxy for AST depth; real code
 /// stays orders of magnitude below, and 4096 frames fit comfortably in
-/// [`PARSE_STACK_SIZE`]).
+/// `PARSE_STACK_SIZE`).
 pub const MAX_NESTING_DEPTH: usize = 4096;
 
 /// The meta key `index_all` persists [`EXTRACTION_VERSION`] under.
@@ -242,7 +242,7 @@ struct ParseInput {
 
 impl<S: GraphStore> Indexer<S> {
     /// Build an indexer over `root` and `store`. The dedicated rayon parse
-    /// pool ([`parse_workers`] threads, [`PARSE_STACK_SIZE`] stacks — module
+    /// pool (`parse_workers` threads, `PARSE_STACK_SIZE` stacks — module
     /// docs) is built lazily, on the first indexing call.
     ///
     /// Never panics: if the OS refuses to spawn the pool threads, the failure

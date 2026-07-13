@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SeleneCode is **local-first code intelligence, in Rust** — the Rust port of [CodeGraph](../codegraph). It parses any supported codebase with tree-sitter, stores symbols/edges/files in an **embedded graph database**, and exposes a knowledge graph to AI agents over **MCP**. Per-project data lives in `.selene/`. Extraction is **deterministic** (AST-derived, never LLM-summarized). The goal is a **single static binary** that serves as installer, indexer, and MCP server.
 
-**Status: scaffold.** `selene-core` (the data model) is implemented and tested; the other layer crates are stubs. The full target architecture is the PRD: `docs/specs/2026-07-11-rust-graph-db-migration-design.md`. Read it before designing anything — it is the source of truth for the crate boundaries, the DB decision, and the invariants below.
+**Status: extraction complete (Phase 2).** `selene-core` (the data model), `selene-db` (Phase 1 — `GraphStore` + SurrealDB embedded), and `selene-extract` (Phase 2 — tree-sitter extraction over the 12 v0 languages, scan pipeline, orchestrator) are implemented and tested; the remaining layer crates are stubs. The full target architecture is the PRD: `docs/specs/2026-07-11-rust-graph-db-migration-design.md`. Read it before designing anything — it is the source of truth for the crate boundaries, the DB decision, and the invariants below.
 
 ## Build, Test, Run
 
@@ -41,7 +41,8 @@ files → selene-extract (tree-sitter) → selene-db (nodes/edges/files)
 
 - `selene-core` — shared types. `NodeKind` (22) / `EdgeKind` (12) are exhaustive enums; their `as_str()` and serde output are the wire contract and must not drift. Also `Provenance`, `Visibility`, `Node`, `Edge`, `Error`.
 - `selene-db` — everything DB is behind a **`GraphStore` trait** (a seam for tests/mocking, not a portability layer). Sole backend: **SurrealDB embedded**. **Decision (2026-07-12):** SurrealQL-max — traversal logic is pushed into SurrealQL (recursive `.{1..n}(->calls->fn)`, shortest-path); the permissive fallback (IndraDB/redb + Tantivy) from PRD §5.2 is **dropped**, and the PRD §5.4 spike is resolved accordingly.
-- `selene-extract`, `selene-resolve`, `selene-graph`, `selene-context`, `selene-mcp`, `selene-sync`, `selene-installer`, `selene-cli` — stubs; each crate's `lib.rs` names its role + PRD section.
+- `selene-extract` — tree-sitter extraction over **natively-linked** grammars (the WASM layer — worker pool, parser resets, OOM retries — is deleted, not ported), rayon fan-out with an **ordered** DB commit, the scan pipeline (git fast path + FS fallback), and incremental re-index. Emits **zero cross-file edges**: anything beyond the file leaves as an `UnresolvedReference` for Phase 3. Its `lib.rs` carries the public-interface ledger, the deferrals, and the known parity deviations.
+- `selene-resolve`, `selene-graph`, `selene-context`, `selene-mcp`, `selene-sync`, `selene-installer`, `selene-cli` — stubs; each crate's `lib.rs` names its role + PRD section.
 
 Shared third-party deps and their versions are declared once in the root `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 

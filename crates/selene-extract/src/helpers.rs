@@ -141,7 +141,7 @@ pub fn clean_comment_markers(raw: &str) -> String {
 }
 
 /// The docstring/comment run preceding `node` in `source`: climbs out of
-/// [`DOCSTRING_WRAPPER_TYPES`] wrappers, then collects the unbroken chain of
+/// `DOCSTRING_WRAPPER_TYPES` wrappers, then collects the unbroken chain of
 /// preceding named comment siblings (source order), cleans each with
 /// [`clean_comment_markers`], joins with `\n`, trims. `None` when there is
 /// no preceding comment at all. (#780)

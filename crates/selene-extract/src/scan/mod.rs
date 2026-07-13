@@ -272,7 +272,7 @@ fn discover_embedded_repos_visit(
 /// `.gitignore` excludes them (#970/#976). CLI surfaces use this to turn a
 /// silently-near-empty index into an actionable hint (#1156). Sorted,
 /// root-relative, trailing-slashed; discovery is capped at
-/// [`UNINDEXED_IGNORED_REPO_HINT_CAP`] entries (applied in discovery order,
+/// `UNINDEXED_IGNORED_REPO_HINT_CAP` entries (applied in discovery order,
 /// before the sort). `[]` for non-git roots.
 pub fn find_unindexed_ignored_repos(root: &Path) -> Vec<String> {
     if run_git(root, &["rev-parse", "--git-dir"], GIT_TIMEOUT_SHORT)
