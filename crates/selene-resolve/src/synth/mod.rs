@@ -134,7 +134,7 @@ pub struct SynthPassDef<S: GraphStore> {
 /// **Phase 8 slot:** Go's `contains` + `implements` pre-passes must be inserted
 /// **first**, ahead of everything here — the interface-dispatch passes read the
 /// edges they create.
-pub const SYNTH_PASS_ORDER: &[&str] = &["callback", "event-emitter"];
+pub const SYNTH_PASS_ORDER: &[&str] = &["callback", "event-emitter", "react-render", "jsx-render"];
 
 /// The pass table, monomorphized for `S`. Must match [`SYNTH_PASS_ORDER`] exactly
 /// — `registry_agrees_with_the_declared_order` fails the moment they drift.
@@ -149,6 +149,20 @@ pub fn synth_passes<S: GraphStore>() -> Vec<SynthPassDef<S>> {
             name: "event-emitter",
             languages: JS_FAMILY,
             run: |s, c| Box::pin(event_emitter::run(s, c)),
+        },
+        // The React pair — registered TOGETHER, in this order. `react-render`
+        // alone is the half-bridged flow that measurably RAISED agent reads
+        // (PRD §8.2): it ends at `render`, which advertises a next hop and gives
+        // the agent nowhere to go. Never register one without the other.
+        SynthPassDef {
+            name: "react-render",
+            languages: JS_FAMILY,
+            run: |s, c| Box::pin(react::run_react_render(s, c)),
+        },
+        SynthPassDef {
+            name: "jsx-render",
+            languages: JS_FAMILY,
+            run: |s, c| Box::pin(react::run_jsx_render(s, c)),
         },
     ]
 }
