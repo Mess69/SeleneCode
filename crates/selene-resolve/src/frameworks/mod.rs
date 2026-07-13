@@ -38,20 +38,96 @@
 //! warning, and is skipped. One broken resolver must never fail an index — the
 //! blast radius of a bad regex is one framework, not the whole graph.
 
+pub mod java;
 pub mod python;
 pub mod routes;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::LazyLock;
 
-use selene_core::{Language, Node, UnresolvedRef};
+use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 use selene_db::GraphStore;
 
 use crate::Result;
 use crate::context::ResolutionContext;
-use crate::types::ResolvedRef;
+use crate::types::{ResolvedBy, ResolvedRef};
 
 pub use routes::{RouteSpec, find_route, route_node, route_node_in};
+
+// =============================================================================
+// Shared helpers — one copy, used by every framework
+// =============================================================================
+
+/// The 1-based line holding byte `offset`.
+pub(crate) fn line_of(src: &str, offset: usize) -> u32 {
+    (src[..offset.min(src.len())]
+        .bytes()
+        .filter(|b| *b == b'\n')
+        .count()
+        + 1) as u32
+}
+
+/// The largest char boundary `<= i` — the safe way to cut a fixed-size window
+/// out of source that may hold multi-byte characters. (`str::floor_char_boundary`
+/// is still unstable.)
+pub(crate) fn char_boundary_at_or_below(s: &str, mut i: usize) -> usize {
+    if i >= s.len() {
+        return s.len();
+    }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
+    i
+}
+
+/// Does any of `files` mention `needle` (case-insensitively)? The manifest probe
+/// every `detect` starts from.
+pub(crate) fn manifest_mentions<C: ResolutionContext + ?Sized>(
+    ctx: &C,
+    files: &[&str],
+    needle: &str,
+) -> bool {
+    files.iter().any(|f| {
+        ctx.read_file(f)
+            .is_some_and(|src| src.to_lowercase().contains(needle))
+    })
+}
+
+/// Resolve a reference **by naming convention**: a node of an accepted kind with
+/// that exact name, preferring one whose file path contains one of `dirs`.
+///
+/// The directory is a *preference*, never a requirement — but when it matches it
+/// is the strongest signal available, and it is what keeps two same-named symbols
+/// from being a coin flip.
+pub(crate) fn by_convention<C: ResolutionContext + ?Sized>(
+    r: &UnresolvedRef,
+    ctx: &C,
+    kinds: &[NodeKind],
+    dirs: &[&str],
+    confidence: f64,
+) -> Option<ResolvedRef> {
+    let candidates: Vec<Node> = ctx
+        .nodes_by_name(&r.reference_name)
+        .into_iter()
+        .filter(|n| kinds.contains(&n.kind))
+        .collect();
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let chosen = candidates
+        .iter()
+        .find(|n| dirs.iter().any(|d| n.file_path.contains(d)))
+        .or_else(|| candidates.first())?;
+
+    Some(ResolvedRef {
+        // ⚠ The STORED ROW, unmutated — the keyed delete matches on it (#760).
+        original: r.clone(),
+        target_node_id: chosen.id.clone(),
+        confidence,
+        resolved_by: ResolvedBy::Framework,
+    })
+}
 
 /// Nodes + references a framework found in one file.
 #[derive(Debug, Default, Clone)]
@@ -147,7 +223,7 @@ pub const REGISTRY_ORDER: &[&str] = &[
 /// Each of those tasks appends its resolver here, in the order above.
 fn builtin_resolvers() -> Vec<&'static dyn FrameworkResolver> {
     // In REGISTRY_ORDER. Each of Tasks 12–20 appends its row here, in that order.
-    vec![&python::Flask, &python::FastApi]
+    vec![&python::Flask, &python::FastApi, &java::Spring]
 }
 
 static REGISTRY: LazyLock<Vec<&'static dyn FrameworkResolver>> = LazyLock::new(builtin_resolvers);

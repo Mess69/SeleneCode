@@ -29,7 +29,10 @@ use regex::Regex;
 use selene_core::{Language, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
-use crate::frameworks::{FrameworkExtraction, FrameworkResolver, RouteSpec, route_node};
+use crate::frameworks::{
+    FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, manifest_mentions,
+    route_node,
+};
 
 /// `updated_at` for every node this module emits.
 ///
@@ -39,7 +42,7 @@ use crate::frameworks::{FrameworkExtraction, FrameworkResolver, RouteSpec, route
 /// `now` because its nodes are re-emitted per file on re-index; a route node is
 /// re-derived from the same bytes, so there is nothing for a timestamp to say.)
 const NO_CLOCK: i64 = 0;
-use crate::types::{ResolvedBy, ResolvedRef};
+use crate::types::ResolvedRef;
 
 /// Compile a literal pattern. Every one is exercised by a test in this file, so a
 /// bad pattern fails a test rather than a run.
@@ -71,15 +74,6 @@ pub fn next_def_after(src: &str, offset: usize) -> Option<(String, u32)> {
     Some((m.as_str().to_string(), line_of(src, m.start())))
 }
 
-/// The 1-based line holding byte `offset`.
-fn line_of(src: &str, offset: usize) -> u32 {
-    (src[..offset.min(src.len())]
-        .bytes()
-        .filter(|b| *b == b'\n')
-        .count()
-        + 1) as u32
-}
-
 /// A `references` reference from a route node to the handler it names.
 fn handler_ref(route_id: &str, handler: &str, file: &str, line: u32) -> UnresolvedRef {
     UnresolvedRef {
@@ -96,51 +90,7 @@ fn handler_ref(route_id: &str, handler: &str, file: &str, line: u32) -> Unresolv
     }
 }
 
-/// Does any of `files` contain `needle` (case-insensitively)?
-fn manifest_mentions<C: ResolutionContext + ?Sized>(ctx: &C, files: &[&str], needle: &str) -> bool {
-    files.iter().any(|f| {
-        ctx.read_file(f)
-            .is_some_and(|src| src.to_lowercase().contains(needle))
-    })
-}
-
 const PY_MANIFESTS: [&str; 4] = ["requirements.txt", "pyproject.toml", "Pipfile", "setup.py"];
-
-/// A ref name matching one of `suffixes` (or exactly one of `exacts`) resolved to
-/// a node of an accepted kind, preferring a file whose path contains one of
-/// `dirs`.
-fn by_convention<C: ResolutionContext + ?Sized>(
-    r: &UnresolvedRef,
-    ctx: &C,
-    kinds: &[NodeKind],
-    dirs: &[&str],
-    confidence: f64,
-) -> Option<ResolvedRef> {
-    let candidates: Vec<selene_core::Node> = ctx
-        .nodes_by_name(&r.reference_name)
-        .into_iter()
-        .filter(|n| kinds.contains(&n.kind))
-        .collect();
-    if candidates.is_empty() {
-        return None;
-    }
-
-    // A directory convention is a *preference*, not a requirement — but when it
-    // matches it is the strongest signal available, and it is what keeps two
-    // same-named symbols from being a coin flip.
-    let chosen = candidates
-        .iter()
-        .find(|n| dirs.iter().any(|d| n.file_path.contains(d)))
-        .or_else(|| candidates.first())?;
-
-    Some(ResolvedRef {
-        // ⚠ The STORED ROW, unmutated — the keyed delete matches on it (#760).
-        original: r.clone(),
-        target_node_id: chosen.id.clone(),
-        confidence,
-        resolved_by: ResolvedBy::Framework,
-    })
-}
 
 // =============================================================================
 // Flask
