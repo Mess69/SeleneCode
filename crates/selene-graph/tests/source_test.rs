@@ -77,24 +77,47 @@ async fn a_deleted_file_is_none_not_an_error() {
     );
 }
 
-/// **Read parity, byte for byte.** The agent must be able to cite `file:line` from this
-/// output exactly as if it had Read the file.
+/// **Read parity, byte for byte — against an INDEPENDENT re-numbering of the file.**
+///
+/// Pinning the first line would let a future renderer satisfy this assertion by coincidence
+/// (get line 1 right, pad line 1000, still pass). So the expectation is derived from the file
+/// itself, by a numbering written *here* from the `Read` contract — not by calling the code
+/// under test. If the two ever disagree, one of them is wrong about what `Read` does, and
+/// that is precisely the disagreement worth failing on.
 #[tokio::test(flavor = "multi_thread")]
-async fn read_file_slice_has_read_parity_numbering() {
-    let (qm, _tmp) = manager().await;
+async fn read_file_slice_reproduces_an_independent_renumbering_of_the_whole_file() {
+    let (qm, tmp) = manager().await;
 
-    let slice = qm.read_file_slice("src/crypto.ts", 1, 2000).await.unwrap();
+    // Long enough that a PADDED renderer would diverge: line 1000 is four digits, line 1 is
+    // one. `Read` does not right-align them, and neither may we.
+    let long: String = (1..=1200).map(|i| format!("const v{i} = {i};\n")).collect();
+    std::fs::write(tmp.path().join("src/long.ts"), &long).unwrap();
 
-    assert!(
-        slice
-            .text
-            .starts_with("1\texport function hashPassword(input: string) {\n"),
-        "1-based, tab-separated, unpadded: {:?}",
-        &slice.text[..slice.text.len().min(60)]
+    let slice = qm.read_file_slice("src/long.ts", 1, 2000).await.unwrap();
+
+    // The independent expectation: `<n>\t<line>`, no padding, trailing empty line KEPT.
+    let raw = std::fs::read_to_string(tmp.path().join("src/long.ts")).unwrap();
+    let expected: String = raw
+        .split('\n')
+        .enumerate()
+        .map(|(i, line)| format!("{}\t{}\n", i + 1, line))
+        .collect();
+
+    assert_eq!(
+        slice.text, expected,
+        "the rendered slice must equal an INDEPENDENT re-numbering of the file. If these \
+         disagree, an agent citing `file:line` from our output cites the WRONG line — and its \
+         next tool call is Read, to check us. That is the whole bet, lost on whitespace."
     );
+
+    // …and the property that makes the equality meaningful.
+    assert!(
+        slice.text.contains("\n1000\tconst v1000 = 1000;\n"),
+        "line 1000 is not right-aligned against the one-digit lines"
+    );
+    assert!(!slice.text.contains(" 1000\t"), "no padding, anywhere");
+    assert_eq!(slice.path, "src/long.ts");
     assert!(!slice.truncated);
-    assert_eq!(slice.path, "src/crypto.ts");
-    assert!(slice.total_lines >= 3);
 }
 
 /// An offset past the end is **success-shaped guidance**, never an error.

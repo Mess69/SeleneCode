@@ -191,6 +191,12 @@ impl<S: GraphStore> QueryManager<S> {
 
     /// Group nodes by their definition site (#764), preserving **first-seen order** —
     /// grouped output ordering is observable, so it is an `IndexMap`, never a `HashMap`.
+    ///
+    /// ⚠ **On watch as a potential inert seam.** This method only *means* anything if the
+    /// callers/callees surfaces (Task 18) render the groups. If Task 18 ships a flat list,
+    /// grouping is computed, discarded, and never noticed — the fifth instance of the bug
+    /// class this project has already paid for four times. **Verify at Task 18**; if it is
+    /// still uncalled at Task 13's ledger pass, it is dead and one of the two must change.
     pub async fn group_by_definition(&self, nodes: Vec<Node>) -> Vec<SymbolGroup> {
         let mut groups: IndexMap<(String, String), SymbolGroup> = IndexMap::new();
 
