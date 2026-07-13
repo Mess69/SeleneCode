@@ -112,6 +112,12 @@ impl FakeContext {
         self
     }
 
+    /// C/C++ `-I` include directories (Task 5).
+    pub fn with_cpp_include_dirs(mut self, dirs: Vec<String>) -> Self {
+        self.cpp_include_dirs = dirs;
+        self
+    }
+
     /// An `implements`/`extends` edge, by node id.
     pub fn with_supertype(mut self, child_id: &str, parent_id: &str) -> Self {
         self.supertype_edges
