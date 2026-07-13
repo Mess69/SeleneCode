@@ -50,6 +50,8 @@ selene-db = { path = "../selene-db", default-features = false, features = ["kv-m
 insta = { workspace = true, features = ["yaml", "redactions"] }
 # Scan tests build throwaway directory trees + real `git init` repos.
 tempfile.workspace = true
+# Parity gate (Task 19): deviations.toml.
+toml.workspace = true
 
 [lints]
 workspace = true

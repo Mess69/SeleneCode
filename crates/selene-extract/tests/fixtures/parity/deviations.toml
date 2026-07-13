@@ -1,0 +1,38 @@
+# Justified TS<->Rust extraction count divergences (Task 19 parity gate).
+#
+# The gate's tolerance is ZERO. Every difference is either a real bug (fix it) or
+# a justified deviation (an entry here, naming its cause). An entry that matches
+# no observed difference FAILS the gate as stale — a fixed divergence must not
+# leave a permanent whitelist behind.
+#
+# Schema: fixture = path under tests/fixtures/parity/
+#         counter = "nodes" | "edges" | "refs" | "<group>.<kind>"
+#         ts, rust = the exact counts observed on each side
+#         reason  = why this is correct-by-design, citing the source
+
+# --- C++ ---------------------------------------------------------------------
+# TS emits a phantom `extends` on a class that has NO base clause. Bisected:
+#   class Factory { public: static Widget create(); };   ->  TS: extends:Widget
+# There is no inheritance in that source at all; TS's C++ base-class lookup
+# misreads the return type of the first member declaration after the `public:`
+# access specifier as a base class. (Verified in isolation against the real TS
+# build at codegraph 9ccf5d0 — the phantom ref appears with only the struct+class
+# present, before the out-of-line definition is added.)
+#
+# NOT PORTED, deliberately: emitting `extends:Widget` from Factory would be a
+# false inheritance edge, and the Global Constraints' "silent beats wrong" rule
+# forbids it. Rust emitting nothing here is the CORRECT behavior, and this is the
+# one place in the corpus where the Rust port is right and TS is wrong.
+[[deviation]]
+fixture = "cpp/f.cpp"
+counter = "refs.extends"
+ts = 1
+rust = 0
+reason = "TS false positive: tree-sitter.ts C++ base-class lookup misreads the `Widget` return type of the first member after `public:` as a base class; the source has no base clause. Not ported — 'silent beats wrong' (Global Constraints)."
+
+[[deviation]]
+fixture = "cpp/f.cpp"
+counter = "refs"
+ts = 2
+rust = 1
+reason = "Rollup of the refs.extends phantom above — same single TS false positive, counted once in the per-kind bucket and once in the file total."
