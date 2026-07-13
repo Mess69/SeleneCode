@@ -18,6 +18,11 @@ fancy-regex = { workspace = true }
 lru = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+# The runtime HANDLE only. `ResolutionContext` is sync (see src/context.rs's
+# sync/async seam docs); `StoreContext` drives the async GraphStore through
+# `Handle::block_on`, which is legal because the resolver runs under
+# `spawn_blocking`. No executor is created here — the caller owns the runtime.
+tokio = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }

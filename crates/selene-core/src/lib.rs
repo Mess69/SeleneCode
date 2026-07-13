@@ -2,9 +2,12 @@
 //!
 //! Shared domain types for SeleneCode's code-intelligence graph: the node and
 //! edge kinds, provenance, the [`Node`] / [`Edge`] records that every other
-//! crate reads and writes, and the extraction row records ([`FileRecord`],
+//! crate reads and writes, the extraction row records ([`FileRecord`],
 //! [`UnresolvedRef`], [`RefStatus`]) that `selene-extract` produces and
-//! `selene-db` stores.
+//! `selene-db` stores, and the [`Language`] registry + [`LanguageFamily`] table
+//! that extraction, resolution and the framework registry all key on
+//! (decision D1, 2026-07-13 — see `src/language.rs` for why it lives here and
+//! not in `selene-extract`).
 //!
 //! Ported faithfully from the CodeGraph TypeScript implementation
 //! (`src/types.ts`). These wire strings are the contract shared by extractors,
@@ -17,6 +20,9 @@ use std::str::FromStr;
 
 mod ids;
 pub use ids::{EXTRACTION_VERSION, file_node_id, hash_content, node_id};
+
+mod language;
+pub use language::{ALL_LANGUAGES, Language, LanguageFamily};
 
 // =============================================================================
 // NodeKind (22)
