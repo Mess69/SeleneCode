@@ -122,6 +122,13 @@ static INCLUDE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"^include\s*\(\s*['"]([^'"]+)['"]"#).unwrap()
 });
 
+/// The runtime-chosen attribute that Django's `QuerySet` calls to build its
+/// iterable. It is an attribute NAME, which is what makes this a resolver case.
+const ITERABLE_CLASS_ATTR: &str = "_iterable_class";
+/// Django's default `_iterable_class`.
+const MODEL_ITERABLE: &str = "ModelIterable";
+const DUNDER_ITER: &str = "__iter__";
+
 const MODEL_DIRS: &[&str] = &["models", "app/models", "src/models"];
 const VIEW_DIRS: &[&str] = &["views", "app/views", "src/views"];
 
@@ -151,7 +158,13 @@ impl FrameworkResolver for DjangoResolver {
     /// `include('x.y')` names no symbol — claim it past the pre-filter, or the
     /// bridge never gets a chance to run. (Task 26 adds `_iterable_class` here.)
     fn claims_reference(&self, name: &str) -> bool {
+        // `include('api.urls')` — another urlconf (Task 14).
         name.ends_with(".urls")
+            // `self._iterable_class(self)` — the ORM descriptor (Task 26). It is an
+            // ATTRIBUTE name, not a declared symbol, so without this claim the
+            // pre-filter drops the reference before `resolve()` ever runs and the
+            // query→SQL flow silently does not exist.
+            || name == ITERABLE_CLASS_ATTR
     }
 
     fn extract(&self, path: &str, content: &str, language: Language) -> FrameworkExtraction {
@@ -225,6 +238,11 @@ impl FrameworkResolver for DjangoResolver {
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
         let name = r.reference_name.as_str();
 
+        // The ORM descriptor (Task 26) — see `resolve_iterable_class`.
+        if name == ITERABLE_CLASS_ATTR {
+            return self.resolve_iterable_class(r, ctx);
+        }
+
         // Views: `*View` / `*ViewSet` — class OR function-based.
         if name.ends_with("View") || name.ends_with("ViewSet") {
             return self.pick(
@@ -248,6 +266,60 @@ impl FrameworkResolver for DjangoResolver {
 }
 
 impl DjangoResolver {
+    /// The ORM descriptor bridge (Task 26) — `self._iterable_class(self)` →
+    /// `ModelIterable.__iter__`.
+    ///
+    /// # This is a RESOLVER, not a synthesizer — and the difference is the point
+    ///
+    /// The roadmap files this under "the 5 synthesizers", but it is a framework
+    /// `resolve()` branch, and it must stay one. The playbook's central mechanism
+    /// lesson (§2, §3a):
+    ///
+    /// | The reference is… | Mechanism | Provenance |
+    /// |---|---|---|
+    /// | **named** — `_iterable_class` IS an attribute name | `claims_reference` + `resolve()` | ordinary `tree-sitter` edge |
+    /// | **anonymous** — `cb()`, `emit('e')`, `<Child/>` | a whole-graph synth pass | `heuristic` + `synthesizedBy` |
+    ///
+    /// So this emits **no heuristic edge and no `synthesizedBy`**. A reviewer who
+    /// expects one is expecting the wrong contract, and a test that asserts
+    /// `Heuristic` here is asserting the wrong thing.
+    ///
+    /// # The hole
+    ///
+    /// `QuerySet._fetch_all` calls `self._iterable_class(self)` — a *runtime-chosen*
+    /// iterable class (default `ModelIterable`) whose `__iter__` runs the SQL
+    /// compiler. Statically, `_fetch_all`'s only callee was
+    /// `_prefetch_related_objects`, and the query→SQL flow did not exist at all.
+    fn resolve_iterable_class(
+        &self,
+        r: &UnresolvedRef,
+        ctx: &dyn ResolutionContext,
+    ) -> Option<ResolvedRef> {
+        // The default iterable. (A project that swaps it for a custom class is the
+        // frontier: the choice is made at runtime, so silence is the right answer.)
+        let class = ctx
+            .nodes_by_name(MODEL_ITERABLE)
+            .into_iter()
+            .find(|n| n.kind == NodeKind::Class)?;
+
+        // `__iter__` **on that class** — the membership test is the whole precision
+        // story. Taking any `__iter__` in the project would bind the ORM's hottest
+        // flow to whichever iterator the name matcher happened to see first.
+        let iter_method = ctx.nodes_by_name(DUNDER_ITER).into_iter().find(|n| {
+            n.kind == NodeKind::Method
+                && n.file_path == class.file_path
+                && n.start_line >= class.start_line
+                && n.end_line <= class.end_line
+        })?;
+
+        Some(ResolvedRef {
+            original: r.clone(),
+            target_node_id: iter_method.id,
+            confidence: 0.7,
+            resolved_by: ResolvedBy::Framework,
+        })
+    }
+
     fn mk_ref(&self, from: &str, name: &str, kind: &str, file: &str, line: u32) -> UnresolvedRef {
         UnresolvedRef {
             from_node_id: from.to_string(),

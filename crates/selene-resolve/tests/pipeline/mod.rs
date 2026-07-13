@@ -67,12 +67,54 @@ pub struct Pipeline {
     resolver: ReferenceResolver<StoreContext<SurrealStore>>,
     /// How many references the ladder bound.
     pub resolved: usize,
+    /// How many edges the synthesizers inserted (0 unless
+    /// `index_resolve_and_synthesize` was used).
+    pub synthesized: u64,
 }
 
 impl Pipeline {
     /// The store, for queries.
     pub fn store(&self) -> &SurrealStore {
         self.resolver.ctx().store()
+    }
+
+    /// The resolution context (the synthesizers read source through it).
+    pub fn ctx(&self) -> &StoreContext<SurrealStore> {
+        self.resolver.ctx()
+    }
+
+    /// Every synthesized (`heuristic`) edge out of `from_id`, with its metadata.
+    pub async fn synth_edges_from(&self, from_id: &str) -> Vec<selene_core::Edge> {
+        self.store()
+            .outgoing(from_id, &[EdgeKind::Calls], None)
+            .await
+            .expect("outgoing")
+            .into_iter()
+            .map(|n| n.edge)
+            .filter(|e| e.provenance == Some(selene_core::Provenance::Heuristic))
+            .collect()
+    }
+
+    /// Every edge INTO `id` (any kind), for precision assertions.
+    pub async fn store_edges_into(&self, id: &str) -> Vec<selene_core::Edge> {
+        self.store()
+            .incoming(id, &[EdgeKind::Calls, EdgeKind::References])
+            .await
+            .expect("incoming")
+            .into_iter()
+            .map(|n| n.edge)
+            .collect()
+    }
+
+    /// Every edge OUT of `id`, for precision assertions.
+    pub async fn store_edges_out_of(&self, id: &str) -> Vec<selene_core::Edge> {
+        self.store()
+            .outgoing(id, &[EdgeKind::Calls, EdgeKind::References], None)
+            .await
+            .expect("outgoing")
+            .into_iter()
+            .map(|n| n.edge)
+            .collect()
     }
 
     /// Assert the flow is **closed**: a path runs from `from_id` to the node
@@ -328,5 +370,30 @@ pub async fn index_and_resolve(
         .await
         .expect("insert edges");
 
-    Pipeline { resolver, resolved }
+    Pipeline {
+        resolver,
+        resolved,
+        synthesized: 0,
+    }
+}
+
+/// [`index_and_resolve`], then **run the synthesizers**.
+///
+/// Synthesis runs LAST, after base edges are persisted — and it must: the
+/// callback pass finds registration sites by reading the `calls` edges INTO the
+/// registrar, and those edges do not exist until resolution has run. A pass
+/// ordered before persistence would see an empty graph and synthesize nothing,
+/// silently.
+pub async fn index_resolve_and_synthesize(
+    dir: &Path,
+    detected: &[&'static dyn FrameworkResolver],
+) -> Pipeline {
+    let p = index_and_resolve(dir, detected).await;
+    let count = selene_resolve::synth::run_synthesis(p.store(), p.ctx())
+        .await
+        .expect("synthesis must never fail an index");
+    Pipeline {
+        synthesized: count,
+        ..p
+    }
 }

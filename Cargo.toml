@@ -48,6 +48,10 @@ indexmap     = { version = "2", features = ["serde"] }
 # Async runtime (surrealdb + rmcp are tokio-based); rayon handles data-parallel
 # parsing and must never run on tokio worker threads (bridge via spawn_blocking).
 tokio        = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time", "fs", "io-util", "io-std", "net", "process", "signal"] }
+# `FutureExt::catch_unwind` — a synthesizer pass that panics must contribute zero
+# edges and never fail the index (errors collected, never thrown). std's
+# `catch_unwind` cannot wrap a future across await points; this can.
+futures      = "0.3"
 rayon        = "1"
 # Parsing / extraction  (PRD §3: selene-extract)
 tree-sitter  = "0.26"

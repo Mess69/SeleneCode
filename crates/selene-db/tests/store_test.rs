@@ -2247,3 +2247,68 @@ async fn count_nodes_named_counts_nodes_while_the_file_primitive_counts_files() 
         "an absent name counts 0, it does not error"
     );
 }
+
+// =============================================================================
+// nodes_by_kind_page — the streaming primitive the synthesizers page through
+// =============================================================================
+
+/// Paging over 250 nodes with limit 100 yields 3 pages, no duplicates, no gaps,
+/// and a stable order.
+///
+/// `get_nodes_by_kind` materializes every node of a kind, which is how the TS
+/// build OOM'd on large repos (#610) — the whole-graph synthesizer passes scan
+/// every method/function/class in the project, so they page instead.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn nodes_by_kind_page_pages_stably_with_no_gaps_or_duplicates() {
+    let store = fresh_store().await;
+
+    let mut nodes = Vec::new();
+    for i in 0..250 {
+        let mut n = node(&format!("f{i:03}"), "src/a.rs");
+        n.id = format!("function:f{i:03}");
+        nodes.push(n);
+    }
+    store.insert_nodes(&nodes).await.unwrap();
+
+    let mut seen: Vec<String> = Vec::new();
+    let mut after: Option<String> = None;
+    let mut pages = 0;
+    loop {
+        let page = store
+            .nodes_by_kind_page(NodeKind::Function, after.as_deref(), 100)
+            .await
+            .unwrap();
+        if page.is_empty() {
+            break;
+        }
+        pages += 1;
+        after = page.last().map(|n| n.id.clone());
+        seen.extend(page.into_iter().map(|n| n.id));
+    }
+
+    assert_eq!(pages, 3, "250 nodes at limit 100 = 3 pages");
+    assert_eq!(seen.len(), 250, "no row dropped at a page boundary");
+
+    let unique: std::collections::BTreeSet<&String> = seen.iter().collect();
+    assert_eq!(unique.len(), 250, "no row returned twice");
+
+    let mut sorted = seen.clone();
+    sorted.sort();
+    assert_eq!(seen, sorted, "pages come back in id order — the paging key");
+}
+
+/// An empty store pages to nothing, and a kind with no rows is an empty page,
+/// not an error.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn nodes_by_kind_page_on_an_absent_kind_is_empty() {
+    let store = fresh_store().await;
+    assert!(
+        store
+            .nodes_by_kind_page(NodeKind::Route, None, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+}

@@ -13,6 +13,8 @@ selene-core = { workspace = true }
 # in dev-dependencies, for integration tests, and nowhere else.
 selene-db = { workspace = true }
 regex = { workspace = true }
+# Pass-level panic containment (see the workspace note).
+futures = { workspace = true }
 # Lookaround only (Lua/Luau receiver pattern #1124) — see the root Cargo.toml note.
 fancy-regex = { workspace = true }
 lru = { workspace = true }

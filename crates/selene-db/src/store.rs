@@ -335,6 +335,24 @@ pub trait GraphStore: Send + Sync {
     /// *without* materializing its 10k candidate nodes.
     fn count_nodes_named(&self, name: &str) -> impl Future<Output = Result<u64>> + Send;
 
+    /// One **page** of nodes of `kind`, in id order — the streaming counterpart
+    /// to [`GraphStore::get_nodes_by_kind`].
+    ///
+    /// `after` is the last id of the previous page (`None` for the first). Id
+    /// order is what makes paging stable: a page boundary can neither drop a row
+    /// nor return one twice, and the output order is deterministic.
+    ///
+    /// **Use this, not `get_nodes_by_kind`, for whole-graph passes.** The
+    /// synthesizers scan every `method`/`function`/`class` node in the repo, and
+    /// materializing an unbounded kind is how the TS build OOM'd (#610). A page
+    /// at a time is O(1) memory.
+    fn nodes_by_kind_page(
+        &self,
+        kind: NodeKind,
+        after: Option<&str>,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<Node>>> + Send;
+
     /// Route nodes matching the given semantics — the **only** way to look a
     /// route up.
     ///

@@ -3632,6 +3632,7 @@ name = "selene-resolve"
 version = "0.1.0"
 dependencies = [
  "fancy-regex",
+ "futures",
  "json5",
  "jsonc-parser",
  "lru",
