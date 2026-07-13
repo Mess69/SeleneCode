@@ -29,6 +29,7 @@ mod budgets;
 mod builder;
 mod error;
 mod flow;
+mod node_view;
 mod relevance;
 mod stopwords;
 
@@ -40,6 +41,7 @@ pub use budgets::{
 pub use builder::{CALL_PATH_KINDS, ContextBuilder, NOT_INDEXED, thousands};
 pub use error::{ContextError, Result};
 pub use flow::{FLOW_KINDS, FlowStep, build_flow_from_named_symbols, describe_hop, render_flow};
+pub use node_view::{NodeView, build_node_view, node_not_found, render_node_view};
 pub use relevance::{
     Confidence, DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, RelevantContext, ScoredNode,
     brevity, confidence_of, find_relevant_context, is_test_file, score_candidates, sort_candidates,
