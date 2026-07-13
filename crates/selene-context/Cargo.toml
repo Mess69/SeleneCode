@@ -1,12 +1,26 @@
 [package]
 name = "selene-context"
-description = "ContextBuilder + markdown/JSON formatter for AI consumption."
+description = "Context assembly for AI consumption: relevance, explore, formatters."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { path = "../selene-core" }
+selene-db = { path = "../selene-db" }
+selene-graph = { path = "../selene-graph" }
+indexmap = { workspace = true }
+regex = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+selene-extract = { path = "../selene-extract" }
+selene-resolve = { path = "../selene-resolve" }
+selene-db = { path = "../selene-db", features = ["kv-mem"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

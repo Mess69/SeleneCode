@@ -1,3 +1,36 @@
-//! `selene-context` — ContextBuilder + markdown/JSON formatter for AI consumption.
+//! `selene-context` — turning a graph into an answer an agent can use **without opening a
+//! file**.
 //!
-//! Scaffold stub. Target design: `docs/specs/2026-07-11-rust-graph-db-migration-design.md` (PRD §3).
+//! Target design: PRD §3; build plan: `docs/plans/2026-07-13-phase45-graph-context-mcp.md`;
+//! parity source: `docs/reference/from-codegraph/maps/mcp-context.md`.
+//!
+//! # The one question every line of this crate is judged by
+//!
+//! **Does the output stop the agent from reading the file?**
+//!
+//! Not "is it correct" — correct-but-insufficient is a failed product. An answer that is
+//! accurate and sends the agent to `Read` has cost more than it saved, because the agent now
+//! pays for both.
+//!
+//! # Nothing here is an error unless it is a malfunction
+//!
+//! "No relevant context", "the query was all stopwords", "symbol not found" — every one of
+//! them is an ordinary answer with a success-shaped value. An `Err` becomes an `isError` at
+//! the MCP layer, and one `isError` early makes an agent abandon the tool for the session.
+//!
+//! # Layering
+//!
+//! `selene-graph` → **`selene-context`** → `selene-mcp`. No reverse edge, ever: every
+//! ranking/flow/budget/render decision lives here as a pure function over the graph API, and
+//! `selene-mcp` owns only schemas, dispatch, banners and error classification.
+
+mod error;
+mod relevance;
+mod stopwords;
+
+pub use error::{ContextError, Result};
+pub use relevance::{
+    DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, ScoredNode, brevity, is_test_file,
+    score_candidates, sort_candidates, weights,
+};
+pub use stopwords::{STOPWORDS, extract_search_terms, extract_symbols_from_query};
