@@ -192,12 +192,24 @@ tests/context_fake.rs       [A T2] the in-memory ResolutionContext fake (shared 
                                 every later task's unit tests build on it)
 tests/imports_*.rs          [A] per-ecosystem import tests
 tests/matcher_*.rs          [A] name-matcher / receiver / chains / fnref contract tests
-tests/frameworks_*.rs       [B]
-tests/synth_*.rs            [B]
-tests/resolve_e2e.rs        [C] extract → resolve → assert edges, on a real SurrealStore
-tests/dispatch_gate.rs      [C] THE Phase 3 gate (end-to-end dispatch coverage)
-docs/benchmarks/2026-07-phase3-dispatch-coverage.md   [C] gate results
+tests/fw_*.rs               [B] per-framework extract/resolve contract tests
+tests/synth_*.rs            [B] per-synthesizer unit tests
+tests/batch_test.rs         [C] the batched persist + pass driver
+tests/resolution_parity_gate.rs   [C] TS↔Rust edge-identity parity (tolerance 0)
+tests/dispatch_coverage_gate.rs   [C] THE Phase 3 gate (per-hop flow assertions)
+tests/fixtures/resolve/<project>/…   [C owns the tree; B contributes projects] THE ONE corpus
+tests/fixtures/resolve/{projects.toml, flows.toml, expected.json, deviations.toml}   [C]
+docs/benchmarks/2026-07-phase3-resolution-parity.md   [C] gate results
 ```
+
+**⚠ ONE fixture corpus, one gate.** Part B's task bodies name their fixtures
+`tests/fixtures/dispatch/<name>/`; that path is **superseded** — every Part B fixture is a
+**project in Part C's single corpus**, `tests/fixtures/resolve/fw-<name>/` (frameworks) or
+`tests/fixtures/resolve/synth-<name>/` (synthesizers), and every one gets a `[[project]]` row
+in `projects.toml` (Task 28) and at least one `[[flow]]` row in `flows.toml` (Task 31). Read
+every `tests/fixtures/dispatch/x/` in Part B as `tests/fixtures/resolve/fw-x/` (or `synth-x/`).
+Two corpora would mean two truths and a gate that certifies the wrong one — the whole reason
+Part B's own gate task was deleted.
 
 Nothing in `selene-core` or `selene-db` changes in Part A **except** the one open question
 below (`delete_resolved` key arity), which is a maintainer decision, not a task's to take.
@@ -217,6 +229,26 @@ to parallel subagents or worktrees.
 | `src/types.rs`, `src/context.rs` | **A2** (creates), **B** (may add framework-facing context methods) | B appends only; never reshapes A2's types. |
 | `src/imports/mod.rs` | **A5** (creates: `resolve_import_path`), **A6** (`resolve_via_import` branches) | Sequential (A5 → A6). |
 | `src/lib.rs` | every task (one `mod`/`pub use` line) | Append-only, one line per task; Part C does the final facade pass. |
+| `src/frameworks/mod.rs` (registry + trait) | **11** (creates), **12–20** (one registry row + one file each), **26** (the Django ORM branch) | 11 blocks all of them; 12–20 are then mutually independent (one framework file each) and may run in parallel. |
+| `src/frameworks/python.rs` | **14** (Django), **15** (Flask/FastAPI), **26** (Django ORM branch) | STRICTLY SEQUENTIAL (14 → 15 → 26). |
+| `src/synth/mod.rs` (the pass table) | **21** (creates), **22, 23, 24, 25** (one pass + one table row each) | 21 blocks them; each later task adds exactly one row to the **one declared pass-order list** and never re-orders it. |
+| `src/batch.rs` | **27** (creates the driver), **31** (gate consumes it — read-only) | 27 must land before 30/31 can run a real pipeline. |
+
+**Cross-crate seams (this is the class of oversight that collided five agents in Phase 2 —
+the table above only listed `selene-resolve` files):**
+
+| Shared file (other crate) | Tasks that modify it | Rule |
+|---|---|---|
+| `crates/selene-core/src/lib.rs` | **2** (moves `Language` + `LANGUAGE_FAMILY` in — decision D1), **11** (adds the three route fields to `Node` + the `EXTRACTION_VERSION` bump), **16** (adds the `Yaml`/`Properties` variants) | **STRICTLY SEQUENTIAL (2 → 11 → 16).** All three are wire-contract changes: **re-run `cargo test -p selene-extract` AND `-p selene-db`** before each commit. |
+| `crates/selene-db/src/{store.rs, store_impl.rs, schema.rs}` | **11** (route fields + `node_route`/`node_framework` indexes + `find_route`), **21** (`nodes_by_kind_page`) | **STRICTLY SEQUENTIAL (11 → 21)** — never dispatch them in parallel. Both add a `GraphStore` method + a schema migration; a parallel merge silently drops one `DEFINE FIELD`. |
+| `crates/selene-extract/src/language.rs` | **2** (becomes a re-export shim for `selene_core::Language`), **16** (the `.yml`/`.yaml`/`.properties` `EXTENSION_MAP` rows only) | Sequential (2 → 16). These are the **only** `selene-extract` edits in Phase 3 — nothing else in the crate is touched (D2). |
+
+**⚠ D2 — `selene-extract` NEVER depends on `selene-resolve`.** The pipeline is
+extract → resolve; the reverse dependency is backwards layering and would create a cycle.
+The framework registry therefore lives **entirely in `selene-resolve`**, and framework route
+extraction runs as a `selene-resolve` **pass over the already-indexed files** (Task 11's
+`run_framework_extract`), not as a hook inside `selene-extract`'s orchestrator. No task in
+this plan edits `selene-extract/src/orchestrator.rs`.
 
 Everything else is task-private and **parallelizable**: A4's four import-input modules
 (`mappings`/`aliases`/`workspace`/`go_module`) are independent of A5/A6 and of each other;
@@ -301,7 +333,10 @@ other. Every item below has been observed to be *plausibly* wrong.
 ### Task 2: Crate skeleton — types, `ResolutionContext` seam, caches, language families
 
 **Files:** Create: `src/lib.rs`, `src/error.rs`, `src/types.rs`, `src/context.rs`,
-`src/cache.rs`, `src/families.rs`, `tests/context_fake.rs`.
+`src/cache.rs`, `src/families.rs`, `tests/context_fake.rs`. Modify (decision D1, below):
+`crates/selene-core/src/lib.rs` (receives `Language` + `LANGUAGE_FAMILY`),
+`crates/selene-extract/src/language.rs` (becomes a re-export shim). ⚠ Cross-crate — see the
+sequencing table; this is the only Phase 3 task that touches `selene-extract`.
 
 **Interfaces (the contract — `maps/resolution.md` §Public interface, §types.ts):**
 ```rust
@@ -323,7 +358,9 @@ pub enum ReExport { Named { exported_name: String, original_name: String, source
     Wildcard { source: String } }
 
 // context.rs — the TS ResolutionContext interface, as a trait.
-pub trait ResolutionContext {
+// `Send + Sync` is required (Part B's framework registry is a `&'static` table behind a
+// `LazyLock`, and the synth passes take `&dyn ResolutionContext` across an await).
+pub trait ResolutionContext: Send + Sync {
     // graph reads (GraphStore-backed)
     fn nodes_in_file(&self, path: &str) -> Vec<Node>;
     fn nodes_by_name(&self, name: &str) -> Vec<Node>;
@@ -332,15 +369,22 @@ pub trait ResolutionContext {
     fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Node>;
     fn node_by_id(&self, id: &str) -> Option<Node>;
     fn count_nodes_named(&self, name: &str) -> u64;          // the #999 ceiling check
-    fn method_matches(&self, language: &str, ty: &str, method: &str) -> Vec<Node>;  // memoized
+    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Node>; // memoized
     fn supertypes(&self, node_id: &str) -> Vec<Node>;        // NODE-anchored (see Task 1)
     fn members_of(&self, node_id: &str) -> Vec<Node>;        // `contains` children
     // filesystem reads
-    fn project_root(&self) -> &Path;
+    fn project_root(&self) -> &Path;                         // ← THE spelling (not `root()`)
     fn file_exists(&self, path: &str) -> bool;
-    fn read_file(&self, path: &str) -> Option<String>;       // LRU-cached
+    fn read_file(&self, path: &str) -> Option<String>;       // owned String (LRU-cached inside)
     fn file_lines(&self, path: &str) -> Option<Arc<Vec<String>>>;  // LRU-cached (#1122)
-    fn all_files(&self) -> &[String];
+    fn all_files(&self) -> &[String];                        // paths only — sorted
+    /// Paths **with their language** — Part B's framework `extract()` sweep and every
+    /// language-gated synth pass need this; `all_files()` alone forces a re-detect.
+    fn files_with_language(&self) -> &[(String, Language)];  // sorted by path
+    /// The distinct set of languages present in the index. Language-gates every framework
+    /// (`applicable_frameworks`) and every synth pass BEFORE it runs — a Python-only repo
+    /// never scans for JSX. Computed once at warm-cache time.
+    fn languages(&self) -> &BTreeSet<Language>;
     fn list_directories(&self, path: &str) -> Vec<String>;
     // lazily-computed project singletons (None = absent, computed once per resolver life)
     fn import_mappings(&self, path: &str) -> Arc<Vec<ImportMapping>>;   // LRU-cached
@@ -356,11 +400,31 @@ pub trait ResolutionContext {
 pub struct StoreContext<S: GraphStore> { /* store, root, LRU caches, singletons */ }
 impl<S: GraphStore> ResolutionContext for StoreContext<S> { .. }
 
-// families.rs
-pub fn same_language_family(a: &str, b: &str) -> bool;
-pub fn is_known_language_family(l: &str) -> bool;
-pub fn crosses_known_family(a: &str, b: &str) -> bool;
+// families.rs — typed on selene_core::Language, never on &str (decision D1).
+pub fn same_language_family(a: Language, b: Language) -> bool;
+pub fn is_known_language_family(l: Language) -> bool;
+pub fn crosses_known_family(a: Language, b: Language) -> bool;
 ```
+
+**Decision D1 (maintainer, 2026-07-13) — `Language` moves to `selene-core`.** It is a shared
+wire concept exactly like `NodeKind`/`EdgeKind`, and leaving it in `selene-extract` would force
+`selene-resolve` to depend on the extractor (backwards layering — see D2 in the sequencing
+section). **This task performs the move**, and it is the *only* task that touches
+`selene-extract`:
+
+- Move `Language` (the full registry enum + `as_str()` + `EXTENSION_MAP`-independent parts) and
+  `LANGUAGE_FAMILY` from `selene-extract/src/language.rs` into `selene-core`.
+  `detect_language` / `is_source_file` / `is_generated_file` **stay** in `selene-extract` (they
+  are extraction policy, not wire types).
+- `selene-extract::language` **re-exports** `selene_core::Language` so every existing path
+  (`selene_extract::Language`) keeps compiling — no churn in Phase 2's code or tests.
+- **Type both Parts A and B against `selene_core::Language`** — never `&str`, never a
+  `selene-extract` dependency. `Node.language` stays a `String` on the wire (no serde change);
+  the resolver parses it once at the context boundary (`Language::from_wire(&node.language)`).
+- **Wire-safety check:** the move must not change a single serialized byte. Re-run
+  `cargo test -p selene-extract` (its insta snapshots + the Phase 2 parity gate) and
+  `cargo test -p selene-db` before this task's commit. If any snapshot moves, the move was not
+  a move — stop and fix it.
 
 **The sync/async seam (decide here, once):** `ResolutionContext`'s methods are **synchronous**
 — the whole matcher is sync, ordered, single-threaded. `StoreContext` is built by an `async`
@@ -371,12 +435,20 @@ seam). Document this in `context.rs` module docs: an async `ResolutionContext` w
 strategy function async, infect the whole matcher, and buy nothing — resolution is CPU-bound
 over a warm cache, not I/O-bound.
 
+- [ ] **Do the D1 move first** (`Language` + `LANGUAGE_FAMILY` → `selene-core`; `selene-extract`
+  re-exports), then build `selene-resolve` on top of it. Both cross-crate test suites green
+  before anything else in this task is written.
 - [ ] `families.rs` — `LANGUAGE_FAMILY` verbatim (map §resolveOne pipeline, Language gates):
   `java|kotlin|scala → jvm`; `swift|objc → apple`; `typescript|tsx|javascript|jsx|arkts → web`;
   `c|cpp → c`; `csharp|razor → dotnet`; **everything else is its own singleton family**.
   `same_language_family(a,b)` = `a == b || family(a) == family(b)` (both known);
   `crosses_known_family(a,b)` = both are in a KNOWN family and the families differ (a language
-  with no family entry never "crosses").
+  with no family entry never "crosses"). Keyed on `Language`, not `&str`.
+- [ ] **`files_with_language()` + `languages()`** are part of this trait from day one — Part B's
+  framework `extract()` sweep (Task 11) and **every** language-gated synth pass (Task 21)
+  hard-require them, and a `BTreeSet<Language>` (not `HashSet`) because iteration order leaks
+  into output ordering. Both are warm-cache-computed from `GraphStore::all_files()` /
+  `distinct_file_languages()` — one query, not one per call.
 - [ ] `cache.rs` — `DEFAULT_CACHE_LIMIT = 5000`, overridable by `SELENE_RESOLVER_CACHE_SIZE`
   (positive int only; garbage ⇒ default, never an error). **Content-bearing caches** (file text,
   split lines) get `max(64, limit / 5)` (map §Caches — they hold whole files, so they get a
@@ -1121,55 +1193,97 @@ Operationally, for every task below:
 3. If a task can only close part of its chain, it does **not** ship the partial bridge:
    it lands the pass **disabled** (not registered in the pass list) with the gap recorded
    in `lib.rs`'s deferrals ledger, and the task is not marked done.
-4. Task 27 is the global gate: every framework/synthesizer fixture in one corpus, each
-   asserting an end-to-end path. Phase 3 is not complete until it is green.
+4. Task 31 is the global gate: every framework/synthesizer flow in one corpus, each
+   asserting **each hop individually**. Phase 3 is not complete until it is green.
 
 ---
 
-## Assumed from Part A (reconcile at assembly)
+## The Part A interfaces this part consumes (REAL signatures — reconciled 2026-07-13)
 
-Part A was not yet written when this part was authored. These are the interfaces Part B
-**consumes**; if Part A names them differently, the controller renames here — the shapes,
-not the spellings, are what Part B depends on.
+These are Part A's **actual** spellings (Tasks 2/3), not assumptions. Five of them differ from
+what an early draft of this part guessed; the differences are load-bearing, so they are spelled
+out here and every task below uses these forms.
 
 ```rust
-// selene-resolve/src/types.rs  (Part A)
-pub struct UnresolvedRef {            // hydrated from selene_core::UnresolvedReference
+// selene_core (decision D1 — Language is a CORE wire type, like NodeKind/EdgeKind)
+pub enum Language { Typescript, Tsx, Javascript, Python, Rust, Go, Java, Kotlin, C, Cpp,
+                    CSharp, Php, Ruby, Yaml, Properties, … }          // + as_str()
+
+// selene_core::UnresolvedRef — REUSED verbatim; Part A does not redefine it.
+pub struct UnresolvedRef {
     pub from_node_id: String, pub reference_name: String,
-    pub reference_kind: String,       // EdgeKind wire string | "function_ref"
+    pub reference_kind: String,        // EdgeKind wire string | "function_ref"
     pub line: Option<u32>, pub column: Option<u32>,
-    pub file_path: String, pub language: Language,
-}
-pub struct ResolvedRef {
-    pub target_node_id: String, pub confidence: f32,
-    pub resolved_by: ResolvedBy,      // ::Framework for every hit in this part
+    pub candidates: Vec<serde_json::Value>,
+    pub file_path: String, pub language: String,   // wire string; parse to Language at the seam
+    pub status: RefStatus, pub name_tail: String,
 }
 
-/// The read-only project view a resolver/synthesizer sees. Part A owns it.
-/// Part B needs these members; add them to Part A's trait if absent.
+// selene-resolve/src/types.rs (Part A, Task 2)
+pub struct ResolvedRef {
+    pub original: UnresolvedRef,       // ⚠ MANDATORY — see below
+    pub target_node_id: String,
+    pub confidence: f64,               // ⚠ f64, not f32
+    pub resolved_by: ResolvedBy,       // ::Framework for every hit in this part
+}
+
+// selene-resolve/src/context.rs (Part A, Task 2) — the members this part uses
 pub trait ResolutionContext: Send + Sync {
-    fn root(&self) -> &Path;
-    fn file_exists(&self, rel: &str) -> bool;              // project-relative
-    fn read_file(&self, rel: &str) -> Option<&str>;        // cached source text
-    fn all_files(&self) -> &[FileRecord];                  // path + language
-    fn list_directories(&self, rel: &str) -> Vec<String>;  // cargo glob walk
+    fn project_root(&self) -> &Path;                       // ⚠ NOT `root()`
+    fn file_exists(&self, path: &str) -> bool;
+    fn read_file(&self, path: &str) -> Option<String>;     // ⚠ owned String, NOT Option<&str>
+    fn all_files(&self) -> &[String];                      // ⚠ PATHS ONLY
+    fn files_with_language(&self) -> &[(String, Language)]; // ⚠ use THIS when you need the language
     fn languages(&self) -> &BTreeSet<Language>;            // distinct file languages
+    fn list_directories(&self, path: &str) -> Vec<String>; // cargo glob walk
+    fn nodes_by_name(&self, name: &str) -> Vec<Node>;
+    fn nodes_in_file(&self, path: &str) -> Vec<Node>;
+    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Node>;
+    // … the full trait is Part A Task 2; these are the members Part B is written against.
 }
 ```
 
-- Part A owns `resolve_one()`'s **strategy ladder**. Part B plugs in as **Strategy 1
-  (frameworks)**: iterate the registry in order, first result with `confidence >= 0.9`
-  short-circuits; otherwise the result competes on max-confidence with import (0.9/0.95)
-  and name-matcher. **The exact confidence constants in this part are load-bearing** for
-  that competition — do not round them.
-- Part A owns the **`claims_reference` pre-filter**: a ref whose name matches no symbol, no
-  import, and no framework `claims_reference` is dropped *before* `resolve()` runs. Tasks
-  20 / 23 / 28 / 35 depend on this hook existing. Claimed names (whole part):
-  `_iterable_class`, `*.urls`, `Controller@method`, `[\w/]+#\w+`, `*:prefix`.
-- Part A owns `gate_framework_language` (drops `references`/`imports` results that cross
-  two known language families; `calls` and config↔code bridges pass) and the rule that
-  `function_ref` refs **never reach frameworks**.
-- Part A owns the resolver's `GraphStore` write path and error collection.
+**The five differences that bite, and what to do about them:**
+
+1. **`project_root()`, not `root()`.** Mechanical rename at every call site in this part.
+2. **`read_file() -> Option<String>`** (owned, LRU-cached inside), not `Option<&str>`. Bind it
+   (`let src = ctx.read_file(p)?;`) before running a regex over it; do not try to hold a borrow
+   across the context.
+3. **`all_files() -> &[String]`** is paths only. Every place this part wants *path + language*
+   (the framework `extract()` sweep, the language gates) uses **`files_with_language()`**, which
+   Part A's Task 2 now carries for exactly this reason.
+4. **`languages() -> &BTreeSet<Language>`** exists on Part A's trait (added at reconciliation —
+   Task 21 and Task 16's Spring hard-require it). `BTreeSet`, so iteration order is deterministic.
+5. **`ResolvedRef.original` is MANDATORY and `confidence` is `f64`.** Every framework `resolve()`
+   in this part constructs the **full** struct:
+   ```rust
+   Some(ResolvedRef {
+       original: r.clone(),                 // ⚠ the STORED ROW, unmutated
+       target_node_id: handler.id.clone(),
+       confidence: 0.95,                    // f64 — the constants below are load-bearing
+       resolved_by: ResolvedBy::Framework,
+   })
+   ```
+   `original` is not bookkeeping: `GraphStore::delete_resolved` keys the row deletion on
+   `original.reference_name`, so a `resolve()` that omits or **mutates** it no-ops the delete,
+   the offset-0 batch loop re-reads the same rows forever, and the run explodes (#760: 5M edges /
+   1.4 GB). Part A's Global Constraints state this as a hard invariant; it applies to every
+   framework resolver here, and Task 27's non-progress guard is the backstop, not the fix.
+
+**What Part A owns (unchanged):**
+
+- `resolve_one()`'s **strategy ladder**. Part B plugs in at **step 7 (frameworks)**: iterate the
+  registry in order, first result with `confidence >= 0.9` short-circuits; otherwise the result
+  competes on max-confidence with import (0.9/0.95) and the name-matcher. **The exact confidence
+  constants in this part are load-bearing** for that competition — do not round them.
+- The **`claims_reference` pre-filter**: a ref whose name matches no symbol, no import, and no
+  framework `claims_reference` is dropped *before* `resolve()` runs. Tasks **11 / 14 / 19 / 26**
+  depend on this hook existing. Claimed names (whole part): `_iterable_class`, `*.urls`,
+  `Controller@method`, `[\w/]+#\w+`, `*:prefix`.
+- `gate_framework_language` (drops `references`/`imports` results that cross two known language
+  families; `calls` and config↔code bridges pass) and the rule that `function_ref` refs **never
+  reach frameworks**.
+- The resolver's `GraphStore` write path and error collection.
 
 ---
 
@@ -1242,13 +1356,20 @@ src/synth/mod.rs             SynthPass trait, run_synthesis() orchestrator, dedu
 src/synth/lineindex.rs       lazy newline index + binary search (line_at(offset))
 src/synth/callback.rs        field-observer channels
 src/synth/event_emitter.rs   string-keyed EventEmitter channels
-src/synth/react.rs           react-render + jsx-render (ship together — Tasks 33+34)
+src/synth/react.rs           react-render + jsx-render (ship together — Tasks 24+25)
 src/strip_comments.rs        per-language comment/string blanking (space-preserving)
 tests/fw_<name>_test.rs      per-framework extract/resolve contract tests
 tests/synth_<name>_test.rs   per-synthesizer unit tests
-tests/dispatch_gate.rs       Task 27 — the END-TO-END gate over all fixtures
-tests/fixtures/dispatch/<framework>/…   the end-to-end fixture corpus
 ```
+The end-to-end fixture corpus and the dispatch gate are **Part C's** (Tasks 28 and 31) —
+this part contributes fixtures and flow rows to them, and owns no gate test of its own.
+
+⚠ **Fixture paths below are superseded — there is ONE corpus.** Where a task in this part says
+`tests/fixtures/dispatch/<name>/`, write it to **`tests/fixtures/resolve/fw-<name>/`**
+(frameworks) or **`tests/fixtures/resolve/synth-<name>/`** (synthesizers) — Part C's single
+corpus (Task 28) — and add its `[[project]]` row to `projects.toml` plus at least one
+`[[flow]]` row to `flows.toml` (Task 31). A second corpus would mean a second truth, and a gate
+that certifies the wrong one.
 
 ---
 
@@ -1256,27 +1377,30 @@ tests/fixtures/dispatch/<framework>/…   the end-to-end fixture corpus
 
 | # | Title | Commit type |
 |---|---|---|
-| 20 | Framework registry, `FrameworkResolver` trait, route-node contract, strip-comments | `feat(resolve)` |
-| 21 | Express — routes, inline-arrow handler bodies, middleware/controller/service | `feat(resolve)` |
-| 22 | React Router — v5/v6 + data-router; component/hook/context conventions | `feat(resolve)` |
-| 23 | Django — `path`/`re_path`/`url` + DRF `router.register`; view/model conventions | `feat(resolve)` |
-| 24 | Flask + FastAPI — decorator route engine, Flask-RESTful, dependency conventions | `feat(resolve)` |
-| 25 | Spring — Java+Kotlin routes, config-key nodes, `@Value` relaxed binding, DI | `feat(resolve)` |
-| 26 | Gin/Go — any-receiver routes, handler/service/middleware conventions | `feat(resolve)` |
-| 27 | Axum/Actix + Cargo workspace crate map | `feat(resolve)` |
-| 28 | Laravel + Rails — `Controller@method` / `controller#action` precise claims | `feat(resolve)` |
-| 29 | ASP.NET — `[Http*]` + class `[Route]` prefix, minimal API, DI suffixes | `feat(resolve)` |
-| 30 | Synthesizer harness — `SynthPass`, streaming primitives, dedupe, chunked insert | `feat(resolve)` |
-| 31 | Synthesizer 1/5 — callback / field-observer channels | `feat(resolve)` |
-| 32 | Synthesizer 2/5 — EventEmitter (string-keyed) channels | `feat(resolve)` |
-| 33 | Synthesizer 3/5 — React re-render (`setState` → `render`) | `feat(resolve)` |
-| 34 | Synthesizer 4/5 — JSX child (`<Child/>` → component) **— ships with 33** | `feat(resolve)` |
-| 35 | Synthesizer 5/5 — Django ORM descriptor (resolver-mechanism, `claimsReference`) | `feat(resolve)` |
-| 36 | **Phase 3 gate** — end-to-end dispatch-coverage fixture corpus + gate test | `test(resolve)` |
+| 11 | Framework registry, `FrameworkResolver` trait, route-node contract, strip-comments | `feat(resolve)` |
+| 12 | Express — routes, inline-arrow handler bodies, middleware/controller/service | `feat(resolve)` |
+| 13 | React Router — v5/v6 + data-router + Next.js file routes; component/hook/context conventions | `feat(resolve)` |
+| 14 | Django — `path`/`re_path`/`url` + DRF `router.register`; view/model conventions | `feat(resolve)` |
+| 15 | Flask + FastAPI — decorator route engine, Flask-RESTful, dependency conventions | `feat(resolve)` |
+| 16 | Spring — Java+Kotlin routes, config-key nodes, `@Value` relaxed binding, DI | `feat(resolve)` |
+| 17 | Gin/Go — any-receiver routes, handler/service/middleware conventions | `feat(resolve)` |
+| 18 | Axum/Actix + Cargo workspace crate map | `feat(resolve)` |
+| 19 | Laravel + Rails — `Controller@method` / `controller#action` precise claims | `feat(resolve)` |
+| 20 | ASP.NET — `[Http*]` + class `[Route]` prefix, minimal API, DI suffixes | `feat(resolve)` |
+| 21 | Synthesizer harness — `SynthPass` table, streaming primitives, dedupe, chunked insert | `feat(resolve)` |
+| 22 | Synthesizer 1/5 — callback / field-observer channels | `feat(resolve)` |
+| 23 | Synthesizer 2/5 — EventEmitter (string-keyed) channels | `feat(resolve)` |
+| 24 | Synthesizer 3/5 — React re-render (`setState` → `render`) | `feat(resolve)` |
+| 25 | Synthesizer 4/5 — JSX child (`<Child/>` → component) **— ships with 24** | `feat(resolve)` |
+| 26 | Synthesizer 5/5 — Django ORM descriptor (resolver-mechanism, `claimsReference`) | `feat(resolve)` |
 
-⚠ **Sequencing:** Task 11 blocks 21–29 and 35. Task 21 blocks 31–34. Tasks 21–29 are
-mutually independent (one file each) and may be dispatched in parallel. **Tasks 33 and 34
-form ONE mergeable unit** — see Task 25. Task 27 is last.
+⚠ **Sequencing:** Task 11 blocks 12–20 and 26. Task 21 blocks 22–25. Tasks 12–20 are
+mutually independent (one file each) and may be dispatched in parallel — **except** 14 → 15 →
+26, which all edit `src/frameworks/python.rs`. **Tasks 24 and 25 form ONE mergeable unit** —
+see Task 25. **Task 11 → Task 21 is strictly sequential** (both edit `selene-db`'s
+`store.rs`/`store_impl.rs`/`schema.rs` — see the cross-crate seam table). There is **no Part B
+gate task**: the Phase 3 gate is Part C's Task 31, and every framework/synthesizer here
+contributes a fixture project + a `[[flow]]` row to it.
 
 ---
 
@@ -1284,8 +1408,11 @@ form ONE mergeable unit** — see Task 25. Task 27 is last.
 
 **Files:** Create: `src/frameworks/mod.rs`, `src/frameworks/routes.rs`,
 `src/strip_comments.rs`. Modify: `src/lib.rs` (module decls + the public-interface ledger),
-`crates/selene-extract/src/orchestrator.rs` (the extract-time seam — see below).
-Tests: `tests/fw_registry_test.rs`, `tests/strip_comments_test.rs`.
+`crates/selene-core/src/lib.rs` (the three route fields on `Node` + the `EXTRACTION_VERSION`
+bump), `crates/selene-db/src/{schema.rs, store.rs, store_impl.rs}` (the route fields, their
+indexes, and `find_route`). Tests: `tests/fw_registry_test.rs`, `tests/strip_comments_test.rs`.
+⚠ **Cross-crate, and strictly sequential with Task 21** (which also edits `selene-db`'s
+`store.rs`/`store_impl.rs`). **`selene-extract` is NOT touched** — see D2.
 
 **Interfaces (the contract):**
 ```rust
@@ -1313,6 +1440,16 @@ pub fn framework_resolver(name: &str) -> Option<&'static dyn FrameworkResolver>;
 pub fn detect_frameworks(ctx: &dyn ResolutionContext) -> Vec<&'static dyn FrameworkResolver>;
 pub fn applicable_frameworks<'a>(detected: &[&'a dyn FrameworkResolver], l: Language)
     -> Vec<&'a dyn FrameworkResolver>;
+
+/// The framework EXTRACT pass — route/config node emission over the ALREADY-INDEXED files.
+/// Runs in `selene-resolve`, ahead of the resolution pass (Part C's Task 27 driver calls it):
+/// route nodes must exist before any ref can resolve to one. NOT a hook inside
+/// `selene-extract` — that would make the extractor depend on the resolver (decision D2).
+pub async fn run_framework_extract<S: GraphStore>(
+    store: &S, ctx: &dyn ResolutionContext,
+    detected: &[&'static dyn FrameworkResolver],
+) -> Result<FrameworkExtractStats>;
+pub struct FrameworkExtractStats { pub nodes: u64, pub refs: u64, pub warnings: Vec<String> }
 
 // routes.rs — the route-node contract. The id is the ORDINARY hashed node id; route
 // SEMANTICS live in indexed fields (maintainer decision, 2026-07-13 — see below).
@@ -1375,10 +1512,10 @@ surfaced by explore, so they keep their exact shape:
 > one line), flask stacked `@x.route` decorators. Those collide on `(file, kind, line)` and
 > are separated **only by `name`** — which embeds the verb (`GET /x` vs `POST /x`) and, for
 > rails, the action path. So the `{METHOD} {path}` name spelling above is not cosmetic: it
-> is what keeps route ids unique now that the id no longer carries the method. **Task 27's
-> gate must include a same-line multi-route fixture** (axum chained verbs + rails
-> `resources`) asserting *N distinct route nodes*, not N−1. Any future framework that can
-> emit two routes with the same `(file, name, line)` must disambiguate via `name`.
+> is what keeps route ids unique now that the id no longer carries the method. **Task 31's
+> gate carries the same-line multi-route sub-check** (axum chained verbs + rails `resources`,
+> fixtures from Task 28) asserting *N distinct route nodes*, not N−1. Any future framework
+> that can emit two routes with the same `(file, name, line)` must disambiguate via `name`.
 
 **Consequence for Part C (parity gate) — the controller is relaying this:** parity against
 the TS build must compare **semantic identity** — `(framework, method, path, file, line)`
@@ -1401,13 +1538,24 @@ route ids is guaranteed to fail and means nothing.
   the delimiters and newlines. Hand-rolled scanner (no regex).
 - [ ] **Route fields — `selene-core` + `selene-db` (do this BEFORE `route_node()`).** This
   task carries the cross-crate change; the controller does **not** need a separate
-  dependency task, because Task 11 already blocks 21–29 and no other Part-B task edits
-  these files.
+  dependency task, because Task 11 already blocks 12–20 and no other Part-B task edits
+  these files (Task 21's `selene-db` change is **strictly sequenced after** this one).
   - `selene-core::Node`: add `route_method: Option<String>`, `route_path: Option<String>`,
-    `framework: Option<String>` (all `#[serde(skip_serializing_if = "Option::is_none")]`,
-    camelCase wire names `routeMethod` / `routePath` / `framework`). Non-route nodes leave
-    them `None`. **Bump `EXTRACTION_VERSION`** — this is an output-shape change, which is
-    exactly what the bump rule in its doc comment is for.
+    `framework: Option<String>` — **all three `Option<…>` + `#[serde(skip_serializing_if =
+    "Option::is_none")]`**, camelCase wire names `routeMethod` / `routePath` / `framework`.
+    Non-route nodes leave them `None`.
+  - ⚠ **This can silently break Phase 2's green gates, and it is this task's job to prove it
+    doesn't.** Phase 2's insta snapshots and its count-parity baseline compare **serialized
+    nodes**; a field that serializes as `null` on every ordinary node would move every
+    snapshot. `skip_serializing_if` is what keeps a non-route node's JSON **byte-identical**.
+    **Re-run `cargo test -p selene-extract` (snapshots + the parity gate) and
+    `cargo test -p selene-db` BEFORE this task's commit** — a moved snapshot means the fields
+    are not skipping, and the fix is the serde attribute, never `cargo insta accept`.
+  - **This task owns the `EXTRACTION_VERSION` bump — exclusively, and it is the only bump in
+    Phase 3.** The route fields are an output-shape change, which is exactly what the bump
+    rule in the const's doc comment is for. Bump it **once**, here (`1` → `2`), and state in
+    the commit body that Phase 3's other tasks add no output-shape change. A stored version
+    below the engine's yields "re-index recommended" **guidance**, never an error.
   - `selene-db::schema` — the `node` table is **`SCHEMAFULL`**, so unknown fields are
     rejected: the `DEFINE FIELD`s are mandatory, not optional.
     ```sql
@@ -1430,13 +1578,23 @@ route ids is guaranteed to fail and means nothing.
   aspnet` (alphabetical-within-ecosystem is NOT the contract — first-match-wins order is;
   keep this list as the one place order is declared).
 - [ ] Implement `route_node()` per the table. Unit-test one id per row.
-- [ ] Wire the **extract-time seam**: in `selene-extract`'s orchestrator, after language
-  extraction of a file, call `extract(path, content)` for every *detected* framework
-  applicable to that file's language; append nodes to the result's nodes and refs to its
-  unresolved refs. Errors → a per-file `ExtractionError` with severity `warning`, **never**
-  fatal. Detection runs once per index, not per file. (This makes `selene-extract` depend on
-  `selene-resolve`'s registry — if that creates a cycle, the trait + registry move to a
-  `selene-core::frameworks` module; record whichever you pick in `lib.rs`.)
+- [ ] **Wire the framework-extract pass — in `selene-resolve`, NOT in `selene-extract`
+  (decision D2).** `selene-extract` must **never** depend on `selene-resolve`: the pipeline is
+  extract → resolve, and the reverse edge is backwards layering (and a literal dependency
+  cycle). So route/config emission is a **`selene-resolve` pass over the already-indexed
+  files**, not a hook inside the extractor's orchestrator.
+  - `run_framework_extract(store, ctx, detected)`: iterate `ctx.files_with_language()` (sorted
+    — determinism); for each file, take the *detected* frameworks `applicable_frameworks(…, lang)`
+    in registry order; `let src = ctx.read_file(path)?`; call `extract(path, &src)`; collect
+    the emitted `Node`s and `UnresolvedReference`s; insert them via `store.insert_nodes` /
+    `store.insert_unresolved` in **sorted, chunked** batches.
+  - **Ordering contract:** this pass runs **before** the resolution pass (route nodes must
+    exist before a ref can bind to one) and **after** extraction. Part C's Task 27 driver owns
+    the call site; state the ordering in `lib.rs`'s ledger.
+  - **Incremental sync** re-runs it for the changed files only (same function, a path subset).
+  - Errors: a framework that fails on a file contributes a `warning` string to
+    `FrameworkExtractStats` and **zero** nodes — never a failed index. Detection
+    (`detect_frameworks`) runs **once per index**, not per file.
 - [ ] Wire `run_post_extract(ctx)`: after every full index AND every incremental sync, call
   each detected framework's `post_extract`, persist mutated nodes via the store's node
   upsert, per-framework try/catch. (No v0 framework uses it — NestJS's RouterModule
@@ -1504,7 +1662,7 @@ Promise, require, fail`
   emits nothing (strip-comments).
 - [ ] Implement the balanced-paren scanner (string-aware: `'`, `"`, `` ` ``, escapes) —
   put it in `src/frameworks/mod.rs` as `match_delim(src, open_idx) -> Option<Range>`;
-  Tasks 22/27 reuse it.
+  Tasks 13/18 reuse it.
 - [ ] Implement extract + resolve. Line = 1-based line of the match offset via the shared
   line index (`synth/lineindex.rs` from Task 21 — if Task 21 hasn't landed, inline a local
   one and de-dup at Task 21).
@@ -1589,7 +1747,7 @@ it is a compat contract):
 FastAPI to the same file, Task 26 appends the ORM descriptor). Tests:
 `tests/fw_django_test.rs`, `tests/fixtures/dispatch/django/`.
 
-⚠ **Shared file:** Tasks 23, 24 and 35 all edit `src/frameworks/python.rs`. Run them
+⚠ **Shared file:** Tasks 14, 15 and 26 all edit `src/frameworks/python.rs`. Run them
 **sequentially**, never as parallel subagents. (Alternative if you must parallelize: split
 into `python/django.rs`, `python/flask.rs`, `python/fastapi.rs` behind a `python/mod.rs` —
 allowed, record the deviation in `lib.rs`.)
@@ -1716,15 +1874,18 @@ authorized). Detect: `spring-boot | springframework` in `pom.xml` / `build.gradl
 `build.gradle.kts`; **else** `@SpringBootApplication | @RestController | @Service |
 @Repository` in any `.java`.
 
-> ⚠ **Cross-crate step — sequencing.** This task adds `Yaml` and `Properties` to
-> **`selene-extract`'s `Language` enum** (`src/language.rs`) as **file-level-only**
-> languages (maintainer decision, 2026-07-13). `is_file_level_only()` already exists and
-> already contains `{yaml, twig, properties}` per Phase 2's plan — **verify** whether the
-> enum variants actually landed; if they did, this is a no-op and you only add the
-> `EXTENSION_MAP` rows (`.yml`, `.yaml`, `.properties`). **This is the only Part-B task that
-> touches `selene-extract/src/language.rs`** — no collision with Task 11 (which touches
-> `orchestrator.rs`) or any other task. Do not run this concurrently with a Part-A task
-> that edits the same file; confirm with the controller at dispatch.
+> ⚠ **Cross-crate step — sequencing.** This task adds `Yaml` and `Properties` as
+> **file-level-only** languages (maintainer decision, 2026-07-13). Post-decision **D1**, the
+> `Language` enum lives in **`selene-core`** (Task 2 moved it; `selene-extract` re-exports it),
+> so the variants go into **`crates/selene-core/src/lib.rs`** and the `EXTENSION_MAP` rows
+> (`.yml`, `.yaml`, `.properties`) stay in `selene-extract`'s detection module.
+> `is_file_level_only()` already exists and already contains `{yaml, twig, properties}` per
+> Phase 2's plan — **verify** whether the variants actually landed; if they did, this is a
+> no-op and you only add the extension rows.
+> **This makes Task 16 the THIRD toucher of `selene-core/src/lib.rs`** (after Task 2's move and
+> Task 11's route fields — see the cross-crate seam table). Run it **after both**, never
+> concurrently, and **re-run `cargo test -p selene-extract` and `-p selene-db`** before its
+> commit: an enum variant added to a wire type is a wire change until proven otherwise.
 
 **`claims_reference`:** names ending `:prefix` (i.e. `*:prefix` — the
 `@ConfigurationProperties` bind refs).
@@ -1767,9 +1928,9 @@ authorized). Detect: `spring-boot | springframework` in `pom.xml` / `build.gradl
   | PascalCase entity | class | 0.70 | `/entity/`, `/entities/`, `/model/`, `/models/`, `/domain/` |
   | `*Component` \| `*Config` | class | 0.80 | `/component/`, `/components/`, `/config/` |
 
-- [ ] **First:** add `Yaml` / `Properties` to `selene-extract`'s `Language` enum +
-  `EXTENSION_MAP` (`.yml`, `.yaml`, `.properties`) as **file-level-only** languages, if not
-  already present. Test: `detect_language("application.yml")` → `Yaml`, and
+- [ ] **First:** add `Yaml` / `Properties` to **`selene_core::Language`** (post-D1 it lives in
+  core) + the `EXTENSION_MAP` rows (`.yml`, `.yaml`, `.properties`) in `selene-extract`'s
+  detection module, as **file-level-only** languages, if not already present. Test: `detect_language("application.yml")` → `Yaml`, and
   `is_file_level_only(Yaml)` → true (a yaml file yields a file node and **no** symbol
   nodes from the generic walker — only Spring's `extract()` adds the config constants).
 - [ ] TDD **end-to-end first**: fixture `ArticleController.java` with class
@@ -2065,20 +2226,46 @@ controllers have zero routes (eShopOnWeb 9 → 33).
 `crates/selene-db/src/store.rs` + `store_impl.rs` (**one new primitive**, see below),
 `src/lib.rs`. Tests: `tests/synth_harness_test.rs`.
 
-**Why this task exists:** all four whole-graph passes (Tasks 31–34) share the same skeleton,
+**Why this task exists:** all four whole-graph passes (Tasks 22–25) share the same skeleton,
 and getting the skeleton wrong is how the TS build earned three separate OOM/perf incidents
 (#610, #1212, #1235). Build it once, correctly, then the passes are small.
 
-**Interfaces:**
+**Interfaces — the dispatch shape is DECIDED (maintainer decision D3, 2026-07-13); do not
+re-invent it.** A `trait SynthPass` with a **generic** `run<S: GraphStore>` method is **not
+object-safe** (a generic method cannot go in a vtable — and neither can RPITIT), so
+`&'static dyn SynthPass` **cannot exist**. Keeping `GraphStore` generic is a Global Constraint,
+so the registry is a **table of monomorphized fn pointers**, built per store type at the call
+site:
+
 ```rust
-pub trait SynthPass: Send + Sync {
-    fn name(&self) -> &'static str;                   // == metadata.synthesizedBy
-    /// Languages this pass applies to. Empty = all. Checked against
-    /// ctx.languages() BEFORE the pass runs — a Python-only repo never scans for JSX.
-    fn languages(&self) -> &'static [Language];
-    fn run<S: GraphStore>(&self, store: &S, ctx: &dyn ResolutionContext)
-        -> impl Future<Output = Result<Vec<Edge>>> + Send;   // COLLECT, do not insert
+/// One synthesizer pass. The `run` fn is monomorphized for the caller's store type;
+/// the boxed future is what makes it storable in a table (an `async fn` cannot be a
+/// bare fn-pointer target).
+pub type SynthRunFn<S> = for<'a> fn(&'a S, &'a dyn ResolutionContext)
+    -> Pin<Box<dyn Future<Output = Result<Vec<Edge>>> + Send + 'a>>;
+
+pub struct SynthPassDef<S: GraphStore> {
+    pub name: &'static str,               // == metadata.synthesizedBy
+    /// Languages this pass applies to. Empty = all. Checked against `ctx.languages()`
+    /// BEFORE the pass runs — a Python-only repo never scans for JSX.
+    pub languages: &'static [Language],
+    pub run: SynthRunFn<S>,               // COLLECTS edges; never inserts
 }
+
+/// THE ONE declared pass order. Everything else derives from this list.
+pub const SYNTH_PASS_ORDER: &[&str] = &["callback", "event-emitter", "react-render",
+                                        "jsx-render"];
+
+/// The table, monomorphized for `S`. Each pass is a plain `async fn run<S: GraphStore>(
+/// store: &S, ctx: &dyn ResolutionContext) -> Result<Vec<Edge>>` in its own module,
+/// wrapped here: `run: |s, c| Box::pin(callback::run(s, c))`.
+pub fn synth_passes<S: GraphStore>() -> Vec<SynthPassDef<S>>;
+
+/// Every `synthesizedBy` value the registry can emit — the SAME list, no second source of
+/// truth. Part C's completeness assertion (Task 31) is keyed to this and MUST NOT
+/// hard-code the channel names: a hard-coded list drifts on the first Phase 8 channel, and
+/// the assertion's whole value is that it is keyed to the registry.
+pub fn registered_synthesizers() -> &'static [&'static str] { SYNTH_PASS_ORDER }
 
 /// Runs every pass, merges, dedupes, inserts. Returns the count inserted.
 pub async fn run_synthesis<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext)
@@ -2090,8 +2277,10 @@ pub async fn run_synthesis<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext
   keyed on `(source, target)`** — **first pass wins**. (Not `(source, target, kind)`: the TS
   key is `source>target`. Keep it — a second pass must not double-link an already-bridged
   pair.)
-- Pass **order is fixed and declared in one place** (determinism: the dedupe makes order
-  observable). v0 order: `callback`, `event-emitter`, `react-render`, `jsx-render`.
+- Pass **order is fixed and declared in exactly one place — `SYNTH_PASS_ORDER`** (determinism:
+  the dedupe makes order observable). v0 order: `callback`, `event-emitter`, `react-render`,
+  `jsx-render`. Each of Tasks 22–25 adds **one** name to that list and **one** row to
+  `synth_passes()` — and never re-orders either.
   (Phase 8's Go `contains` + `implements` pre-passes must be inserted *first* and *before*
   the others read them — leave the slot documented.)
 - Insert in **2000-row chunks** via `store.insert_edges`.
@@ -2133,11 +2322,22 @@ per match — that is O(n²) and was TS #1235.
   **byte-identical** (this is the test that catches a `HashMap` sneaking in).
 - [ ] TDD `LineIndex`: property test — for 1000 random offsets in a multi-line, multi-byte
   (UTF-8) source, `line_at(o)` equals the naive count. Assert offsets **on** a `\n`.
+- [ ] **TDD `registered_synthesizers()` agrees with the table** — `synth_passes::<FakeStore>()`
+  `.iter().map(|p| p.name)` **equals** `SYNTH_PASS_ORDER`, in order. This one assertion is what
+  makes the list a single source of truth: it fails the moment someone adds a pass to the table
+  without declaring it (or declares one that isn't wired). Part C's
+  `every_framework_and_synthesizer_has_a_flow` (Task 31) is keyed to
+  `registered_synthesizers()`, so **without this pair, "no synthesizer ships ungated" cannot be
+  written** — a fifth dispatch channel could ship gated by nobody.
 - [ ] Implement `nodes_by_kind_page` in `selene-db` (+ its own test: paging over 250 nodes
-  with limit 100 yields 3 pages, no duplicates, no gaps, stable order).
-- [ ] Implement `run_synthesis`. Wire it into Part A's resolver tail (the equivalent of
-  `resolveAndPersistBatched`), after base edges are persisted.
-- [ ] Commit: `feat(resolve): synthesizer harness — SynthPass, streaming, dedupe, chunked insert`
+  with limit 100 yields 3 pages, no duplicates, no gaps, stable order). ⚠ **This task edits
+  `selene-db`'s `store.rs`/`store_impl.rs` — Task 11 does too. Task 11 MUST be merged first**
+  (see the cross-crate seam table); rebase onto it rather than editing in parallel.
+- [ ] Implement `run_synthesis` (returns `Result<u64>` — the same type `insert_edges` returns;
+  Part C's driver reports it as `stats.by_method["callback-synthesis"]`). Wire it into the
+  Part C **Task 27** driver's tail (the `resolveAndPersistBatched` equivalent), after base
+  edges are persisted.
+- [ ] Commit: `feat(resolve): synthesizer harness — SynthPass table, streaming, dedupe, chunked insert`
 
 ---
 
@@ -2279,7 +2479,7 @@ must still fall through so their inner calls stay attributed to the enclosing fn
 `tests/synth_react_render_test.rs`.
 
 > **⛔ SHIPPING GATE — read before starting.** This pass **must not reach `main` alone.**
-> Tasks 33 and 34 are ONE mergeable unit. The map records the measurement: shipping
+> Tasks 24 and 25 are ONE mergeable unit. The map records the measurement: shipping
 > `react-render` **without** the `jsx-render` hop **measurably RAISED agent reads** — the
 > half-bridged flow (`handleClick → render`, then nothing) advertises a hop the agent must
 > Read to finish. That is the invariant's worked example. Implement 33, do **not** register
@@ -2316,7 +2516,7 @@ Task 25 supplies hop 3. Neither is a flow on its own.
 - [ ] TDD the cap: 45 setState siblings → 40 edges, deterministic (sort siblings by
   `(start_line, name)` before truncating).
 - [ ] Implement the pass but **leave it out of the pass registry** — add a
-  `// REGISTERED IN TASK 34 — see the shipping gate` comment at the registration site.
+  `// REGISTERED IN TASK 25 — see the shipping gate` comment at the registration site.
   `cargo test` must be green with the pass dormant.
 - [ ] Commit: `feat(resolve): react re-render synthesizer (dormant until jsx-child lands)`
 
@@ -2350,7 +2550,7 @@ for both.**
 
 **Language gate:** `[Typescript, Tsx, Javascript, Jsx]`.
 
-- [ ] TDD **end-to-end first — this is the gate for Tasks 33 AND 34**
+- [ ] TDD **end-to-end first — this is the gate for Tasks 24 AND 25**
   (`tests/fixtures/dispatch/react-render/`): `App.tsx` — `class App` with `handleClick`
   (`this.setState`), `render()` returning `<div><StaticCanvas scene={s}/></div>`;
   `StaticCanvas.tsx` — a component whose body calls `renderStaticScene()`;
@@ -2360,8 +2560,11 @@ for both.**
   `via: "StaticCanvas"` and **no** `registeredAt` key).
 - [ ] TDD: lowercase tags (`<div>`) produce no edges; an unresolvable tag produces no edge;
   cap at 30 children (35 distinct tags → 30 edges, deterministic — sort tag names).
-- [ ] **Register both passes** in the Task-30 pass list, in the order
-  `…, react-render, jsx-render`, and delete Task 24's dormancy comment.
+- [ ] **Register both passes** — add `"react-render", "jsx-render"` to Task 21's
+  `SYNTH_PASS_ORDER` **and** their two rows to `synth_passes()`, in that order, then delete
+  Task 24's dormancy comment. Task 21's registry-agreement test keeps the two in step; Part C's
+  Task 31 completeness assertion then requires a flow for each — which this task's fixture
+  supplies.
 - [ ] Re-run the Task 24 unit tests — they must still pass with the pass live.
 - [ ] Commit: `feat(resolve): jsx-child synthesizer + activate the react dispatch pair`
 
@@ -2370,7 +2573,7 @@ for both.**
 ### Task 26: Synthesizer 5/5 — Django ORM descriptor (resolver-mechanism, `claimsReference`)
 
 **Files:** Modify: `src/frameworks/python.rs` (the Django resolver) — **sequential after
-Tasks 23/24**. Tests: `tests/synth_django_orm_test.rs`,
+Tasks 14/15**. Tests: `tests/synth_django_orm_test.rs`,
 `tests/fixtures/dispatch/django-orm/`.
 
 > **⚠ It is called a "synthesizer" in the roadmap, but it is NOT a synthesizer pass.** It is
@@ -2420,144 +2623,99 @@ iterable class (default `ModelIterable`) whose `__iter__` runs the SQL compiler.
   though no symbol of that name is declared anywhere (i.e. `claims_reference` is consulted).
 - [ ] TDD the 0-control: a Python repo with an `_iterable_class` attribute but **no**
   `ModelIterable` class → the ref stays unresolved, **no** edge.
+- [ ] **Contribute the `[[flow]]` row** to Part C's `flows.toml` (Task 31) — this channel would
+  otherwise be gated by **nobody**: it is a *framework* branch, so it is not in
+  `registered_synthesizers()`, and the `django` framework's completeness slot is already
+  satisfied by its `urls` flow (Task 14). The row pins the ORM hop explicitly:
+  ```toml
+  [[flow]]
+  name    = "django-orm: queryset → SQL compiler"
+  project = "synth-django-orm"
+  hops = [
+    { from = "method:QuerySet::_fetch_all", to = "method:ModelIterable::__iter__",
+      kind = "calls", via = "framework:django", provenance = "tree-sitter" },   # ← the bridge
+    { from = "method:ModelIterable::__iter__", to = "method:SQLCompiler::execute_sql",
+      kind = "calls", via = "instance-method", provenance = "tree-sitter" },
+  ]
+  ```
+  Note `provenance = "tree-sitter"` and **no `synthesizedBy`** — the mechanism asymmetry above.
+  Task 31's `every_project_has_a_flow` assertion is what makes this row mandatory rather than
+  optional.
 - [ ] Commit: `feat(resolve): django ORM descriptor — _iterable_class → ModelIterable.__iter__`
 
 ---
 
-### Task 27: Phase 3 gate — end-to-end dispatch-coverage fixture corpus + gate test
-
-**Files:** Create: `tests/dispatch_gate.rs`,
-`tests/fixtures/dispatch/expected_flows.toml`. Modify: `src/lib.rs` (the final ledger),
-`docs/benchmarks/2026-07-phase3-dispatch-coverage.md`.
-
-**This is the roadmap's Phase 3 gate:** *"dispatch-coverage fixtures resolve end-to-end (no
-half-bridged flow)."* Nothing in Phase 3 is done until this is green.
-
-**What it does:** one table-driven test over every fixture built in Tasks 21–35. Each row is
-a **flow**, not an edge:
-
-```toml
-# tests/fixtures/dispatch/expected_flows.toml
-# Entry points are addressed SEMANTICALLY (framework+method+path), never by id string —
-# route ids are opaque hashes (Task 11).
-[[flow]]
-fixture     = "express"
-from_route  = { framework = "express", method = "POST", path = "/users/login" }
-to          = "hashPassword"          # the terminal the agent would otherwise Read for
-max_hops    = 4
-via         = ["login"]               # symbols that MUST appear on the path
-[[flow]]
-fixture     = "react-render"
-from_symbol = "App.handleClick"       # non-route entry points use from_symbol
-to          = "renderStaticScene"
-max_hops    = 4
-via         = ["render", "StaticCanvas"]
-# … one row per framework (21–29) and per synthesizer (31–35)
-```
-
-The test, for each row: build a temp `SurrealStore` → index the fixture dir with
-`selene-extract` → run the Part A resolver + `run_synthesis` → resolve the entry point
-(`from_route` via the indexed `find_route(framework, method, path)`; `from_symbol` by name)
-→ assert `store.find_path(from, to)` returns a path of `≤ max_hops` that **contains every
-`via` symbol in order**. A missing `via` symbol means the flow was bridged around a hop
-rather than through it — that is a *silently wrong* map and must fail the gate.
-An entry point that `find_route` cannot locate is a **gate failure**, not a skip.
-
-- [ ] Build the row table. **Every** framework task (21–29) and **every** synthesizer task
-  (31–35) contributes **at least one** row. A framework with no row is a framework whose
-  flow was never proven end-to-end — the gate fails on an empty row for it.
-- [ ] **Same-line multi-route gate** (the hashed-id consequence from Task 11): the axum
-  chained-verb fixture (`get(h).post(h2)`, one line) and the rails `resources :articles`
-  fixture (7 actions, one line) must each yield **N distinct route node ids**, and each
-  route must be independently reachable via `find_route`. A collision here silently deletes
-  routes — assert the count, not just the lookup.
-- [ ] **Precision gate (the 0-control corpus).** A `tests/fixtures/dispatch/_control/`
-  directory: a plain repo per language with none of the dispatch shapes. Assert
-  `run_synthesis` emits **exactly 0 edges** on it. (Playbook §5.2: "0 on every non-Swift
-  control" — the closure-collection pass's proof of precision. A synthesizer that fires on
-  the control is over-linking and poisons the map.)
-- [ ] **No-explosion gate.** For each fixture, record node + edge counts in
-  `expected_flows.toml` and assert they are stable (an extraction/resolution change that
-  balloons counts means something over-fired). Deltas require a deliberate update + a note.
-- [ ] **Determinism gate.** Index each fixture **twice** into two fresh stores; assert the
-  full edge set (source, target, kind, metadata) is **identical**, including order.
-- [ ] Write `docs/benchmarks/2026-07-phase3-dispatch-coverage.md`: the coverage matrix
-  (framework/synthesizer × flow × status), copied from the playbook §6 format, filled in for
-  v0 only, with the deferred frontiers listed explicitly (Gin middleware chain, anonymous
-  arrow handlers, lazy React data-routers, actix `web::scope` prefix, EF Core, Eloquent/
-  ActiveRecord dynamic finders, incremental-sync re-synthesis).
-- [ ] Final `src/lib.rs` ledger: public interface, the v0 framework list, the 4 synthesized
-  `synthesizedBy` values shipped (`callback`, `event-emitter`, `react-render`, `jsx-render`),
-  the metadata key contract, and every deferral above.
-- [ ] Commit: `test(resolve): phase-3 dispatch-coverage gate — end-to-end flows, 0-control, determinism`
+<!-- Part B's own dispatch-gate task is DELETED. Part C's Task 31 supersedes it: that gate's
+`find_path` + `via`-membership check is unsound (a path search is satisfied by ANY route around
+the dispatch hop the gate exists to defend). Its same-line multi-route sub-check, its 0-control
+/ no-explosion / determinism sub-gates, and its fixtures are migrated into Tasks 28 (corpus)
+and 31 (gate). Part B ships no gate task; every framework and synthesizer here contributes a
+fixture project + a `[[flow]]` row to Part C's gate. -->
 
 ---
 
-## Open questions for the maintainer
-
-1. **Cargo workspace ownership (Task 18).** Part A's brief also lists "cargo workspace globs"
-   under the import resolver. This plan puts the crate map in
-   `src/frameworks/cargo.rs` and exposes `cargo_workspace_crate_map(ctx)` for Part A's
-   import resolver to call. **Confirm the direction** (framework owns it, import consumes)
-   or flip it — either works, but only one may exist.
-2. **`selene-db` trait change (Task 21).** The synthesizers need
-   `nodes_by_kind_page(kind, after, limit)` on `GraphStore`; today only
-   `get_nodes_by_kind() -> Vec<Node>` exists, which OOMs on large repos (the TS #610
-   incident). This is a Phase-1 crate change inside Phase 3 — **confirm it is in scope**
-   (the PRD §5.4 note anticipated exactly this: "budget those primitives before freezing
-   the trait").
 ## Maintainer decisions — RESOLVED (2026-07-13), already folded into the tasks above
 
-3. ~~**Route-node ids are not `node_id()`-hashed.**~~ **RESOLVED — redesigned.** Route ids
+1. ~~**Route-node ids are not `node_id()`-hashed.**~~ **RESOLVED — redesigned.** Route ids
    stay **hashed** like every other node (no new id exception). Route semantics move into
    **first-class indexed fields** (`routeMethod`, `routePath`, `framework`; `file`/`line`
    already exist on `Node`), and every downstream lookup is an **indexed SurrealQL query**
    via `find_route(framework, method, path)` — never id-string parsing. Folded into: the
    Task 11 contract (+ its `selene-core` `Node` fields, `selene-db` `DEFINE FIELD`/`DEFINE
-   INDEX` step, and `EXTRACTION_VERSION` bump), the Global Constraints, every fixture
-   assertion in Tasks 21–29, and Task 27's `expected_flows.toml`.
-   **Consequence on record (new, load-bearing):** the id hash input is
-   `(file, kind, name, start_line)`, so routes emitted from the **same line** (axum
-   `get(h).post(h2)`; rails `resources` → 7 actions; stacked flask decorators) are now
-   separated **only by `name`**. The `{METHOD} {path}` name spelling is therefore no longer
-   cosmetic — it is the uniqueness key. Task 11 and Task 27 both carry an explicit
-   distinct-id assertion for the same-line case; a framework author who names a route by
-   path alone will silently drop routes.
-   **Relayed to Part C:** parity must compare **semantic identity**
-   (`framework, method, path, file, line`), never raw id spelling — TS ids are literal
-   strings, ours are hashes, so a byte-diff of route ids is meaningless.
-4. ~~**Next.js file routes deferred?**~~ **RESOLVED — IN scope for Phase 3.** Folded into
+   INDEX` step, and the `EXTRACTION_VERSION` bump — **Task 11 owns that bump exclusively**),
+   the Global Constraints, every fixture assertion in Tasks 12–20, and Task 31's `flows.toml`.
+   **Consequence on record (load-bearing):** the id hash input is `(file, kind, name,
+   start_line)`, so routes emitted from the **same line** (axum `get(h).post(h2)`; rails
+   `resources` → 7 actions; stacked flask decorators) are separated **only by `name`**. The
+   `{METHOD} {path}` name spelling is therefore not cosmetic — it is the uniqueness key.
+   Task 11 and Task 31 both carry an explicit distinct-id assertion for the same-line case; a
+   framework author who names a route by path alone will silently drop routes.
+   **For Part C:** parity compares **semantic identity** (`framework, method, path, file,
+   line`), never raw id spelling — TS ids are literal strings, ours are hashes.
+2. ~~**Next.js file routes deferred?**~~ **RESOLVED — IN scope for Phase 3.** Folded into
    Task 13 (`pages/` + `app/page.*` file routes, `[x]` → `:x`), with its own end-to-end
    fixture. **One deviation on record:** TS matched `filePath.includes('page.')`, which also
    matches `mypage.tsx`; we match the **basename** `^page\.(tsx?|jsx?)$` instead. It is a
-   bug fix, so route counts may legitimately differ from the TS build — Part C should not
-   treat that delta as a parity failure.
-5. ~~**Config languages for Spring.**~~ **RESOLVED — authorized.** `Yaml` + `Properties`
-   added to `selene-extract`'s `Language` enum as **file-level-only** languages. Folded into
-   Task 16 as an explicit first step, with a sequencing note (it is the **only** Part-B task
-   touching `selene-extract/src/language.rs`; Task 11 touches `orchestrator.rs`, so no
-   Part-B collision — the controller must still check it against Part A's dispatch).
+   bug fix, so route counts may legitimately differ from the TS build — Part C does not
+   treat that delta as a parity failure (it is a `[[edge-deviation]]` with evidence).
+3. ~~**Config languages for Spring.**~~ **RESOLVED — authorized.** `Yaml` + `Properties` are
+   **file-level-only** languages. ⚠ **They are added to `selene_core::Language`** (decision D1
+   moved that enum to core in Task 2) — **not** to `selene-extract`. Folded into Task 16 as an
+   explicit first step. Task 16 is therefore a **third toucher of `selene-core/src/lib.rs`**
+   (after Task 2's move and Task 11's route fields) — see the cross-crate seam table; run it
+   after both, and re-run `cargo test -p selene-extract` before its commit.
+4. ~~**`selene-extract` depends on the framework registry?**~~ **RESOLVED — NO (decision D2).**
+   The registry lives entirely in `selene-resolve`, and route emission is a `selene-resolve`
+   pass over the already-indexed files (`run_framework_extract`, Task 11). No Phase 3 task
+   edits `selene-extract/src/orchestrator.rs`. The only `selene-extract` changes in the whole
+   phase are Task 2's re-export shim and Task 16's three `EXTENSION_MAP` rows.
+5. ~~**How does the `SynthPass` registry dispatch over a generic `GraphStore`?**~~
+   **RESOLVED (decision D3).** A generic `run<S: GraphStore>` method is not object-safe, so
+   `&dyn SynthPass` cannot exist. The registry is a **table of monomorphized fn pointers**
+   (`SynthPassDef<S>` + `synth_passes::<S>()`), with `SYNTH_PASS_ORDER` as the single declared
+   order and `registered_synthesizers()` derived from it. Written into Task 21.
 
 ## Open questions still outstanding
 
 1. **Cargo workspace ownership (Task 18).** Part A's brief also lists "cargo workspace globs"
-   under the import resolver. This plan puts the crate map in
-   `src/frameworks/cargo.rs` and exposes `cargo_workspace_crate_map(ctx)` for Part A's
-   import resolver to call. **Confirm the direction** (framework owns it, import consumes)
-   or flip it — either works, but only one may exist.
+   under the import resolver. This plan puts the crate map in `src/frameworks/cargo.rs` and
+   exposes `cargo_workspace_crate_map(ctx)` for Part A's import resolver (Task 6) to call.
+   **Confirm the direction** (framework owns it, import consumes) or flip it — either works,
+   but only one may exist. *(Part A's Task 6 is written to consume it, so the current answer
+   is consistent — this is a confirmation, not a conflict.)*
 2. **`selene-db` trait change (Task 21).** The synthesizers need
    `nodes_by_kind_page(kind, after, limit)` on `GraphStore`; today only
    `get_nodes_by_kind() -> Vec<Node>` exists, which OOMs on large repos (the TS #610
    incident). This is a Phase-1 crate change inside Phase 3 — **confirm it is in scope**
    (the PRD §5.4 note anticipated exactly this: "budget those primitives before freezing
-   the trait"). *Note: decision 3 above already opens `selene-db` for the route fields +
-   indexes, so the crate is being touched in Phase 3 regardless — this is now a smaller ask.*
-3. **`claims_reference` is a Part-A dependency.** Tasks 28 (Rails/Laravel) and 35 (Django
-   ORM) are **inert without it** — the ref is dropped by the pre-filter before `resolve()`
-   is ever called (the exact TS-build gotcha). If Part A did not specify the hook, three
-   framework bridges silently resolve to nothing. Confirm at assembly.
-
-
+   the trait"). *Note: decision 1 above already opens `selene-db` for the route fields +
+   indexes, so the crate is being touched in Phase 3 regardless — this is now a smaller ask.
+   Task 11 → Task 21 is strictly sequential on those files.*
+3. **`claims_reference` is a Part-A dependency.** Tasks 19 (Rails/Laravel) and 26 (Django ORM)
+   are **inert without it** — the ref is dropped by the pre-filter before `resolve()` is ever
+   called (the exact TS-build gotcha). Part A's Task 3 specifies the hook (ladder step 3, the
+   framework arm of the pre-filter); if it is ever dropped, three framework bridges silently
+   resolve to nothing.
 
 ---
 
@@ -2569,16 +2727,15 @@ An entry point that `find_route` cannot locate is a **gate failure**, not a skip
 
 **Scope of this part.** Part A (Tasks 1–10) builds the resolver core: the `ResolutionContext`
 seam, the `resolve_one` ladder, import resolution, the name matcher, chained calls, function
-refs, `create_edges`. Part B (Tasks 20–36) builds the framework resolvers and the dispatch
-synthesizers. **Part C builds the pipeline that drives them, and the gates that decide
-whether any of it is real**: the batched persist + pass driver (`src/batch.rs` — which *both*
-Part A and Part B assign to Part C, and neither writes), the TS↔Rust resolution parity gate,
-the dispatch-coverage flow gate, the results doc, and the `selene-resolve` facade. Tasks are
-numbered from **40** (the controller renumbers at assembly).
+refs, `create_edges`. Part B (Tasks 11–26) builds the framework resolvers and the dispatch
+synthesizers. **Part C (Tasks 27–33) builds the pipeline that drives them, and the gates that
+decide whether any of it is real**: the batched persist + pass driver (`src/batch.rs` — which
+*both* Part A and Part B assign to Part C, and neither writes), the TS↔Rust resolution parity
+gate, the dispatch-coverage flow gate, the results doc, and the `selene-resolve` facade.
 
 **The phase gate (roadmap, Phase 3):** *"dispatch-coverage fixtures resolve end-to-end (no
-half-bridged flow)."* **Task 32** is that gate, literally. Tasks 41–43 are the parity gate that
-keeps the rest of the resolver honest while Task 32 keeps the *flows* honest — they measure
+half-bridged flow)."* **Task 31** is that gate, literally. Tasks 28–30 are the parity gate that
+keeps the rest of the resolver honest while Task 31 keeps the *flows* honest — they measure
 different failures and neither substitutes for the other (§ *Why two gates*, below).
 
 ---
@@ -2588,48 +2745,58 @@ different failures and neither substitutes for the other (§ *Why two gates*, be
 Parts A and B now exist (`phase3-partA-core.md`, `phase3-partB-frameworks.md`). This part is
 reconciled against them: the symbol names below are **theirs**, not assumptions.
 
-### Interfaces this part consumes (real spellings)
+### Interfaces this part consumes (real spellings — reconciled 2026-07-13)
 
 ```rust
-// Part A — Task 2/3
-pub trait ResolutionContext: Send + Sync { /* root, file_exists, read_file, all_files, … */ }
+// Part A — Tasks 2/3
+pub trait ResolutionContext: Send + Sync {
+    fn project_root(&self) -> &Path;                       // NOT `root()`
+    fn file_exists(&self, path: &str) -> bool;
+    fn read_file(&self, path: &str) -> Option<String>;     // owned String
+    fn all_files(&self) -> &[String];                      // paths only
+    fn files_with_language(&self) -> &[(String, Language)];
+    fn languages(&self) -> &BTreeSet<Language>;
+    /* … the full trait is Part A Task 2 */
+}
 pub struct StoreContext<S: GraphStore> { /* … */ }          // the GraphStore-backed impl
 pub struct ReferenceResolver<C: ResolutionContext> { /* … */ }
 impl ReferenceResolver<C> {
     pub fn new(ctx: C) -> Self;
     pub fn resolve_one(&mut self, r: &UnresolvedRef) -> Option<ResolvedRef>;
     pub fn create_edges(&self, resolved: &[ResolvedRef]) -> Vec<Edge>;
-    pub fn detected_frameworks(&self) -> Vec<String>;        // ← satisfies requirement (1) below
+    pub fn detected_frameworks(&self) -> Vec<String>;       // ← THE spelling. Not
+                                                           //   `detected_framework_names()`.
+    pub fn resolve_chained_calls_via_conformance(&mut self) -> Result<u64>;   // Task 9
+    pub fn resolve_deferred_this_member_refs(&mut self) -> Result<u64>;       // Task 10
 }
+pub struct ResolvedRef { pub original: UnresolvedRef, pub target_node_id: String,
+                         pub confidence: f64, pub resolved_by: ResolvedBy }
 pub struct ResolutionStats { pub total, pub resolved, pub unresolved, pub by_method }
 pub enum ResolvedBy { ExactMatch, Import, QualifiedName, Framework, Fuzzy,
                       InstanceMethod, FilePath, FunctionRef }   // + as_str()
 
-// Part B — Tasks 20/30
+// Part B — Tasks 11/21
 pub fn all_framework_resolvers() -> &'static [&'static dyn FrameworkResolver];  // .name() each
 pub fn detect_frameworks(ctx: &dyn ResolutionContext) -> Vec<&'static dyn FrameworkResolver>;
-pub trait SynthPass: Send + Sync { /* … */ }
-pub async fn run_synthesis<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext) -> Result<usize>;
+pub async fn run_framework_extract<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext,
+    detected: &[&'static dyn FrameworkResolver]) -> Result<FrameworkExtractStats>;
+pub fn synth_passes<S: GraphStore>() -> Vec<SynthPassDef<S>>;   // fn-pointer table (D3)
+pub fn registered_synthesizers() -> &'static [&'static str];    // == SYNTH_PASS_ORDER
+pub async fn run_synthesis<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext) -> Result<u64>;
 ```
 
-**Two of my three assumed introspection surfaces already exist**:
-`ReferenceResolver::detected_frameworks()` (Part A, Task 3) and `all_framework_resolvers()`
-(Part B, Task 20) — good.
+**All three introspection surfaces this part needs now exist**:
+`ReferenceResolver::detected_frameworks()` (Part A, Task 3), `all_framework_resolvers()`
+(Part B, Task 11), and **`registered_synthesizers()`** (Part B, Task 21 — added at
+reconciliation; it returns `SYNTH_PASS_ORDER`, and a Task-21 test asserts the pass table agrees
+with it, so it cannot drift from what actually ships). Task 31's
+`every_framework_and_synthesizer_has_a_flow` is keyed to those three registries and **never**
+to a hard-coded list.
 
-### ⚠ The one interface still missing — Parts A/B must add it
-
-**`selene_resolve::synth::registered_synthesizers() -> &'static [&'static str]`** — every
-`synthesizedBy` value the `SynthPass` registry can emit (v0: `callback`, `event-emitter`,
-`react-render`, `jsx-render`). Part B's Task 30 defines `SynthPass` and `run_synthesis()`
-but exposes **no way to enumerate the registered passes by name**.
-
-Without it, Task 32's `every_framework_and_synthesizer_has_a_flow` cannot be written — and
-that assertion is the only thing standing between "we shipped a fifth dispatch channel" and
-"we shipped a fifth dispatch channel gated by nobody". It is a two-line addition to Part B's
-Task 30 (`fn synthesized_by(&self) -> &'static str` on the trait — which each pass already
-needs for its metadata stamp — plus a registry map over it). **Requested of the controller;
-do not work around it by hard-coding the list in the test — a hard-coded list is a second
-source of truth and it will drift on the first Phase 8 channel.**
+⚠ **One seam Part C must respect:** `run_framework_extract` (Part B, Task 11) runs **before**
+the resolution pass — route nodes must exist before any ref can bind to one — and
+`run_synthesis` runs **after** base edges persist. Task 27's driver owns both call sites; the
+full pass order is in that task.
 
 ### Three maintainer decisions folded in
 
@@ -2637,44 +2804,36 @@ source of truth and it will drift on the first Phase 8 channel.**
    id contract like every other node (`"<kind>:" + sha256(...)[..32]`, no exception), and
    the route's semantics live in **first-class indexed fields**: `method`, `path`, `file`,
    `line`, `framework` — queried via indexed SurrealQL, never parsed out of an id string.
-   ⇒ **The parity gate compares route-anchored edges SEMANTICALLY** (Task 31). ⚠ **This
-   contradicts Part B's Task 20 as currently written** (its route-node table specifies the
-   literal `route:{file}:{line}:{METHOD}:{path}` ids, and its open question #3 asks for
-   exactly this decision). **Part B Task 20 must be rewritten** — flagged to the controller.
-2. **Next.js file routes are IN Phase 3** (Part B's open question #4 answered: not deferred).
-   ⇒ a `fw-nextjs` fixture project (Task 29) and a Next.js flow (Task 32).
+   ⇒ **The parity gate compares route-anchored edges SEMANTICALLY** (Task 30). Part B's
+   Task 11 now carries this contract (its route-node section is written to it) — the earlier
+   literal-id table is gone.
+2. **Next.js file routes are IN Phase 3** (answered: not deferred).
+   ⇒ a `fw-nextjs` fixture project (Task 28) and a Next.js flow (Task 31).
 3. **The Spring config bridge is IN**: `Yaml`/`Properties` become file-level-only languages
    so `application.yml` → `@Value("${k}")` resolves. ⇒ the Spring flow **must traverse a
-   config-key hop** (Task 32) — a cross-*language* hop, and precisely the kind that
+   config-key hop** (Task 31) — a cross-*language* hop, and precisely the kind that
    half-bridges silently (the code side resolves, the config side dead-ends, and nothing in
    a same-language gate notices).
 
-### Two collisions with Part B the controller must resolve
+### Two collisions with Part B — both RESOLVED (2026-07-13)
 
-- **Part B's Task 36 ("Phase 3 gate — dispatch-coverage fixture corpus + gate test")
-  duplicates this part's Tasks 41/44.** Recommendation: **C's Task 32 supersedes B36's gate
-  test**, and B36's fixture-building step folds into C's Task 29. Reason: B36 asserts
-  `store.find_path(from, to)` returns a path ≤ `max_hops` containing `via` *symbols* — that
-  is a **path-existence** check, and a path search is satisfied by *any* route through the
-  graph, including one that goes around the very dispatch hop the gate exists to defend. It
-  also cannot see a hop closed by the **wrong mechanism** (a fuzzy match that lands right by
-  luck). Task 32 asserts **each hop's edge individually, with its `via` mechanism pinned**.
-  **B36's three other sub-gates are excellent and are absorbed into Task 32 verbatim**: the
-  0-control corpus (synthesis emits exactly 0 edges on a repo with none of the shapes), the
-  no-explosion count check, and the determinism check. Nothing is lost by the supersession.
-- **`src/batch.rs` — the batched persist + pass driver — is assigned to Part C by both
-  A and B, and written by neither.** Part A's file-structure table marks it `[C]`; Part A's
-  seam table lists "**C** (batching/passes wiring)" as a `resolver.rs` toucher; Part B's Task
-  30 says `run_synthesis` "wires into Part A's resolver tail (the equivalent of
-  `resolveAndPersistBatched`)" — which is that file. **So Part C writes it (Task 28).**
-  Without it the phase has a resolver, frameworks and synthesizers, and no pipeline to run
-  them: `resolve_and_persist_batched` is where the pass ordering, the 5000-row batch loop,
-  the keyed delete, the non-progress guard and the synthesis tail all live. If the controller
-  intended someone else to own it, move Task 28 — but it cannot be nobody's.
+- **Part B's own dispatch gate is DELETED; Task 31 supersedes it.** B's gate asserted
+  `store.find_path(from, to)` returns a path ≤ `max_hops` containing `via` *symbols* — a
+  **path-existence** check, and a path search is satisfied by *any* route through the graph,
+  including one that goes **around** the very dispatch hop the gate exists to defend. It also
+  cannot see a hop closed by the **wrong mechanism** (a fuzzy match that lands right by luck).
+  Task 31 asserts **each hop's edge individually, with its `via` mechanism pinned**. B's four
+  other sub-gates are **absorbed verbatim** into Tasks 28/31: the same-line multi-route check,
+  the 0-control corpus, the no-explosion count check, and the determinism check. Its fixture
+  requirements folded into Task 28's corpus. Nothing is lost.
+- **`src/batch.rs` — the batched persist + pass driver — is Part C's (Task 27).** Both A and B
+  assign it here and neither writes it: Part A's file table marks it `[C]`; Part B's Task 21
+  says `run_synthesis` "wires into the Part C driver's tail". Without it the phase has a
+  resolver, frameworks and synthesizers, and **no pipeline to run them**.
 
 ### What the gate is keyed to
 
-**Whatever Part B actually ships is what Task 32 gates.** The flow table is keyed off the
+**Whatever Part B actually ships is what Task 31 gates.** The flow table is keyed off the
 *registries* (`all_framework_resolvers()`, `registered_synthesizers()`), not off any list in
 any plan — if Part B ships one framework fewer or one more, the completeness assertion fails
 until the flow table and the registry agree. A plan is a hypothesis; the registry is the fact.
@@ -2695,14 +2854,14 @@ Resolution's version of each failure is strictly worse, because resolution's out
 
 | Failure | What a count gate sees | What catches it |
 |---|---|---|
-| A ref binds to the **wrong target** (`UserService.save` → some other `save`) | nothing — the edge count is identical | **edge identity** (Task 31): `(source, target, kind, provenance)` |
-| A ref binds to the right target **by the wrong strategy** (fuzzy 0.5 won where import 0.9 should have) — a pipeline-order regression that is invisible today and mis-binds tomorrow | nothing | `resolvedBy` + `confidence` in the identity/metadata tuple (Task 31) |
-| A framework silently **fails to `detect()`** → no route nodes → no route edges → both sides compare empty sets | nothing (0 == 0) | `detected_frameworks_agree` + the dumper's refuse-to-write (Tasks 42/43) |
-| A **flow resolves 3 hops of 4** — the agent gets a map that dead-ends, then reads to finish (the invariant says this is *worse than none*) | nothing: 3 real edges are 3 real edges, and they all match TS if TS is also broken | **per-hop flow assertions** (Task 32) |
-| A synthesizer ships with **no fixture** and is gated by nobody | nothing | registry↔flow-table completeness (Task 32) |
+| A ref binds to the **wrong target** (`UserService.save` → some other `save`) | nothing — the edge count is identical | **edge identity** (Task 30): `(source, target, kind, provenance)` |
+| A ref binds to the right target **by the wrong strategy** (fuzzy 0.5 won where import 0.9 should have) — a pipeline-order regression that is invisible today and mis-binds tomorrow | nothing | `resolvedBy` + `confidence` in the identity/metadata tuple (Task 30) |
+| A framework silently **fails to `detect()`** → no route nodes → no route edges → both sides compare empty sets | nothing (0 == 0) | `detected_frameworks_agree` + the dumper's refuse-to-write (Tasks 29/30) |
+| A **flow resolves 3 hops of 4** — the agent gets a map that dead-ends, then reads to finish (the invariant says this is *worse than none*) | nothing: 3 real edges are 3 real edges, and they all match TS if TS is also broken | **per-hop flow assertions** (Task 31) |
+| A synthesizer ships with **no fixture** and is gated by nobody | nothing | registry↔flow-table completeness (Task 31) |
 
-So: **Task 31 asks "does Rust bind what TS binds?"** (a *differential* gate — it inherits
-TS's correctness, and TS's bugs, which is why it needs `deviations.toml`). **Task 32 asks
+So: **Task 30 asks "does Rust bind what TS binds?"** (a *differential* gate — it inherits
+TS's correctness, and TS's bugs, which is why it needs `deviations.toml`). **Task 31 asks
 "is the flow actually closed?"** (an *absolute* gate — it would fail even if Rust matched a
 TS that was itself half-bridged). A parity gate alone would happily certify a faithful port
 of a broken flow.
@@ -2727,7 +2886,7 @@ of a broken flow.
 
 ---
 
-### Task 28: `src/batch.rs` — the batched persist + the pass driver
+### Task 27: `src/batch.rs` — the batched persist + the pass driver
 
 **Files:** Create `crates/selene-resolve/src/batch.rs`; modify `src/resolver.rs` (the
 Part-A-stubbed wiring point), `src/lib.rs` (one `pub use`). Tests:
@@ -2735,7 +2894,7 @@ Part-A-stubbed wiring point), `src/lib.rs` (one `pub use`). Tests:
 
 **Why this is here.** Parts A and B both assign this file to Part C and neither writes it
 (see *Reconciliation* above). It is the pipeline: without it, `resolve_one` is a function
-nobody calls, `run_synthesis` has no tail to hang off, and the gates of Tasks 43/44 have
+nobody calls, `run_synthesis` has no tail to hang off, and the gates of Tasks 30/31 have
 nothing to drive. **It must land before them.**
 
 **Interfaces** (`maps/resolution.md` §Pass ordering, §Batching):
@@ -2783,7 +2942,7 @@ pub async fn resolve_and_persist<S: GraphStore>(          // the scoped/sync pat
   failed index), and report the count as `stats.by_method["callback-synthesis"]` — the wire
   key `maps/resolution.md` §Wire names. Synthesis runs on the **batched (full-index) path
   only**; incremental sync does not re-run it (the known TS gap — record it in the facade's
-  deferral list, Task 34, rather than silently inheriting it).
+  deferral list, Task 33, rather than silently inheriting it).
 - [ ] **The async seam** (Part A's open coordination point #2): `ResolutionContext` is *sync*
   over an *async* `GraphStore`. Part A pins the shape and says **"Part C guarantees the
   wrapper"** — so guarantee it here: the resolver runs inside `spawn_blocking`, warm-caches
@@ -2803,7 +2962,7 @@ pub async fn resolve_and_persist<S: GraphStore>(          // the scoped/sync pat
 
 ---
 
-### Task 29: The resolution fixture corpus — project trees, not snippets
+### Task 28: The resolution fixture corpus — project trees, not snippets
 
 **Files:** Create `crates/selene-resolve/tests/fixtures/resolve/<project>/…` (project
 trees), `crates/selene-resolve/tests/fixtures/resolve/projects.toml` (the manifest).
@@ -2831,15 +2990,15 @@ in `projects.toml`'s `notes`.
   | `core-*` | `core-ts`, `core-py`, `core-go`, `core-rust`, `core-java`, `core-php`, `core-ruby`, `core-csharp`, `core-cpp` | the ecosystem's **import resolution** (relative, aliased, package/module, re-export chain) + **one chained call** + **one ambiguous name** (two same-named symbols in different dirs — pins that we decline rather than guess, `maps/resolution.md` §Confidence) + **one negative control**: a chained call on a type that LACKS the method ⇒ **no edge** (the "validated inference" invariant; every TS chain block has this test and it is the one that catches a resolver that guesses) |
   | `fw-*` | `fw-express`, `fw-django`, `fw-flask`, `fw-fastapi`, `fw-spring`, `fw-gin`, `fw-axum`, `fw-aspnet`, `fw-laravel`, `fw-rails`, `fw-react`, **`fw-nextjs`** | the framework's **canonical flow** (route/entry → handler → one more hop into a service/model), with the manifest file its `detect()` keys on. Three carry extra weight: **`fw-axum`** also carries a **cargo workspace** (root `Cargo.toml` `[workspace] members`, two member crates) — the workspace-crate resolve is a 0.95-confidence path that beats the name-matcher and is otherwise untested; **`fw-spring`** also carries `src/main/resources/application.yml` + a `@Value("${…}")` bind (see below); **`fw-nextjs`** is a *file-routed* framework (no route call to regex — the route IS the path `pages/users/[id].tsx`), so it exercises a code path nothing else does |
   | `synth-*` | `synth-callback`, `synth-eventemitter`, `synth-react` (re-render **and** JSX child — see below), `synth-django-orm` | the synthesizer's registrar/dispatcher pair, plus **a caller upstream of the registrar and a callee downstream of the handler**, so the *chain* is longer than the synthesized hop. A fixture that contains only the bridged hop cannot distinguish "the hop works" from "the flow closes" |
-  | `_control/` | one plain sub-repo per v0 language | **the precision corpus** (absorbed from Part B's Task 36): ordinary code containing **none** of the dispatch shapes. Synthesis must emit **exactly 0 edges** on it. Every positive assertion in this plan is satisfied by a synthesizer that bridges *everything*; only the control corpus fails it. Playbook §5.2 ("0 on every non-Swift control") is the closure-collection pass's proof of precision, and it is the cheapest precision test that exists |
+  | `_control/` | one plain sub-repo per v0 language | **the precision corpus** (absorbed from Part B's deleted gate task): ordinary code containing **none** of the dispatch shapes. Synthesis must emit **exactly 0 edges** on it. Every positive assertion in this plan is satisfied by a synthesizer that bridges *everything*; only the control corpus fails it. Playbook §5.2 ("0 on every non-Swift control") is the closure-collection pass's proof of precision, and it is the cheapest precision test that exists |
 
 - [ ] **`fw-spring` must carry the config bridge** (maintainer decision: `Yaml`/`Properties`
   are file-level-only languages in Phase 3). The project holds `application.yml` with a leaf
   key, a `@Value("${app.greeting}")` field, and a handler that reads it — so the flow in
-  Task 32 traverses a **cross-language, code↔config hop**. This is the hop most likely to
+  Task 31 traverses a **cross-language, code↔config hop**. This is the hop most likely to
   half-bridge in silence: the Java side resolves fine on its own, the config side simply
   dead-ends, and *nothing in a same-language gate notices*. Note in `projects.toml` that the
-  yaml constant node must carry **no value** (secret redaction, #383) — Task 32 asserts it.
+  yaml constant node must carry **no value** (secret redaction, #383) — Task 31 asserts it.
 - [ ] **`fw-nextjs` must exercise both route flavors** (`pages/` and `app/page.tsx`), since
   the TS resolver's `app/` check is `filePath.includes('page.')` — looser than the `pages/`
   segment check, and it matches `mypage.tsx` (`maps/frameworks-synth.md` §Rust port notes
@@ -2850,15 +3009,22 @@ in `projects.toml`'s `notes`.
   `synth-react` deliberately holds **both** the re-render and the JSX-child channels in one
   project: `maps/frameworks-synth.md` records that shipping react-render *without* the JSX
   hop measurably **raised** agent reads — a half-bridged flow. Keeping them in one fixture
-  means the flow table (Task 32) can assert the whole chain
+  means the flow table (Task 31) can assert the whole chain
   (`onClick → setState → render → <StaticCanvas/> → renderStaticScene`) and a regression
   that drops either channel breaks it.
+- [ ] **The same-line multi-route fixtures** (migrated from Part B's deleted gate task — this
+  is the one corpus requirement the hashed-route-id decision creates). `fw-axum` must contain a
+  **chained-verb** route (`.route("/x", get(h).post(h2))` — two routes, ONE line) and `fw-rails`
+  a **`resources :articles`** (7 actions, ONE line). Both collide on `(file, kind, start_line)`
+  and are separated **only by the `name` field** (`GET /x` vs `POST /x`), so they are the
+  fixtures that catch a framework author who sets `name` to just the path — a collision here
+  **silently deletes routes**. Task 31 asserts *N distinct route node ids*, not N−1.
 - [ ] **Every fixture project must be non-trivially cross-file** (≥ 2 source files, ≥ 1
   edge whose source and target live in *different* files). A single-file project produces
   no cross-file edges and gates nothing — it is the resolution-shaped version of the
-  all-zeros baseline. Asserted in Task 31 (`baseline_is_not_vacuous`).
+  all-zeros baseline. Asserted in Task 30 (`baseline_is_not_vacuous`).
 - [ ] **No `.git`, no build outputs, no `node_modules`.** The dumper copies each project to
-  a temp dir (Task 30) — a git dir would make the TS scan take its git fast path and the
+  a temp dir (Task 29) — a git dir would make the TS scan take its git fast path and the
   temp copy's would be missing/stale. Fixtures are scanned by the FS walker on both sides.
 - [ ] **`projects.toml`** — one `[[project]]` per directory. This is the manifest the gate
   reads, and the spine of every anti-vacuity assertion:
@@ -2875,8 +3041,8 @@ in `projects.toml`'s `notes`.
   `expect_frameworks` is the sharpest anti-vacuity check in the whole gate. A framework
   whose `detect()` silently returns `false` emits no route nodes, so no route edges, so
   **both** engines dump an empty set and a pure diff is green. This field turns that
-  silence into a failure — on the TS side in the dumper (Task 30) and on the Rust side in
-  the gate (Task 31).
+  silence into a failure — on the TS side in the dumper (Task 29) and on the Rust side in
+  the gate (Task 30).
 - [ ] `min_cross_file_edges` is a **floor** (an anti-vacuity tripwire), never the assertion.
   The assertion is the exact edge-identity multiset in `expected.json`. Two numbers that
   can drift apart are one number too many — keep the floor loose (the count of hops the
@@ -2890,7 +3056,7 @@ in `projects.toml`'s `notes`.
 
 ---
 
-### Task 30: The TS baseline dumper — run the REAL CodeGraph resolver
+### Task 29: The TS baseline dumper — run the REAL CodeGraph resolver
 
 **Files:** Create `tools/parity/dump-ts-resolution.mjs`; generate
 `crates/selene-resolve/tests/fixtures/resolve/expected.json` (committed).
@@ -2963,12 +3129,12 @@ edges to already exist).
   a route edge. The semantic label is the fix; the loosened comparison is the disaster it
   prevents. Say so in the dumper's header comment, where the next person will read it.
 - [ ] Also dump, per **non-route** edge endpoint, the **raw TS node id** into a side map
-  `nodeIds: { "<label>": "<id>" }`. Task 31 asserts Rust computes the *same id for the same
+  `nodeIds: { "<label>": "<id>" }`. Task 30 asserts Rust computes the *same id for the same
   label* — that keeps the id formula gated even though the diff itself reads labels. Without
   it, an id-formula divergence would be invisible here and would corrupt every downstream
   consumer that key-matches on id prefixes. **Route nodes are excluded from this map by
   construction** (their ids are *designed* to differ), and that exclusion is itself asserted
-  in Task 31 — so nobody can quietly add routes back into the id check and have it "pass"
+  in Task 30 — so nobody can quietly add routes back into the id check and have it "pass"
   by deleting the routes.
 - [ ] **The `kind` is the POST-promotion kind.** `createEdges` rewrites it:
   `function_ref` → `references`; `extends` → `implements` when the target is an
@@ -2999,7 +3165,7 @@ edges to already exist).
   written) proved the mechanism; **repeat the sabotage here**: comment out
   `resolver.initialize()` so no framework detects, and confirm the dumper exits 1 rather
   than writing an all-frameworks-missing baseline. Record that you ran it, in the results
-  doc (Task 33).
+  doc (Task 32).
 - [ ] Record `codegraphCommit` (derived via `git -C <cg> rev-parse HEAD`, env
   `CODEGRAPH_COMMIT` overriding — copy the extraction dumper's `codegraphCommit()`
   verbatim), `projectCount`, and per-project totals. **Never hand-edit `expected.json`.**
@@ -3016,7 +3182,7 @@ edges to already exist).
 
 ---
 
-### Task 31: The resolution parity gate — edge IDENTITY, tolerance 0
+### Task 30: The resolution parity gate — edge IDENTITY, tolerance 0
 
 **Files:** Create `crates/selene-resolve/tests/resolution_parity_gate.rs`,
 `crates/selene-resolve/tests/fixtures/resolve/deviations.toml`. Modify
@@ -3030,13 +3196,13 @@ itself is testable), a `deviations.toml` with per-half entry kinds, and a module
 names the failure modes.
 
 **Harness shape.** Per project in `projects.toml`: `SurrealStore::in_memory()` →
-`selene_extract::Indexer::index_all()` → the **Task 28 driver** (which is the full pass
+`selene_extract::Indexer::index_all()` → the **Task 27 driver** (which is the full pass
 order: `initialize` → `run_post_extract` → `resolve_and_persist_batched` → the two
 conformance passes → the synthesis tail) → read every edge back **out of the store** and
 label it. Read the edges from the **store**, not from the resolver's return value: what the
 graph *contains* is what an agent will query, and a persist path that drops or duplicates
 rows is precisely the bug a return-value assertion cannot see (Phase 1's ordered-commit and
-Task 28's keyed-delete invariants both live on that path).
+Task 27's keyed-delete invariants both live on that path).
 
 ### The identity rule — and why route edges are compared SEMANTICALLY
 
@@ -3055,7 +3221,7 @@ line)`**, via the label `route:[{framework}|{METHOD}|{path}]@{file}:{line}`.
 fail on *every route edge*, for a reason that has nothing to do with resolution correctness.
 The obvious "fix" — loosen the comparison, or exclude route edges from the diff — would
 blind the gate **precisely where dispatch bridging lives**: every framework's entry hop is a
-route edge, and route→handler is the first hop of every flow in Task 32. A gate that skips
+route edge, and route→handler is the first hop of every flow in Task 31. A gate that skips
 route edges is a gate that cannot see a framework binding its routes to the wrong handlers.
 Compare the semantics, not the spelling.
 
@@ -3092,7 +3258,7 @@ Compare the semantics, not the spelling.
   "fixing" a route-id diff by deleting routes from the map; the second stops the Phase 2 id
   contract being quietly re-broken for routes.
 - [ ] **`detected_frameworks_agree`** — per project, TS's `getDetectedFrameworks()` (from
-  the baseline) == Rust's `detected_framework_names()` == `projects.toml`'s
+  the baseline) == Rust's `ReferenceResolver::detected_frameworks()` == `projects.toml`'s
   `expect_frameworks`. **Three-way**, deliberately: TS==Rust alone would pass when *both*
   fail to detect, and the manifest is the only party that knows what *should* have fired.
 
@@ -3145,7 +3311,7 @@ Compare the semantics, not the spelling.
   gets an entry, with the fixture that exercises it and a focused unit test in Part A/B's
   suite (name the test in the `reason`, as Phase 2's entries do).
 - [ ] **Do not use a deviation to paper over a flow that does not close.** If a hop is
-  missing, that is Task 32's failure and it is a bug. A `[[edge-deviation]]` saying "we do
+  missing, that is Task 31's failure and it is a bug. A `[[edge-deviation]]` saying "we do
   not emit this hop" is how a half-bridged flow gets *ratified*. The only legitimate
   deviations are ones where **TS emits something wrong** and we correctly stay silent (or
   vice-versa, where TS misses something we correctly emit).
@@ -3156,20 +3322,21 @@ Compare the semantics, not the spelling.
 
 ---
 
-### Task 32: The dispatch-coverage gate — **THE Phase 3 gate**
+### Task 31: The dispatch-coverage gate — **THE Phase 3 gate**
 
 **Files:** Create `crates/selene-resolve/tests/dispatch_coverage_gate.rs`,
 `crates/selene-resolve/tests/fixtures/resolve/flows.toml`.
 
-> **Supersedes Part B's Task 36.** B36 asserts `store.find_path(from, to)` returns a path
-> ≤ `max_hops` containing certain `via` *symbols*. That is a **path-existence** check, and a
-> path search is satisfied by *any* route through the graph — including one that goes around
-> the very dispatch hop the gate was written to defend. It also cannot see a hop closed by
-> the **wrong mechanism** (a fuzzy match that lands on the right symbol by luck is not a
-> bridged dispatch; it is a coin flip that will land elsewhere on the next repo). This task
-> asserts **each hop's edge individually, with its `via` mechanism pinned**, and **absorbs
-> B36's three other sub-gates verbatim** (0-control precision, no-explosion, determinism —
-> below). B36's fixture-building step folds into Task 29. Nothing of B36 is lost.
+> **Supersedes Part B's deleted gate task.** That task asserted `store.find_path(from, to)`
+> returns a path ≤ `max_hops` containing certain `via` *symbols*. That is a **path-existence**
+> check, and a path search is satisfied by *any* route through the graph — including one that
+> goes around the very dispatch hop the gate was written to defend. It also cannot see a hop
+> closed by the **wrong mechanism** (a fuzzy match that lands on the right symbol by luck is not
+> a bridged dispatch; it is a coin flip that will land elsewhere on the next repo). This task
+> asserts **each hop's edge individually, with its `via` mechanism pinned**, and **absorbs that
+> task's four other sub-gates verbatim** (same-line multi-route, 0-control precision,
+> no-explosion, determinism — below). Its fixture-building step folded into Task 28. Nothing is
+> lost.
 
 The roadmap's Phase 3 gate, verbatim: *"dispatch-coverage fixtures resolve end-to-end (no
 half-bridged flow)."* This task is that sentence, made executable.
@@ -3183,8 +3350,8 @@ working hops out of four is a graph that tells an agent "the flow continues… s
 which sends it to `Read` with *extra* confidence. **A flow that resolves 3 of 4 hops
 FAILS this gate.**
 
-**Why the parity gate cannot do this job.** Task 31 is differential: it certifies that Rust
-binds what TS binds. If TS's flow were itself broken at a hop, Task 31 would go green on a
+**Why the parity gate cannot do this job.** Task 30 is differential: it certifies that Rust
+binds what TS binds. If TS's flow were itself broken at a hop, Task 30 would go green on a
 faithfully-ported broken flow. And a *count*-shaped check is blind by construction: three
 real edges are three real edges. Only an assertion that names **every hop of a canonical
 flow and demands each one individually** can see a hole in the middle of a chain.
@@ -3193,7 +3360,7 @@ flow and demands each one individually** can see a hole in the middle of a chain
 
 - [ ] Each entry is the framework's **signature control flow** (playbook §4 Step 1: "how
   does X reach/become Y"), written as an **ordered hop list from the entry point to the
-  handler body**. Route endpoints use the **semantic route label** of Task 31
+  handler body**. Route endpoints use the **semantic route label** of Task 30
   (`route:[{framework}|{METHOD}|{path}]@{file}:{line}`), never a raw id:
 
   ```toml
@@ -3235,7 +3402,7 @@ flow and demands each one individually** can see a hole in the middle of a chain
 - [ ] **Coverage: one flow per framework, one per synthesizer, no exceptions.** Every
   framework Part B registers (including **Next.js** — maintainer decision, in scope) and
   every `synthesizedBy` channel it can emit gets a `[[flow]]` whose chain *runs through it*.
-  The `fw-*` and `synth-*` projects of Task 29 exist to make each of these writable.
+  The `fw-*` and `synth-*` projects of Task 28 exist to make each of these writable.
 - [ ] **Each flow must start at a real entry point and end in a handler body.** A "flow"
   whose hop list is one edge long is not a flow, it is an edge — and gating it proves
   nothing about the property this gate exists for. Minimum 2 hops; the framework flows are
@@ -3286,11 +3453,21 @@ flow and demands each one individually** can see a hole in the middle of a chain
   ungated. This is Phase 2's `every_fixture_on_disk_is_gated` hole, generalized to the
   registry: there, ten fixtures sat gated by nobody behind a green gate; here, an entire
   dispatch channel could. (Which framework exercises which flow is derived from the
-  `[[flow]]`'s project + the `via` values — no second list to drift.) ⚠ **`registered_synthesizers()`
-  does not exist yet** — it is the one interface this part still needs from Part B (see
-  *Reconciliation*). **Do not hard-code the channel list here**: a hard-coded list is a
-  second source of truth, it will drift on the first Phase 8 channel, and the assertion's
-  entire value is that it is keyed to the registry.
+  `[[flow]]`'s project + the `via` values — no second list to drift.)
+  **`registered_synthesizers()` is supplied by Task 21** (it returns `SYNTH_PASS_ORDER`, and a
+  Task-21 test asserts the pass table agrees with it — so it cannot drift from what actually
+  ships). **Do not hard-code the channel list here**: a hard-coded list is a second source of
+  truth, it will drift on the first Phase 8 channel, and this assertion's entire value is that
+  it is keyed to the registry.
+- [ ] **`every_project_has_a_flow`** — set-equality between `projects.toml`'s `fw-*`/`synth-*`
+  projects and the projects named by `[[flow]]` rows. The registry check above has one hole:
+  a mechanism that lives in **neither** registry. **Django ORM (Task 26) is exactly that** — it
+  is a *framework-resolver branch*, so it is not in `registered_synthesizers()`, and the
+  `django` framework's slot is already satisfied by its `urls` flow. Without this assertion,
+  `synth-django-orm` could sit on disk gated by nobody while both registry checks pass green.
+  (`core-*` and `_control/` projects are exempt — they are gated by Task 30 and by
+  `synthesis_emits_nothing_on_the_control_corpus` respectively; list the exemption explicitly
+  in the test, do not let it be implicit.)
 - [ ] **`negative_controls_stay_silent`** — a `[[negative]]` section, and the other half of
   the doctrine. **"Silent beats wrong":** a synthesizer that bridges everything would pass
   every flow assertion above while filling the graph with lies. So pin the non-edges too:
@@ -3309,10 +3486,18 @@ flow and demands each one individually** can see a hole in the middle of a chain
   than no graph at all, and they are invisible to every assertion that only counts what is
   present.
 
-### Absorbed from Part B's Task 36 (do not drop these — they are the precision half)
+### Absorbed from Part B's deleted gate task (do not drop these — they are the precision half)
 
+- [ ] **`same_line_routes_stay_distinct`** — the hashed-route-id consequence (Task 11). The
+  `fw-axum` chained-verb fixture (`.route("/x", get(h).post(h2))`, **one line**) and the
+  `fw-rails` `resources :articles` fixture (7 actions, **one line**) must each yield **N
+  distinct route node ids**, and **each route must be independently locatable via
+  `find_route(framework, method, path)`**. Assert the **count**, not just the lookup: routes
+  that collide on `(file, kind, name, line)` do not error — one silently **overwrites** the
+  other, and a lookup for the survivor passes while the graph has quietly lost a route. This
+  is the assertion that catches a framework author who set `name` to just the path.
 - [ ] **`synthesis_emits_nothing_on_the_control_corpus`** — run the full pipeline over
-  `tests/fixtures/resolve/_control/` (Task 29: one plain repo per v0 language, containing
+  `tests/fixtures/resolve/_control/` (Task 28: one plain repo per v0 language, containing
   **none** of the dispatch shapes) and assert `run_synthesis` emits **exactly 0 edges**.
   Playbook §5.2 ("0 on every non-Swift control"). Every positive assertion above is satisfied
   by a synthesizer that fires on everything; **this is the only one that isn't.** A single
@@ -3329,12 +3514,12 @@ flow and demands each one individually** can see a hole in the middle of a chain
   order does not produce a *flaky* gate — it produces edges that silently point at a
   different `save()` on every index.
 - [ ] **The flow table's targets are the TS baseline's edges.** Every hop you write must
-  correspond to an edge in `expected.json` (Task 30) — i.e. TS resolves it too. If a hop is
+  correspond to an edge in `expected.json` (Task 29) — i.e. TS resolves it too. If a hop is
   in the flow table but **absent from the TS baseline**, you have found either a fixture bug
   or a genuine TS coverage hole. Do not paper over it: surface it (results doc §Known limits,
   and to the maintainer). Add an assertion — `flow_hops_exist_in_ts_baseline` — that checks
-  this mechanically, so the two tables cannot drift apart. This is what keeps Task 32 (absolute)
-  and Task 31 (differential) mutually reinforcing rather than independently rotting.
+  this mechanically, so the two tables cannot drift apart. This is what keeps Task 31 (absolute)
+  and Task 30 (differential) mutually reinforcing rather than independently rotting.
 - [ ] TDD: write the flow table for **one** framework and its `[[negative]]` first; watch
   `every_flow_hop_resolves` fail on the un-implemented hops (it will — Part B may still be
   landing); fill the table out as the channels land. **The gate goes in red and is driven
@@ -3344,7 +3529,7 @@ flow and demands each one individually** can see a hole in the middle of a chain
 
 ---
 
-### Task 33: The parity results doc + the coverage-limits ledger
+### Task 32: The parity results doc + the coverage-limits ledger
 
 **Files:** Create `docs/benchmarks/2026-07-phase3-resolution-parity.md`.
 
@@ -3368,7 +3553,7 @@ because it is the single most valuable paragraph either phase produced:
   per assertion, each naming the hole. Copy Phase 2's framing: *most of these exist because
   a gate was, at some point, green while comparing nothing.* Include the two defenses that
   live outside the Rust test (the dumper's refuse-to-write, the derived commit SHA) and
-  **record the sabotage test** from Task 30 (initialize() commented out ⇒ exit 1, nothing
+  **record the sabotage test** from Task 29 (initialize() commented out ⇒ exit 1, nothing
   written) — an untested refusal is not a refusal.
 - [ ] **§4 The deviations** — one subsection each: the TS evidence (file:line), the fixture
   that exercises it, the focused test that guards it, and why silent beats wrong. Phase 2's
@@ -3389,7 +3574,7 @@ because it is the single most valuable paragraph either phase produced:
 
 ---
 
-### Task 34: Facade polish — `selene-resolve`'s public surface, deferrals, deviation ledger
+### Task 33: Facade polish — `selene-resolve`'s public surface, deferrals, deviation ledger
 
 **Files:** Modify `crates/selene-resolve/src/lib.rs`; touch `CLAUDE.md` (status line).
 
@@ -3434,9 +3619,9 @@ and all three transfer:
   node — the Phase 2 contract, no exceptions — and the route's semantics live in first-class
   indexed fields (`method`, `path`, `file`, `line`, `framework`), queried by index, never by
   parsing an id string. Name the consequence: the parity gate compares route edges
-  **semantically** (Task 31), and any future consumer must query the fields, not the id.
+  **semantically** (Task 30), and any future consumer must query the fields, not the id.
 - [ ] **Re-export the public surface**: `ReferenceResolver`, `resolve_and_persist_batched`
-  (Task 28), `ResolutionStats`, `ResolutionContext`, `StoreContext`,
+  (Task 27), `ResolutionStats`, `ResolutionContext`, `StoreContext`,
   `UnresolvedRef` / `ResolvedRef` / `ResolvedBy`, `FrameworkResolver` + the registry accessors,
   `run_synthesis` + `registered_synthesizers()`, the error types. Anything a
   downstream crate (Phase 4's `selene-graph`, Phase 5's MCP) needs must be reachable without
@@ -3455,7 +3640,7 @@ and all three transfer:
 
 ---
 
-## Self-review checklist (after Task 34)
+## Self-review checklist (after Task 33)
 
 Run this against the finished phase. Each line is a hole that was *actually open* in a prior
 phase, or an invariant that the maps say costs correctness when it slips.
@@ -3537,24 +3722,27 @@ phase, or an invariant that the maps say costs correctness when it slips.
 
 ## Open coordination points (surfaced to the maintainer; do not silently resolve)
 
-1. **Two introspection surfaces Parts A/B must expose** (Assumption 3):
-   `Resolver::detected_framework_names()` and `REGISTERED_SYNTHESIZERS`. Without them,
-   `detected_frameworks_agree` and `every_framework_and_synthesizer_has_a_flow` cannot be
-   written — and those are the two assertions that stop a framework or a dispatch channel from
-   shipping gated by nobody. They are small; they are also load-bearing.
-2. **Does CodeGraph's `indexAll` store node `filePath` relative or absolute?** The whole gate
+*(Items 1 and 2 of the original list are RESOLVED — recorded here so the resolution is not
+re-litigated: (1) `registered_synthesizers()` is now **specified in Task 21**, returning
+`SYNTH_PASS_ORDER`, with a Task-21 test asserting the pass table agrees with it — so Task 31's
+completeness assertion is writable and keyed to the registry, never to a hard-coded list.
+(2) The **duplicate dispatch gate is gone**: Part B's gate task is deleted, Task 31 supersedes
+it, and its four valuable sub-gates + fixtures are absorbed into Tasks 28/31. There is now
+exactly one corpus, one gate, one results doc.)*
+
+3. **Does CodeGraph's `indexAll` store node `filePath` relative or absolute?** The whole gate
    rests on node ids being reproducible across engines, and ids embed the path. Task 30 asserts
    it and exits 1 if absolute — but if it *is* absolute, the dumper needs a fixed indexing path
    plus normalization, which is a design change, not a fix. **Find out in Task 30, loudly.**
-3. **Resolution baseline runtime.** The dumper runs a full CodeGraph index+resolve per fixture
+4. **Resolution baseline runtime.** The dumper runs a full CodeGraph index+resolve per fixture
    project (~24 projects). If it turns out slow enough to be painful, the answer is *fewer,
    richer projects* — never *fewer assertions*.
-4. **`EVENT_FANOUT_CAP` and friends are TS's numbers.** The negative controls in Task 32 pin
+5. **`EVENT_FANOUT_CAP` and friends are TS's numbers.** The negative controls in Task 31 pin
    them. If Part B tunes any cap, the gate's negative control changes with it and both need to
    be a deliberate decision, recorded in the results doc.
-5. **Django ORM is a resolver, not a synthesizer** (`claimsReference('_iterable_class')` →
+6. **Django ORM is a resolver, not a synthesizer** (`claimsReference('_iterable_class')` →
    `ModelIterable.__iter__`, conf 0.7, `resolvedBy:'framework'`, **not** `heuristic`
    provenance). The roadmap's Phase 3 line calls it one of "all 5 synthesizers". The map is
-   right and the roadmap's phrasing is loose; Task 32 gates its flow either way, but the
+   right and the roadmap's phrasing is loose; Task 31 gates its flow either way, but the
    `[[flow]]` hop's `via` is `framework`, not `synth:…`. Flagging so the roadmap's wording can
    be corrected rather than the code bent to match it.
