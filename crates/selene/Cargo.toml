@@ -12,7 +12,14 @@ path = "src/main.rs"
 
 [dependencies]
 selene-core.workspace = true
-selene-db = { path = "../selene-db", features = ["kv-surrealkv"] }
+# ⚠ RocksDB, NOT SurrealKV — and the feature list is load-bearing, not a preference.
+# `SurrealStore::open` prefers SurrealKV whenever `kv-surrealkv` is COMPILED IN
+# (surreal.rs:93 vs :106), so naming it here silently forces the backend that the
+# Phase-1 gate measured at **46 nodes/s vs RocksDB's 706** and called "pathologically
+# slow on this write load" (docs/benchmarks/2026-07-phase1-db-gate.md:86-93). The binary
+# shipped on the backend its own benchmark had already rejected, because nothing had ever
+# RUN the binary. Do not add `kv-surrealkv` here to "have both" — compiling it IS choosing it.
+selene-db = { path = "../selene-db", default-features = false, features = ["kv-rocksdb"] }
 selene-extract = { path = "../selene-extract" }
 selene-resolve = { path = "../selene-resolve" }
 selene-mcp = { path = "../selene-mcp" }

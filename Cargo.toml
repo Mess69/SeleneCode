@@ -85,6 +85,10 @@ json5        = "0.4"
 # A `warn!` with no subscriber installed is a no-op, so this costs nothing until
 # a surface (CLI/MCP) installs one.
 tracing      = "0.1"
+# ...and until something installs one, `selene-resolve::batch`'s phase timings are emitted
+# into the void — which is exactly how a ~1 s/file resolution cost survived three phases
+# unmeasured. The surfaces (CLI/MCP) install one; so does the perf probe.
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 # v0 grammar crates — pinned EXACT (=x.y.z) per rust-ecosystem-2026-07.md §3:
 # node-type names are extraction contracts, so a silent grammar bump would
 # drift every language config. Only selene-extract opts in. All depend on

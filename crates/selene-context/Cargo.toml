@@ -23,6 +23,9 @@ selene-resolve = { path = "../selene-resolve" }
 selene-db = { path = "../selene-db", features = ["kv-mem"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 tempfile = { workspace = true }
+# The perf probe installs a subscriber so `batch.rs`'s phase spans are actually rendered.
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
 
 [lints]
 workspace = true

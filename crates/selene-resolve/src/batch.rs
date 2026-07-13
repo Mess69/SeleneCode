@@ -115,17 +115,26 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     root: &Path,
     on_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Result<ResolutionStats> {
+    // Phase timings. A 12k-file repo spends minutes in here; without per-phase spans a
+    // regression is a single opaque number and every diagnosis starts by re-deriving them.
+    let t_phase = std::time::Instant::now();
+
     // --- (1) framework emission, BEFORE the context is built ------------------
     // The context warms `known_names` once; these nodes must already exist or every
     // reference named after one of them is pre-filtered away. See the module docs.
     let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
+    tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve/1a: ctx#1 warm");
+    let t = std::time::Instant::now();
     let detected = detect_frameworks(&ctx);
     let extract_stats = run_framework_extract(store, &ctx, &detected).await?;
     let post = run_post_extract(store, &ctx, &detected).await?;
     drop(ctx);
+    tracing::info!(ms = t.elapsed().as_millis(), "resolve/1b: framework extract");
 
     // --- (2) the context, over a graph that now HAS the route/config nodes ----
+    let t = std::time::Instant::now();
     let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
+    tracing::info!(ms = t.elapsed().as_millis(), "resolve/2: ctx#2 warm");
 
     let total = store.unresolved_pending_count().await? as usize;
     let mut stats = ResolutionStats::default();
@@ -134,8 +143,14 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     let mut done = 0usize;
 
     // --- (3) the batch loop, at offset 0 --------------------------------------
+    // Ladder time and persist time get separate clocks on purpose: they have completely
+    // different fixes (a hot ladder is cache/query shape; a hot persist is write batching),
+    // and one summed number cannot tell you which you have.
+    let (mut ms_ladder, mut ms_persist, mut ms_fetch) = (0u128, 0u128, 0u128);
     loop {
+        let t = std::time::Instant::now();
         let batch = store.unresolved_pending_batch(0, RESOLVE_BATCH).await?;
+        ms_fetch += t.elapsed().as_millis();
         if batch.is_empty() {
             break;
         }
@@ -145,13 +160,17 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
         // Leaving it outside is a `block_on` inside a runtime worker: an instant panic
         // in a test, a deadlock in production. (It bit me here, exactly as the module
         // doc says it would.)
+        let t = std::time::Instant::now();
         let (result, edges) = tokio::task::block_in_place(|| {
             let result = resolver.resolve_all(&batch);
             let edges = resolver.create_edges(&result.resolved);
             (result, edges)
         });
+        ms_ladder += t.elapsed().as_millis();
 
+        let t = std::time::Instant::now();
         persist(store, &edges, &result).await?;
+        ms_persist += t.elapsed().as_millis();
 
         merge(&mut stats, &result.stats);
         done += batch.len();
@@ -179,7 +198,16 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
         remaining_before = remaining;
     }
 
+    tracing::info!(
+        ms_fetch,
+        ms_ladder,
+        ms_persist,
+        refs = total,
+        "resolve/3: batch loop"
+    );
+
     // --- (4) the conformance passes — AFTER the edges they walk exist ---------
+    let t = std::time::Instant::now();
     let (conformance, conformance_edges) = tokio::task::block_in_place(|| {
         let mut hits = resolver.resolve_chained_calls_via_conformance();
         hits.extend(resolver.resolve_deferred_this_member_refs());
@@ -199,7 +227,12 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
             .or_insert(0) += conformance.len();
     }
 
+    tracing::info!(ms = t.elapsed().as_millis(), "resolve/4: conformance");
+
     // --- (5) drop the stale caches, (6) synthesize LAST ------------------------
+    // NB: synthesis runs on caches we just dropped — by design (a stale cache makes every
+    // pass a silent no-op). So it re-reads the graph cold, and that cost is real. Timed.
+    let t = std::time::Instant::now();
     resolver.ctx().clear_caches();
     let synthesized = run_synthesis(store, resolver.ctx())
         .await
@@ -208,6 +241,8 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
             tracing::warn!(error = %e, "synthesis failed — the base graph stands");
             0
         });
+    tracing::info!(ms = t.elapsed().as_millis(), synthesized, "resolve/6: synthesis");
+    tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve: TOTAL");
     if synthesized > 0 {
         stats
             .by_method
