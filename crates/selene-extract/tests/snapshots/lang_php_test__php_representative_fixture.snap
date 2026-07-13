@@ -1,0 +1,121 @@
+---
+source: crates/selene-extract/tests/lang_php_test.rs
+expression: r
+---
+nodes:
+  - id: "file:Cart.php"
+    kind: file
+    name: Cart.php
+    qualifiedName: Cart.php
+    filePath: Cart.php
+    language: php
+    startLine: 1
+    endLine: 12
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: 0
+  - id: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    kind: namespace
+    name: Shop
+    qualifiedName: Shop
+    filePath: Cart.php
+    language: php
+    startLine: 2
+    endLine: 2
+    startColumn: 0
+    endColumn: 15
+    updatedAt: 0
+  - id: "import:0366243e48eb3028170ef9a0f436b4c2"
+    kind: import
+    name: "App\\Contracts\\Sellable"
+    qualifiedName: "Shop::App\\Contracts\\Sellable"
+    filePath: Cart.php
+    language: php
+    startLine: 4
+    endLine: 4
+    startColumn: 0
+    endColumn: 27
+    signature: "use App\\Contracts\\Sellable;"
+    updatedAt: 0
+  - id: "class:cfd60639903721c6f9889ef13588f7a9"
+    kind: class
+    name: Cart
+    qualifiedName: "Shop::Cart"
+    filePath: Cart.php
+    language: php
+    startLine: 6
+    endLine: 11
+    startColumn: 0
+    endColumn: 1
+    visibility: public
+    updatedAt: 0
+  - id: "constant:b3769a4eb568fde19ff4b47f09c6ecb1"
+    kind: constant
+    name: LIMIT
+    qualifiedName: "Shop::Cart::LIMIT"
+    filePath: Cart.php
+    language: php
+    startLine: 9
+    endLine: 9
+    startColumn: 10
+    endColumn: 20
+    updatedAt: 0
+  - id: "method:35a2c0535f032fd48c6d3bd5be6f7ec3"
+    kind: method
+    name: add
+    qualifiedName: "Shop::Cart::add"
+    filePath: Cart.php
+    language: php
+    startLine: 10
+    endLine: 10
+    startColumn: 4
+    endColumn: 59
+    visibility: public
+    isStatic: false
+    returnType: self
+    updatedAt: 0
+edges:
+  - source: "file:Cart.php"
+    target: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    target: "import:0366243e48eb3028170ef9a0f436b4c2"
+    kind: contains
+    provenance: tree-sitter
+  - source: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    target: "class:cfd60639903721c6f9889ef13588f7a9"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:cfd60639903721c6f9889ef13588f7a9"
+    target: "constant:b3769a4eb568fde19ff4b47f09c6ecb1"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:cfd60639903721c6f9889ef13588f7a9"
+    target: "method:35a2c0535f032fd48c6d3bd5be6f7ec3"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    referenceName: "App\\Contracts\\Sellable"
+    referenceKind: imports
+    line: 4
+    column: 0
+  - fromNodeId: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    referenceName: "App\\Contracts::Sellable"
+    referenceKind: imports
+    line: 4
+    column: 0
+  - fromNodeId: "class:cfd60639903721c6f9889ef13588f7a9"
+    referenceName: Discountable
+    referenceKind: implements
+    line: 8
+    column: 4
+  - fromNodeId: "method:35a2c0535f032fd48c6d3bd5be6f7ec3"
+    referenceName: Item
+    referenceKind: references
+    line: 10
+    column: 24
+errors: []
+durationMs: 0

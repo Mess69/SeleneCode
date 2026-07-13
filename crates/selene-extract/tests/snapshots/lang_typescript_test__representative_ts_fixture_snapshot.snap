@@ -1,0 +1,201 @@
+---
+source: crates/selene-extract/tests/lang_typescript_test.rs
+expression: r
+---
+nodes:
+  - id: "file:pay.ts"
+    kind: file
+    name: pay.ts
+    qualifiedName: pay.ts
+    filePath: pay.ts
+    language: typescript
+    startLine: 1
+    endLine: 21
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:d635a6add26911e77533622649d95543"
+    kind: import
+    name: stripe
+    qualifiedName: stripe
+    filePath: pay.ts
+    language: typescript
+    startLine: 2
+    endLine: 2
+    startColumn: 0
+    endColumn: 32
+    signature: "import { Stripe } from 'stripe';"
+    updatedAt: "[ts]"
+  - id: "interface:c8b3cb7ca75f3d226ae47a8d15152853"
+    kind: interface
+    name: Receipt
+    qualifiedName: Receipt
+    filePath: pay.ts
+    language: typescript
+    startLine: 4
+    endLine: 6
+    startColumn: 7
+    endColumn: 1
+    isExported: true
+    updatedAt: "[ts]"
+  - id: "type_alias:6ac2bbbfd7c3aa2a7140e710bd0cbf90"
+    kind: type_alias
+    name: Currency
+    qualifiedName: Currency
+    filePath: pay.ts
+    language: typescript
+    startLine: 8
+    endLine: 8
+    startColumn: 7
+    endColumn: 37
+    isExported: true
+    updatedAt: "[ts]"
+  - id: "class:f3920ce74c821f884c3dd24843f5ae9e"
+    kind: class
+    name: PaymentService
+    qualifiedName: PaymentService
+    filePath: pay.ts
+    language: typescript
+    startLine: 10
+    endLine: 16
+    startColumn: 7
+    endColumn: 1
+    isExported: true
+    updatedAt: "[ts]"
+  - id: "property:0f5962d3bcf88bc7bdea5699cc9ba7ee"
+    kind: property
+    name: client
+    qualifiedName: "PaymentService::client"
+    filePath: pay.ts
+    language: typescript
+    startLine: 11
+    endLine: 11
+    startColumn: 2
+    endColumn: 24
+    visibility: private
+    isStatic: false
+    updatedAt: "[ts]"
+  - id: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    kind: method
+    name: charge
+    qualifiedName: "PaymentService::charge"
+    filePath: pay.ts
+    language: typescript
+    startLine: 13
+    endLine: 15
+    startColumn: 2
+    endColumn: 3
+    signature: "(amount: number): Promise<Receipt>"
+    isAsync: true
+    isStatic: false
+    updatedAt: "[ts]"
+  - id: "function:c6a96521cfad3d66cf92cdfa4a2e82e3"
+    kind: function
+    name: format
+    qualifiedName: format
+    filePath: pay.ts
+    language: typescript
+    startLine: 18
+    endLine: 18
+    startColumn: 22
+    endColumn: 50
+    signature: "(r: Receipt): string"
+    isExported: true
+    isAsync: false
+    isStatic: false
+    updatedAt: "[ts]"
+  - id: "constant:edeb8be9ad4cda06758c1a6dc91cfcad"
+    kind: constant
+    name: MAX_AMOUNT
+    qualifiedName: MAX_AMOUNT
+    filePath: pay.ts
+    language: typescript
+    startLine: 20
+    endLine: 20
+    startColumn: 6
+    endColumn: 24
+    signature: "= 10000"
+    isExported: false
+    updatedAt: "[ts]"
+edges:
+  - source: "file:pay.ts"
+    target: "import:d635a6add26911e77533622649d95543"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:pay.ts"
+    target: "interface:c8b3cb7ca75f3d226ae47a8d15152853"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:pay.ts"
+    target: "type_alias:6ac2bbbfd7c3aa2a7140e710bd0cbf90"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:pay.ts"
+    target: "class:f3920ce74c821f884c3dd24843f5ae9e"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:f3920ce74c821f884c3dd24843f5ae9e"
+    target: "property:0f5962d3bcf88bc7bdea5699cc9ba7ee"
+    kind: contains
+    provenance: tree-sitter
+  - source: "class:f3920ce74c821f884c3dd24843f5ae9e"
+    target: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:pay.ts"
+    target: "function:c6a96521cfad3d66cf92cdfa4a2e82e3"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:pay.ts"
+    target: "constant:edeb8be9ad4cda06758c1a6dc91cfcad"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:pay.ts"
+    referenceName: stripe
+    referenceKind: imports
+    line: 2
+    column: 0
+  - fromNodeId: "file:pay.ts"
+    referenceName: Stripe
+    referenceKind: imports
+    line: 2
+    column: 9
+  - fromNodeId: "property:0f5962d3bcf88bc7bdea5699cc9ba7ee"
+    referenceName: Stripe
+    referenceKind: references
+    line: 11
+    column: 18
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Promise
+    referenceKind: references
+    line: 13
+    column: 32
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Receipt
+    referenceKind: references
+    line: 13
+    column: 40
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Promise
+    referenceKind: references
+    line: 13
+    column: 32
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: Receipt
+    referenceKind: references
+    line: 13
+    column: 40
+  - fromNodeId: "method:f4e4eee33293f88ad1b13f3584db5a35"
+    referenceName: charge
+    referenceKind: calls
+    line: 14
+    column: 11
+  - fromNodeId: "function:c6a96521cfad3d66cf92cdfa4a2e82e3"
+    referenceName: Receipt
+    referenceKind: references
+    line: 18
+    column: 26
+errors: []
+durationMs: "[ms]"

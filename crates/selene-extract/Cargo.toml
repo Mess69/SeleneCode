@@ -7,6 +7,51 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core.workspace = true
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Scan pipeline (Tasks 16-17): gitignore-semantics matching for ScopeIgnore,
+# and deadline-bounded `git` child processes (the fast path must fall back to
+# the FS walk on a hung git, never hang the scan; std::process has no timeout).
+ignore.workspace = true
+wait-timeout.workspace = true
+# tree-sitter core 0.26 + the 12 v0 grammar crates (13 grammars — the
+# typescript crate carries both the TS and TSX LanguageFns). Versions are
+# pinned EXACT in the root [workspace.dependencies] (node-type names are
+# extraction contracts; see rust-ecosystem-2026-07.md §3 and
+# tests/spike_grammars.rs for the verified names).
+tree-sitter.workspace = true
+tree-sitter-typescript.workspace = true
+tree-sitter-javascript.workspace = true
+tree-sitter-python.workspace = true
+tree-sitter-rust.workspace = true
+tree-sitter-go.workspace = true
+tree-sitter-java.workspace = true
+tree-sitter-kotlin-ng.workspace = true
+tree-sitter-c.workspace = true
+tree-sitter-cpp.workspace = true
+tree-sitter-c-sharp.workspace = true
+tree-sitter-php.workspace = true
+tree-sitter-ruby.workspace = true
+# Orchestrator (Task 18): dedicated rayon pool for the parse fan-out; tokio
+# ONLY at the DB seam (spawn_blocking bridge — extraction stays sync).
+# selene-db without default features: the orchestrator needs the GraphStore
+# contract + the in-memory engine for tests, not the RocksDB disk engine
+# (the packaging binary re-enables it; features unify additively there).
+rayon.workspace = true
+tokio.workspace = true
+# Direct path dep (not workspace-inherited): cargo forbids a member turning
+# OFF a workspace dep's default features, and this crate must not drag the
+# RocksDB disk engine into every extract build.
+selene-db = { path = "../selene-db", default-features = false, features = ["kv-mem"] }
+
+[dev-dependencies]
+insta = { workspace = true, features = ["yaml", "redactions"] }
+# Scan tests build throwaway directory trees + real `git init` repos.
+tempfile.workspace = true
+# Parity gate (Task 19): deviations.toml.
+toml.workspace = true
 
 [lints]
 workspace = true

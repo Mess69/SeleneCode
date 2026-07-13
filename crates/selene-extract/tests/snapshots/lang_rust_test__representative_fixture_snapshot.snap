@@ -1,0 +1,186 @@
+---
+source: crates/selene-extract/tests/lang_rust_test.rs
+expression: r
+---
+nodes:
+  - id: "file:widget.rs"
+    kind: file
+    name: widget.rs
+    qualifiedName: widget.rs
+    filePath: widget.rs
+    language: rust
+    startLine: 1
+    endLine: 26
+    startColumn: 0
+    endColumn: 0
+    isExported: false
+    updatedAt: "[ts]"
+  - id: "import:fa95c8fc88eda55d41ac6bf0c5511b7a"
+    kind: import
+    name: std
+    qualifiedName: std
+    filePath: widget.rs
+    language: rust
+    startLine: 1
+    endLine: 1
+    startColumn: 0
+    endColumn: 30
+    signature: "use std::collections::HashMap;"
+    updatedAt: "[ts]"
+  - id: "trait:b574945bee531e2562b513a3ee1493cc"
+    kind: trait
+    name: Render
+    qualifiedName: Render
+    filePath: widget.rs
+    language: rust
+    startLine: 4
+    endLine: 6
+    startColumn: 0
+    endColumn: 1
+    docstring: Renderable things.
+    updatedAt: "[ts]"
+  - id: "method:c1fdba89004dcc985494e2ec00adb920"
+    kind: method
+    name: render
+    qualifiedName: "Render::render"
+    filePath: widget.rs
+    language: rust
+    startLine: 5
+    endLine: 5
+    startColumn: 4
+    endColumn: 31
+    signature: (&self) -> String
+    visibility: private
+    isAsync: false
+    returnType: String
+    updatedAt: "[ts]"
+  - id: "struct:f733ef7be9cb28330673bbc49d71a85f"
+    kind: struct
+    name: Widget
+    qualifiedName: Widget
+    filePath: widget.rs
+    language: rust
+    startLine: 9
+    endLine: 11
+    startColumn: 0
+    endColumn: 1
+    docstring: A widget.
+    visibility: public
+    updatedAt: "[ts]"
+  - id: "method:657e8f05e1a3156867efd70c99b71b0f"
+    kind: method
+    name: render
+    qualifiedName: "Widget::render"
+    filePath: widget.rs
+    language: rust
+    startLine: 14
+    endLine: 16
+    startColumn: 4
+    endColumn: 5
+    signature: (&self) -> String
+    visibility: private
+    isAsync: false
+    returnType: String
+    updatedAt: "[ts]"
+  - id: "method:926efde4424daba18e37b7edbd6efa6e"
+    kind: method
+    name: new
+    qualifiedName: "Widget::new"
+    filePath: widget.rs
+    language: rust
+    startLine: 20
+    endLine: 22
+    startColumn: 4
+    endColumn: 5
+    signature: () -> Self
+    visibility: public
+    isAsync: false
+    returnType: self
+    updatedAt: "[ts]"
+  - id: "variable:98b7e807caf411ec92ec273322881e6a"
+    kind: variable
+    name: LIMIT
+    qualifiedName: LIMIT
+    filePath: widget.rs
+    language: rust
+    startLine: 25
+    endLine: 25
+    startColumn: 6
+    endColumn: 11
+    isExported: false
+    updatedAt: "[ts]"
+edges:
+  - source: "file:widget.rs"
+    target: "import:fa95c8fc88eda55d41ac6bf0c5511b7a"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:widget.rs"
+    target: "trait:b574945bee531e2562b513a3ee1493cc"
+    kind: contains
+    provenance: tree-sitter
+  - source: "trait:b574945bee531e2562b513a3ee1493cc"
+    target: "method:c1fdba89004dcc985494e2ec00adb920"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:widget.rs"
+    target: "struct:f733ef7be9cb28330673bbc49d71a85f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:widget.rs"
+    target: "method:657e8f05e1a3156867efd70c99b71b0f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "struct:f733ef7be9cb28330673bbc49d71a85f"
+    target: "method:657e8f05e1a3156867efd70c99b71b0f"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:widget.rs"
+    target: "method:926efde4424daba18e37b7edbd6efa6e"
+    kind: contains
+    provenance: tree-sitter
+  - source: "struct:f733ef7be9cb28330673bbc49d71a85f"
+    target: "method:926efde4424daba18e37b7edbd6efa6e"
+    kind: contains
+    provenance: tree-sitter
+  - source: "file:widget.rs"
+    target: "variable:98b7e807caf411ec92ec273322881e6a"
+    kind: contains
+    provenance: tree-sitter
+unresolved:
+  - fromNodeId: "file:widget.rs"
+    referenceName: std
+    referenceKind: imports
+    line: 1
+    column: 0
+  - fromNodeId: "file:widget.rs"
+    referenceName: "std::collections::HashMap"
+    referenceKind: imports
+    line: 1
+    column: 4
+  - fromNodeId: "trait:b574945bee531e2562b513a3ee1493cc"
+    referenceName: Sized
+    referenceKind: extends
+    line: 4
+    column: 18
+  - fromNodeId: "struct:f733ef7be9cb28330673bbc49d71a85f"
+    referenceName: Render
+    referenceKind: implements
+    line: 13
+    column: 5
+  - fromNodeId: "method:657e8f05e1a3156867efd70c99b71b0f"
+    referenceName: "String::new"
+    referenceKind: calls
+    line: 15
+    column: 8
+  - fromNodeId: "method:926efde4424daba18e37b7edbd6efa6e"
+    referenceName: Self
+    referenceKind: references
+    line: 20
+    column: 20
+  - fromNodeId: "method:926efde4424daba18e37b7edbd6efa6e"
+    referenceName: Widget
+    referenceKind: instantiates
+    line: 21
+    column: 8
+errors: []
+durationMs: "[ms]"

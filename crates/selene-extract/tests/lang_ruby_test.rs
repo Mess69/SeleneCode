@@ -1,0 +1,394 @@
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+//! Ported Ruby conformance tests: mixins → `implements` refs (the
+//! Ruby-mixins describe block), the Ruby-modules describe block (module
+//! nodes + containment, nested modules), class-scope `CONST=` variables,
+//! require/require_relative imports, method visibility, and one insta
+//! snapshot. The `extract_bare_call` spec is unit-tested colocated in
+//! `src/rules/ruby.rs` (its consumer is the body walker).
+
+use selene_core::{EdgeKind, NodeKind};
+use selene_extract::{ExtractionResult, Language, extract_from_source};
+
+fn extract(path: &str, code: &str) -> ExtractionResult {
+    extract_from_source(path, code, Language::Ruby)
+}
+
+fn find<'r>(r: &'r ExtractionResult, kind: NodeKind, name: &str) -> Option<&'r selene_core::Node> {
+    r.nodes.iter().find(|n| n.kind == kind && n.name == name)
+}
+
+#[test]
+fn extracts_classes_and_methods() {
+    let code = "\nclass OrdersController\n  def index\n    render\n  end\n\n  def show\n    render\n  end\nend\n";
+    let r = extract("orders_controller.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    assert!(find(&r, NodeKind::Class, "OrdersController").is_some());
+    let index = find(&r, NodeKind::Method, "index").unwrap();
+    assert_eq!(index.qualified_name, "OrdersController::index");
+    assert!(find(&r, NodeKind::Method, "show").is_some());
+}
+
+/// The Ruby-mixins block (#include/extend/prepend → `implements` from the
+/// enclosing scope; constant/scope_resolution args only).
+#[test]
+fn mixins_emit_implements_refs() {
+    let code = "\nclass Topic\n  include Searchable\n  extend ClassMethods\n  prepend Auditing, Extra::Hooks\nend\n";
+    let r = extract("topic.rb", code);
+    let class_id = &find(&r, NodeKind::Class, "Topic").unwrap().id;
+
+    let implements: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "implements" && &u.from_node_id == class_id)
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    for m in ["Searchable", "ClassMethods", "Auditing", "Extra::Hooks"] {
+        assert!(implements.contains(&m), "missing {m} in {implements:?}");
+    }
+    // No spurious call-to-"include" import/keyword artifacts.
+    assert!(find(&r, NodeKind::Import, "include").is_none());
+}
+
+#[test]
+fn mixin_dynamic_and_self_args_are_skipped() {
+    let code = "\nmodule M\nend\nclass K\n  extend self\n  include compute_mixin()\nend\n";
+    let r = extract("k.rb", code);
+    let implements: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "implements")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(implements.is_empty(), "{implements:?}");
+}
+
+#[test]
+fn extracts_require_imports() {
+    let code = "\nrequire 'json'\nrequire_relative 'lib/helper'\nputs 'hi'\n";
+    let r = extract("main.rb", code);
+    let imports: Vec<&str> = r
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Import)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert!(imports.contains(&"json"), "{imports:?}");
+    assert!(imports.contains(&"lib/helper"), "{imports:?}");
+    // A non-require call is not an import.
+    assert!(!imports.contains(&"puts"), "{imports:?}");
+}
+
+#[test]
+fn visibility_follows_preceding_modifier_calls() {
+    let code = "\nclass Svc\n  def open_api\n  end\n\n  private\n\n  def hidden\n  end\nend\n";
+    let r = extract("svc.rb", code);
+    assert_eq!(
+        find(&r, NodeKind::Method, "open_api").unwrap().visibility,
+        Some(selene_core::Visibility::Public)
+    );
+    assert_eq!(
+        find(&r, NodeKind::Method, "hidden").unwrap().visibility,
+        Some(selene_core::Visibility::Private)
+    );
+}
+
+#[test]
+fn representative_fixture_snapshot() {
+    let code = "\nrequire 'active_support'\n\nclass Cart\n  include Discountable\n\n  def add(item)\n    item\n  end\nend\n";
+    let mut r = extract("cart.rb", code);
+    for n in &mut r.nodes {
+        n.updated_at = 0;
+    }
+    r.duration_ms = 0;
+    insta::assert_yaml_snapshot!("ruby_representative_fixture", r);
+}
+
+// =============================================================================
+// Ruby modules (the Ruby-modules describe block — landed with Session::visit)
+// =============================================================================
+
+#[test]
+fn module_extracts_as_module_node_with_containment() {
+    let code = "\nmodule CachedCounting\n  def self.disable\n    @enabled = false\n  end\n\n  def perform_increment!(key, count)\n    write_cache!(key, count)\n  end\nend\n";
+    let r = extract("concerns/cached_counting.rb", code);
+
+    let module = find(&r, NodeKind::Module, "CachedCounting").unwrap();
+    assert_eq!(module.qualified_name, "CachedCounting");
+
+    // Methods inside the module get module-qualified names.
+    let disable = find(&r, NodeKind::Method, "disable").unwrap();
+    assert_eq!(disable.qualified_name, "CachedCounting::disable");
+    let increment = find(&r, NodeKind::Method, "perform_increment!").unwrap();
+    assert_eq!(
+        increment.qualified_name,
+        "CachedCounting::perform_increment!"
+    );
+
+    // Containment edges from the module to its methods.
+    let contains = r
+        .edges
+        .iter()
+        .filter(|e| e.source == module.id && e.kind == EdgeKind::Contains)
+        .count();
+    assert!(
+        contains >= 2,
+        "expected >= 2 contains edges, got {contains}"
+    );
+}
+
+#[test]
+fn nested_modules_with_classes_qualify_names() {
+    let code = "\nmodule Discourse\n  module Auth\n    class AuthProvider\n      def authenticate(params)\n        validate(params)\n      end\n    end\n  end\nend\n";
+    let r = extract("lib/auth.rb", code);
+
+    assert!(find(&r, NodeKind::Module, "Discourse").is_some());
+    let auth = find(&r, NodeKind::Module, "Auth").unwrap();
+    assert_eq!(auth.qualified_name, "Discourse::Auth");
+    let provider = find(&r, NodeKind::Class, "AuthProvider").unwrap();
+    assert_eq!(provider.qualified_name, "Discourse::Auth::AuthProvider");
+    let auth_method = find(&r, NodeKind::Method, "authenticate").unwrap();
+    assert_eq!(
+        auth_method.qualified_name,
+        "Discourse::Auth::AuthProvider::authenticate"
+    );
+}
+
+/// Class/module-scope `CONST = …` (a `constant`-typed LHS — effectively
+/// Ruby-only) extracts like a top-level variable; TS parity: kind stays
+/// `variable` (Ruby's config has no is_const hook) and the name is the
+/// constant. Locals inside methods stay unextracted.
+#[test]
+fn class_scope_constant_assignment_is_extracted() {
+    let code = "\nclass Config\n  MAX_ITEMS = 50\n  module Nested\n    TIMEOUT = 30\n  end\n  def read\n    local = 1\n    local\n  end\nend\n";
+    let r = extract("config.rb", code);
+
+    let max = find(&r, NodeKind::Variable, "MAX_ITEMS").unwrap();
+    assert_eq!(max.qualified_name, "Config::MAX_ITEMS");
+    let timeout = find(&r, NodeKind::Variable, "TIMEOUT").unwrap();
+    assert_eq!(timeout.qualified_name, "Config::Nested::TIMEOUT");
+    // Locals inside method bodies are NOT variables (top-level gate).
+    assert!(find(&r, NodeKind::Variable, "local").is_none());
+}
+
+// =============================================================================
+// DSL block bodies (the import-branch regression, #15b review).
+// =============================================================================
+
+#[test]
+fn dsl_block_bodies_are_walked() {
+    // Ruby's `import_types` is `["call"]` (require/require_relative) and the
+    // dispatch ladder checks imports BEFORE calls — so EVERY class/file-scope
+    // Ruby `call` matches the import branch. That branch must NOT skip
+    // children (TS `tree-sitter.ts:1173-1175` leaves `skipChildren` false):
+    // when it did, the entire body of every Ruby DSL block — `RSpec.describe
+    // … do … end`, `namespace :x do … end`, Rails routers — was consumed
+    // without ever being walked, so the declarations inside were INVISIBLE.
+    let code = r#"
+RSpec.describe Calculator do
+  def build_subject
+    Calculator.new
+  end
+end
+"#;
+    let r = extract("spec.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    // The `def` declared inside the block body is a real node. It is a
+    // FUNCTION, not a method: a DSL block is not a class-like scope, and Ruby
+    // (like Python) only promotes a `def` to `method` inside one — so this
+    // pins the scope decision too.
+    let m = r
+        .nodes
+        .iter()
+        .find(|n| n.name == "build_subject")
+        .expect("the `def` inside the DSL block body must be extracted");
+    assert_eq!(m.kind, NodeKind::Function);
+
+    // …and its body is WALKED — attributed to that node. Before the fix the
+    // whole subtree was consumed, so this file produced ZERO refs.
+    //
+    // UPDATED: this assertion used to expect `calls:Calculator`, and said so
+    // explicitly — "Ruby's receiver/method call branch is an explicit wave-2 gap".
+    // That gap is now closed (tree-sitter.ts:3843-3898), so `Calculator.new` is
+    // recognized for what it is: an INSTANTIATION of `Calculator`, not a call to
+    // it. What this test pins is unchanged — that the block body is reached at
+    // all, and that the ref hangs off the right scope.
+    assert!(
+        r.unresolved.iter().any(|u| {
+            u.reference_kind == EdgeKind::Instantiates.as_str()
+                && u.reference_name == "Calculator"
+                && u.from_node_id == m.id
+        }),
+        "the block-body def's own body must be walked and attributed to it; refs: {:?}",
+        r.unresolved
+            .iter()
+            .map(|u| (&u.reference_kind, &u.reference_name))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn require_still_extracts_as_an_import() {
+    // The import branch itself must keep working — `require` is why Ruby's
+    // import_types is `["call"]` in the first place.
+    let code = "require 'json'\nrequire_relative 'helper'\n";
+    let r = extract("m.rb", code);
+    let imports: Vec<&str> = r
+        .nodes
+        .iter()
+        .filter(|n| n.kind == NodeKind::Import)
+        .map(|n| n.name.as_str())
+        .collect();
+    assert_eq!(imports, vec!["json", "helper"]);
+}
+
+/// Task-19 parity-gate fix (report §4, BUG 6) — `require_relative 'helper'`
+/// emitted only the bare name, which cannot be matched to a file. TS also emits
+/// the RESOLVED path (against this file's directory), and that is the ref the
+/// resolver hangs the cross-file dependency on (tree-sitter.ts:3470-3498).
+#[test]
+fn emits_resolved_path_ref_for_require_relative() {
+    let code = "\nrequire 'json'\nrequire 'yaml'\nrequire_relative 'helper'\n";
+    let r = extract("ruby/lib.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Imports.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    // Bare gem/stdlib requires stay bare (external — no file to point at); the
+    // relative require ALSO yields the resolved, `.rb`-suffixed file path.
+    assert_eq!(imports, vec!["json", "yaml", "helper", "ruby/helper.rb"]);
+}
+
+/// `..` segments resolve against the requiring file's directory, and a
+/// load-path `require` with a slash is kept as-is for suffix matching.
+#[test]
+fn resolves_require_relative_parent_segments() {
+    let code = "\nrequire 'sidekiq/fetch'\nrequire_relative '../util/text'\n";
+    let r = extract("app/models/user.rb", code);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Imports.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+
+    assert!(
+        imports.contains(&"app/util/text.rb"),
+        "`..` must normalize against the file's dir: {imports:?}"
+    );
+    // A load-path require with a slash resolves by file-path suffix.
+    assert!(
+        imports.contains(&"sidekiq/fetch.rb"),
+        "load-path require kept for suffix match: {imports:?}"
+    );
+}
+
+/// Inheritance-gap closure — Ruby `class Child < Base` spells the base clause
+/// `superclass`, the same node type Java uses for `extends`
+/// (tree-sitter.ts:5200/5261-5274).
+#[test]
+fn extracts_ruby_superclass_ref() {
+    let code = "class Base\n  def handle\n    1\n  end\nend\n\nclass Child < Base\n  def handle\n    2\n  end\nend\n";
+    let r = extract("inherit.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let extends: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Extends.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(extends, vec!["Base"]);
+
+    let child = r
+        .nodes
+        .iter()
+        .find(|n| n.kind == NodeKind::Class && n.name == "Child")
+        .unwrap();
+    assert!(
+        r.unresolved
+            .iter()
+            .any(|u| u.reference_kind == EdgeKind::Extends.as_str() && u.from_node_id == child.id),
+        "derived class must own its extends ref"
+    );
+}
+
+/// Ruby `call` nodes use `receiver` + `method` fields, NOT the `object`/`name`/
+/// `function` fields the generic call path expects — so they fell through to it,
+/// which took the RECEIVER as the callee and DROPPED the method: `@db.query(id)`
+/// produced `calls:@db` (unresolvable) and no method edge at all
+/// (tree-sitter.ts:3843-3898).
+///
+/// The COUNT gate is blind to this — `calls` is 1 either way. It took the identity
+/// gate to see it.
+#[test]
+fn ruby_call_refs_carry_receiver_and_method() {
+    let code = "module Store\n  class Repository\n    def initialize(db)\n      @db = db\n    end\n\n    def find(id)\n      raw = @db.query(id)\n      JSON.parse(raw)\n    end\n\n    def self.build(db)\n      new(db)\n    end\n  end\nend\n";
+    let r = extract("composite.rb", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Calls.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    // `receiver.method`, not the bare receiver. `new(db)` has no receiver → bare.
+    assert!(calls.contains(&"@db.query"), "calls: {calls:?}");
+    assert!(calls.contains(&"JSON.parse"), "calls: {calls:?}");
+    assert!(calls.contains(&"new"), "calls: {calls:?}");
+    assert!(
+        !calls.contains(&"@db"),
+        "receiver leaked as callee: {calls:?}"
+    );
+
+    // A CONSTANT receiver is itself a dependency — a class used only via its class
+    // methods still records a dependent (ts:3885-3897).
+    let refs: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::References.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(refs, vec!["JSON"]);
+}
+
+/// `Foo.new` is construction, not a call; `self`/`super` receivers collapse to the
+/// bare method name (tree-sitter.ts:3866-3877).
+#[test]
+fn ruby_new_is_instantiation_and_self_receiver_collapses() {
+    let code = "class C\n  def run\n    Widget.new(1)\n    self.helper(2)\n  end\nend\n";
+    let r = extract("c.rb", code);
+
+    let inst: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Instantiates.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(inst, vec!["Widget"]);
+
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Calls.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        calls.contains(&"helper"),
+        "self receiver must collapse: {calls:?}"
+    );
+    assert!(!calls.contains(&"self.helper"), "calls: {calls:?}");
+    // A `new` receiver must NOT also surface as a plain call.
+    assert!(
+        !calls.iter().any(|c| c.contains("Widget")),
+        "calls: {calls:?}"
+    );
+}
