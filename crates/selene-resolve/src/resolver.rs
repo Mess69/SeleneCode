@@ -27,6 +27,7 @@ use crate::builtins::{capitalize_ascii, is_built_in_or_external};
 use crate::context::ResolutionContext;
 use crate::families::{crosses_known_family, same_language_family};
 use crate::imports::{resolve_jvm_import, resolve_via_import};
+use crate::matcher::chains::is_deferrable_chain;
 use crate::matcher::match_reference;
 use crate::types::ResolvedRef;
 
@@ -38,13 +39,13 @@ use crate::types::ResolvedRef;
 /// instance that queued them (`maps/resolution.md` §Rust port notes). Preserve
 /// that lifetime coupling.
 pub struct ReferenceResolver<C: ResolutionContext> {
-    ctx: C,
+    pub(crate) ctx: C,
     /// Chain-shaped `calls` refs the first pass could not resolve — drained by
     /// the conformance pass once `implements`/`extends` edges exist (Task 9).
-    deferred_chain_refs: Vec<UnresolvedRef>,
+    pub(crate) deferred_chain_refs: Vec<UnresolvedRef>,
     /// `this.<member>` function refs whose member is inherited — drained by the
     /// supertype pass (Task 10).
-    deferred_this_member_refs: Vec<UnresolvedRef>,
+    pub(crate) deferred_this_member_refs: Vec<UnresolvedRef>,
     // Part B (Task 11) adds:
     //     frameworks: Vec<&'static dyn FrameworkResolver>
     // It cannot be declared before the trait it holds exists. Ladder steps 3
@@ -185,9 +186,12 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
 
         // --- step 11: defer for the conformance passes ------------------------
         if candidates.is_empty() {
-            // TODO(Task 9): queue onto `deferred_chain_refs` when the ref is a
-            // `calls` in a CHAIN_LANGUAGE matching CHAIN_SHAPE, or a PHP
-            // `this->prop.method` (PHP_PROP_SHAPE).
+            // A chained call whose method may live on a SUPERTYPE cannot resolve
+            // yet: the conformance walk follows `implements`/`extends` edges, and
+            // this pass is what creates them. Queue it for the second pass (#750).
+            if is_deferrable_chain(r) {
+                self.deferred_chain_refs.push(r.clone());
+            }
             return None;
         }
 
@@ -226,7 +230,11 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     ///   which is why its imports survive this gate.
     /// - Everything else (`calls`, `extends`, …) passes: cross-language `calls`
     ///   bridges are real (React Native JS → native).
-    fn gate_language(&self, result: Option<ResolvedRef>, r: &UnresolvedRef) -> Option<ResolvedRef> {
+    pub(crate) fn gate_language(
+        &self,
+        result: Option<ResolvedRef>,
+        r: &UnresolvedRef,
+    ) -> Option<ResolvedRef> {
         let result = result?;
         let (Some(target_lang), Some(ref_lang)) = (
             self.target_language(&result.target_node_id),

@@ -191,6 +191,19 @@ pub trait ResolutionContext: Send + Sync {
     /// pre-filter's hash lookup, hit once per reference.
     fn known_names(&self) -> &HashSet<String>;
 
+    // ---- cache lifecycle ----------------------------------------------------
+
+    /// Drop every cached read.
+    ///
+    /// The conformance passes (`passes.rs`) call this **before** they retry a
+    /// deferred reference: the first pass created the `implements`/`extends` edges
+    /// those retries depend on, and a stale cache would hide them — making the
+    /// pass a silent no-op that looks like it ran. A framework's `post_extract`
+    /// (Part B) mutates nodes and needs the same.
+    ///
+    /// Default: a no-op (an in-memory context has nothing to invalidate).
+    fn clear_caches(&self) {}
+
     // ---- health -------------------------------------------------------------
 
     /// How many store reads have **failed** over this context's life.
@@ -610,5 +623,9 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn store_read_errors(&self) -> u64 {
         self.store_read_error_count()
+    }
+
+    fn clear_caches(&self) {
+        StoreContext::clear_caches(self);
     }
 }

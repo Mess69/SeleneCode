@@ -29,7 +29,14 @@ pub struct FakeContext {
     nodes: Vec<Node>,
     files: HashMap<String, String>,
     /// `(source_id, target_id)` pairs of `implements`/`extends` edges.
-    supertype_edges: Vec<(String, String)>,
+    ///
+    /// Behind a `Mutex` so a test can ADD one after the context is already inside a
+    /// resolver — which is exactly what the first resolution pass does in reality
+    /// (it persists the `implements`/`extends` edges the conformance pass then
+    /// needs). Without that, a conformance test would have to build a second
+    /// resolver over a pre-populated graph, and would then be testing nothing: the
+    /// first pass would simply resolve the reference outright and never defer it.
+    supertype_edges: Mutex<Vec<(String, String)>>,
     /// `(container_id, member_id)` pairs of `contains` edges.
     contains_edges: Vec<(String, String)>,
     /// file path → the import mappings that file declares (Task 3's pre-filter
@@ -119,10 +126,18 @@ impl FakeContext {
     }
 
     /// An `implements`/`extends` edge, by node id.
-    pub fn with_supertype(mut self, child_id: &str, parent_id: &str) -> Self {
-        self.supertype_edges
-            .push((child_id.to_string(), parent_id.to_string()));
+    pub fn with_supertype(self, child_id: &str, parent_id: &str) -> Self {
+        self.add_supertype_edge(child_id, parent_id);
         self
+    }
+
+    /// Add an `implements`/`extends` edge to a context that is ALREADY inside a
+    /// resolver — modelling the first pass persisting the type graph that the
+    /// conformance pass (#750) then walks.
+    pub fn add_supertype_edge(&self, child_id: &str, parent_id: &str) {
+        if let Ok(mut edges) = self.supertype_edges.lock() {
+            edges.push((child_id.to_string(), parent_id.to_string()));
+        }
     }
 
     /// A `contains` edge, by node id.
@@ -262,7 +277,10 @@ impl ResolutionContext for FakeContext {
 
     fn supertypes(&self, node_id: &str) -> Vec<Node> {
         self.tick();
-        self.supertype_edges
+        let Ok(edges) = self.supertype_edges.lock() else {
+            return Vec::new();
+        };
+        edges
             .iter()
             .filter(|(child, _)| child == node_id)
             .filter_map(|(_, parent)| self.node(parent).cloned())

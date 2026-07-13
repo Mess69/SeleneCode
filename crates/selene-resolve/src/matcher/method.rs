@@ -174,7 +174,7 @@ fn bind(r: &UnresolvedRef, target: &str, confidence: f64, by: ResolvedBy) -> Res
 }
 
 /// The FQN a Java/Kotlin file's import binds `type_name` to (#314).
-fn imported_fqn_of<C: ResolutionContext>(
+pub(crate) fn imported_fqn_of<C: ResolutionContext>(
     type_name: &str,
     r: &UnresolvedRef,
     ctx: &C,

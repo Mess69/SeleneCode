@@ -71,6 +71,7 @@ mod error;
 mod families;
 mod imports;
 mod matcher;
+mod passes;
 mod resolver;
 mod types;
 
@@ -87,6 +88,10 @@ pub use imports::workspace::{load_workspace_packages, resolve_workspace_import};
 pub use imports::{
     REEXPORT_MAX_DEPTH, is_external_import, resolve_import_path, resolve_jvm_import,
     resolve_via_import,
+};
+pub use matcher::chains::{
+    CHAIN_LANGUAGES, is_deferrable_chain, match_cpp_call_chain, match_dotted_call_chain,
+    match_scoped_call_chain,
 };
 pub use matcher::match_reference;
 pub use matcher::method::{match_method_call, resolve_method_on_type};

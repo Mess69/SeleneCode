@@ -703,7 +703,7 @@ pub fn resolve_cpp_call_result_type<C: ResolutionContext>(
 }
 
 /// The declared `return_type` of a callee (`Foo::instance`, or a free function).
-fn lookup_callee_return_type<C: ResolutionContext>(
+pub(crate) fn lookup_callee_return_type<C: ResolutionContext>(
     callee: &str,
     r: &UnresolvedRef,
     ctx: &C,

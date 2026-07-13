@@ -16,14 +16,18 @@
 //! 0.9, because qualified names carry more information. Re-ordering these steps
 //! silently re-points references across the whole graph.
 
+pub mod chains;
 pub mod method;
 pub mod names;
 pub mod receiver;
 pub mod scoring;
 
-use selene_core::UnresolvedRef;
+use selene_core::{Language, UnresolvedRef};
 
 use crate::context::ResolutionContext;
+use crate::matcher::chains::{
+    match_cpp_call_chain, match_dotted_call_chain, match_scoped_call_chain,
+};
 use crate::matcher::method::match_method_call;
 use crate::matcher::names::{
     match_by_exact_name, match_by_file_path, match_by_qualified_name, match_fuzzy,
@@ -63,15 +67,37 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
         return Some(hit);
     }
 
-    // --- (1b) C/C++ chained call: `Foo::instance().bar` ----------------------
-    // TODO(Task 9): `match_cpp_call_chain` for c/cpp.
+    // The three chain resolvers (#645/#608/#750). Each infers the receiver's type
+    // from what the INNER call returns, then validates the outer method on it — so
+    // a wrong inference yields no edge, never a wrong one. They sit ABOVE the
+    // method matcher because a chained receiver is more information than a bare
+    // one, and below the qualified name because that is more still.
+    let lang = Language::from_wire(&r.language);
 
-    // --- (1c) `::`-scoped factory chain: PHP `Cls::for($x)->m`, Rust `Foo::new().m`
-    // TODO(Task 9): `match_scoped_call_chain` for php/rust.
+    // --- (1b) C/C++: `Foo::instance().bar` -----------------------------------
+    if matches!(lang, Some(Language::C | Language::Cpp))
+        && let Some(hit) = match_cpp_call_chain(r, ctx)
+    {
+        return Some(hit);
+    }
 
-    // --- (1d) dotted factory chain: `Foo.create().bar` ------------------------
-    // TODO(Task 9): `match_dotted_call_chain` for java/kotlin/csharp/go
-    // (swift/scala/dart/objc/pascal are wave 2).
+    // --- (1c) `::`-scoped: PHP `Cls::for($x)->m`, Rust `Foo::new().m` ---------
+    if matches!(lang, Some(Language::Php | Language::Rust))
+        && let Some(hit) = match_scoped_call_chain(r, ctx)
+    {
+        return Some(hit);
+    }
+
+    // --- (1d) dotted: `Foo.create().bar` -------------------------------------
+    // v0: java/kotlin/csharp/go. (swift/scala/dart/objc/pascal are wave 2 — their
+    // rows live in the chain tables and cost nothing until their extractors land.)
+    if matches!(
+        lang,
+        Some(Language::Java | Language::Kotlin | Language::CSharp | Language::Go)
+    ) && let Some(hit) = match_dotted_call_chain(r, ctx)
+    {
+        return Some(hit);
+    }
 
     // --- (2) a method call on an inferred receiver type ----------------------
     // The receiver's type is inferred from its local declaration and then
