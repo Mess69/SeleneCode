@@ -139,6 +139,63 @@ fn using_alias_and_member_visibility() {
 }
 
 #[test]
+fn anonymous_typedef_bodies_nest_under_the_alias_node() {
+    // Ubiquitous C-header idiom, also legal C++: the inner specifier is
+    // anonymous, so TS (tree-sitter.ts:2840-2859 struct, 2861-2885 enum)
+    // pushes the TYPEDEF node and walks the inner body under it. Members must
+    // carry the alias QN and the inner specifier must mint no phantom.
+    let code = "typedef struct {\n  int run() { return helper(); }\n} Runner;\ntypedef enum { LOW, HIGH } Level;\n";
+    let r = extract("runner.cpp", code);
+
+    let runner = find(&r, NodeKind::Struct, "Runner").unwrap();
+    let run = find(&r, NodeKind::Method, "run").unwrap();
+    assert_eq!(run.qualified_name, "Runner::run");
+    assert!(
+        r.edges
+            .iter()
+            .any(|e| e.source == runner.id && e.target == run.id)
+    );
+
+    let level = find(&r, NodeKind::Enum, "Level").unwrap();
+    let low = find(&r, NodeKind::EnumMember, "LOW").unwrap();
+    assert_eq!(low.qualified_name, "Level::LOW");
+    assert!(
+        r.edges
+            .iter()
+            .any(|e| e.source == level.id && e.target == low.id)
+    );
+
+    assert!(
+        !r.nodes.iter().any(|n| n.name == "<anonymous>"),
+        "phantom node minted: {:?}",
+        r.nodes
+            .iter()
+            .map(|n| (n.kind, n.name.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn file_scope_class_typed_declaration_mints_a_variable() {
+    // `Foo x;` — a C++ `declaration` whose declarator is a BARE identifier
+    // (the type sits in the `type` field, not in a declarator). TS's generic
+    // variable fallback (tree-sitter.ts:2802-2818) scans the named children
+    // for such an identifier and mints the global; the left/named_child(0)
+    // shape only ever sees the TYPE node, so the global went unextracted (no
+    // impact-radius edges into it).
+    let code = "class Foo {\n public:\n  void go();\n};\nFoo gInstance;\n";
+    let r = extract("globals.cpp", code);
+    assert!(
+        find(&r, NodeKind::Variable, "gInstance").is_some(),
+        "file-scope `Foo gInstance;`: {:?}",
+        r.nodes
+            .iter()
+            .map(|n| (n.kind, n.name.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn representative_cpp_fixture_snapshot() {
     let code = "#include <vector>\n\nnamespace geo {\n\n// a 2D point\nstruct Point {\n  double x;\n  double y;\n};\n\nclass MYLIB_API Shape {\n public:\n  double area() const;\n};\n\ndouble Shape::area() const {\n  return compute_area<double>(*this);\n}\n\n}  // namespace geo\n";
     let r = extract("geo.cpp", code);

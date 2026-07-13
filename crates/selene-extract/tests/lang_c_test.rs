@@ -54,6 +54,46 @@ fn extracts_structs_enums_and_typedefs() {
 }
 
 #[test]
+fn anonymous_typedef_bodies_nest_under_the_alias_node() {
+    // `typedef enum { … } status_t;` / `typedef struct { … } size_t2;` — the
+    // INNER specifier is anonymous; TS (tree-sitter.ts:2861-2885 enum,
+    // 2840-2859 struct) pushes the TYPEDEF node, walks the inner body's
+    // members under it, and skips children. Two things must hold: the members
+    // hang off the alias (`status_t::OK`, not `<anonymous>::OK` — a QN no call
+    // site or FTS query can ever match), and the inner specifier mints NO
+    // phantom node of its own.
+    let code = "typedef enum { OK, ERR } status_t;\ntypedef struct { int w; int h; } size_t2;\n";
+    let r = extract("types.c", code);
+
+    let status = find(&r, NodeKind::Enum, "status_t").unwrap();
+    let ok = find(&r, NodeKind::EnumMember, "OK").unwrap();
+    let err = find(&r, NodeKind::EnumMember, "ERR").unwrap();
+    assert_eq!(ok.qualified_name, "status_t::OK");
+    assert_eq!(err.qualified_name, "status_t::ERR");
+    assert!(
+        r.edges
+            .iter()
+            .any(|e| e.source == status.id && e.target == ok.id)
+    );
+    assert!(
+        r.edges
+            .iter()
+            .any(|e| e.source == status.id && e.target == err.id)
+    );
+
+    assert!(find(&r, NodeKind::Struct, "size_t2").is_some());
+    // No phantom `<anonymous>` enum/struct for either inner specifier.
+    assert!(
+        !r.nodes.iter().any(|n| n.name == "<anonymous>"),
+        "phantom node minted: {:?}",
+        r.nodes
+            .iter()
+            .map(|n| (n.kind, n.name.as_str()))
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
 fn const_globals_are_constants() {
     let code = "const int MAX_ITEMS = 128;\nint counter = 0;\n";
     let r = extract("globals.c", code);
