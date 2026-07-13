@@ -238,6 +238,16 @@ async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
     let store = resolver.ctx().store();
     store.insert_edges(&edges).await.expect("insert edges");
 
+    // (5) SYNTHESIS — and it was NOT being run. The passes existed, their unit tests
+    //     passed, and nothing in any pipeline called them. That is the THIRD instance
+    //     of this exact bug class in this crate (`import_mappings`, the project
+    //     singletons, now this), and the gate caught it the same way both other times:
+    //     TS emitted an edge (`jsx-render`) and we did not.
+    resolver.ctx().clear_caches();
+    selene_resolve::synth::run_synthesis(resolver.ctx().store(), resolver.ctx())
+        .await
+        .expect("synthesis never fails an index");
+
     // --- read the whole graph back, and key it semantically -------------------
     let mut nodes: Vec<Node> = Vec::new();
     for kind in NodeKind::ALL {
@@ -333,6 +343,31 @@ fn baseline_is_not_vacuous() {
     for (name, p) in &baseline.projects {
         assert!(p.nodes > 0, "{name}: zero nodes");
         assert!(!p.edges.is_empty(), "{name}: zero edges");
+
+        // The `*-control` projects are the PRECISION corpus: ordinary code containing
+        // NONE of the dispatch shapes, whose whole purpose is to prove synthesis emits
+        // zero edges on them. They legitimately have no cross-file edges — demanding
+        // some would force dispatch shapes into the very fixture that exists to have
+        // none. They are not exempt from being gated; they are gated on the opposite
+        // property.
+        if name.ends_with("-control") {
+            let synthesized: Vec<&EdgeRow> = p
+                .edges
+                .iter()
+                .filter(|e| e.provenance == "heuristic")
+                .collect();
+            assert!(
+                synthesized.is_empty(),
+                "{name} is a CONTROL fixture and the baseline gives it {} synthesized \
+                 edge(s): {synthesized:?}\n\
+                 Every positive assertion in this phase is satisfied by a synthesizer \
+                 that bridges EVERYTHING. Only a control catches one — and this control \
+                 says a channel is guessing.",
+                synthesized.len()
+            );
+            continue;
+        }
+
         assert!(
             p.cross_file_edges > 0,
             "{name}: ZERO cross-file edges. Resolution's entire output is edges \

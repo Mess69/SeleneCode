@@ -46,13 +46,19 @@
 //! framework registered without a row in [`FLOWS`] fails the gate. A gate you can
 //! silently opt out of is not a gate.
 //!
-//! **The synthesizer half of this gate cannot exist yet.** Plan Tasks 21–26 (the
-//! `SynthPass` harness and the five channels) are not built, so there is no
-//! `registered_synthesizers()` to key on and no `synth-*` fixture to walk. That is
-//! recorded here, loudly, rather than quietly omitted — see
-//! `the_synthesizer_half_of_this_gate_is_not_built`.
+//! [`every_registered_synthesizer_is_gated`] does the same for the dispatch channels,
+//! keyed on `registered_synthesizers()`. Both halves of the phase are now covered: a
+//! framework OR a synthesizer that ships without a closed flow fails this gate.
+//!
+//! # The controls are half the proof
+//!
+//! Every positive assertion here is satisfied by a synthesizer that bridges
+//! *everything*. Only a **control** — ordinary code containing none of the dispatch
+//! shapes — catches one that guesses. [`synthesis_emits_nothing_on_the_controls`] is
+//! that half, and it is the cheapest precision test that exists.
 
 use selene_resolve::frameworks::all_framework_resolvers;
+use selene_resolve::synth::registered_synthesizers;
 
 mod pipeline;
 
@@ -303,26 +309,134 @@ fn every_registered_framework_is_gated() {
     );
 }
 
-/// The synthesizer half of this gate **does not exist**, and saying so is the point.
-///
-/// Plan Tasks 21–26 (the `SynthPass` harness + the five channels: callback/observer,
-/// EventEmitter, React re-render, JSX child, Django ORM) are not built. There is no
-/// `registered_synthesizers()` to key a completeness assertion on, and no `synth-*`
-/// fixture to walk. The resolution parity gate measures the consequence directly: the
-/// one heuristic edge in the TS baseline (`jsx-render`) is the one edge we do not
-/// emit, and it is deliberately NOT deviation-listed.
-///
-/// This test is a tripwire: when the synthesizers land, it starts failing, and whoever
-/// lands them must extend this gate rather than quietly leave synthesis ungated.
-#[test]
-fn the_synthesizer_half_of_this_gate_is_not_built() {
-    let synthesizers_exist = false; // ← flips when `registered_synthesizers()` exists
+/// One synthesized dispatch flow: a registration site → the bridged hop → the terminal.
+struct SynthFlow {
+    /// The channel, as `registered_synthesizers()` names it.
+    channel: &'static str,
+    fixture: &'static str,
+    /// The node an agent starts from (the dispatcher — `setState`, `emit`, the mutator).
+    from: &'static str,
+    /// What it must reach.
+    terminal: &'static str,
+    /// The hops between, in order. The SYNTHESIZED hop is one of these — the chain is
+    /// deliberately longer than the bridge, so "the hop works" cannot be mistaken for
+    /// "the flow closes".
+    via: &'static [&'static str],
+}
 
+/// **The synthesizer flow table.** A channel missing from here fails
+/// [`every_registered_synthesizer_is_gated`].
+const SYNTH_FLOWS: &[SynthFlow] = &[
+    SynthFlow {
+        channel: "callback",
+        fixture: "callback",
+        from: "mutateElement",
+        terminal: "renderScene",
+        via: &["triggerUpdate", "triggerRender"],
+    },
+    SynthFlow {
+        channel: "event-emitter",
+        fixture: "event",
+        from: "use",
+        terminal: "initApp",
+        via: &["onmount"],
+    },
+    SynthFlow {
+        // react-render and jsx-render are ONE flow on purpose: shipping the re-render
+        // channel without the JSX hop measurably RAISED agent reads (the flow reached
+        // `render` and stopped, which is a half-bridge). The chain below traverses both.
+        channel: "react-render",
+        fixture: "react-render",
+        from: "handleClick",
+        terminal: "renderStaticScene",
+        via: &["render", "StaticCanvas"],
+    },
+    SynthFlow {
+        channel: "jsx-render",
+        fixture: "react-render",
+        from: "handleClick",
+        terminal: "renderStaticScene",
+        via: &["render", "StaticCanvas"],
+    },
+];
+
+/// Every synthesized flow, end to end, on the real pipeline.
+#[tokio::test(flavor = "multi_thread")]
+async fn every_synthesized_flow_is_closed_end_to_end() {
+    for flow in SYNTH_FLOWS {
+        let p = pipeline::index_and_synthesize_detected(&fixture_dir(flow.fixture)).await;
+        let from = p.node_named(flow.from).await;
+
+        p.assert_flow(
+            &from.id,
+            flow.terminal,
+            flow.via,
+            &format!(
+                "{} ({}): {} → {} → {}",
+                flow.channel,
+                flow.fixture,
+                flow.from,
+                flow.via.join(" → "),
+                flow.terminal
+            ),
+        )
+        .await;
+    }
+}
+
+/// **No synthesizer ships ungated** — keyed on `registered_synthesizers()`, exactly as
+/// the framework half is keyed on `all_framework_resolvers()`.
+///
+/// This is the assertion that replaced `the_synthesizer_half_of_this_gate_is_not_built`.
+/// It is not a formality: a channel registered without a flow row is a channel whose
+/// only evidence is its own unit test, and this crate has now shipped THREE seams whose
+/// unit tests passed while nothing in the pipeline called them.
+#[test]
+fn every_registered_synthesizer_is_gated() {
+    let registered = registered_synthesizers();
+    let gated: Vec<&str> = SYNTH_FLOWS.iter().map(|f| f.channel).collect();
+
+    let ungated: Vec<&&str> = registered.iter().filter(|c| !gated.contains(c)).collect();
     assert!(
-        !synthesizers_exist,
-        "The synthesizers now exist — EXTEND THIS GATE. Every registered synthesizer \
-         needs a flow row and a completeness assertion keyed on \
-         `registered_synthesizers()`, exactly as `every_registered_framework_is_gated` \
-         does for frameworks. Phase 3's gate is not met until synthesis is covered."
+        ungated.is_empty(),
+        "these synthesizers are REGISTERED but have no closed flow in the coverage \
+         gate: {ungated:?}\n\
+         A dispatch channel with no end-to-end flow is a channel that has only ever \
+         been proven against a fake."
     );
+}
+
+/// **The precision half.** Synthesis must emit **exactly zero** edges on code that
+/// contains none of the dispatch shapes.
+///
+/// Every positive assertion in this file is satisfied by a synthesizer that bridges
+/// everything in sight. Only a control fails such a synthesizer — and a channel that
+/// guesses is far worse than one that misses, because a wrong dispatch edge is a
+/// confident lie about how the program runs.
+#[tokio::test(flavor = "multi_thread")]
+async fn synthesis_emits_nothing_on_the_controls() {
+    use selene_core::Provenance;
+
+    for control in ["callback-control", "event-control", "django-orm-control"] {
+        let p = pipeline::index_and_synthesize_detected(&fixture_dir(control)).await;
+        let synthesized = p.synthesized_edges().await;
+
+        assert!(
+            synthesized.is_empty(),
+            "{control}: synthesis invented {} edge(s) in code that contains NO dispatch \
+             shape:\n  {:?}\n\
+             A channel that guesses is worse than one that misses — a wrong dispatch \
+             edge is a confident lie about how the program runs.",
+            synthesized.len(),
+            synthesized
+                .iter()
+                .map(|e| format!(
+                    "{} -> {} [{:?}]",
+                    e.source,
+                    e.target,
+                    e.provenance.unwrap_or(Provenance::TreeSitter)
+                ))
+                .collect::<Vec<_>>()
+        );
+    }
 }

@@ -206,8 +206,26 @@ for (const dir of projects()) {
         `${r.routes} routes [${r.frameworks.join(',') || '-'}]\n`
     );
     // Anti-vacuity, per project. A project that resolves nothing gates nothing.
+    //
+    // EXCEPT the `*-control` projects. Those are the PRECISION corpus: ordinary code
+    // containing none of the dispatch shapes, whose whole purpose is to prove that
+    // synthesis emits ZERO edges on them. Every positive assertion in this phase is
+    // satisfied by a synthesizer that bridges everything; only a control fixture
+    // fails such a synthesizer. So a control legitimately has no cross-file edges —
+    // demanding some would force us to put dispatch shapes into the very fixture that
+    // exists to contain none.
+    //
+    // They are NOT exempt from being gated: their edge set is still compared, and a
+    // control that grows a HEURISTIC edge is a synthesizer that has started guessing.
+    const isControl = dir.endsWith('-control');
     if (r.edges.length === 0) failures.push(`${dir}: ZERO edges`);
-    if (r.crossFileEdges === 0) failures.push(`${dir}: ZERO cross-file edges`);
+    if (!isControl && r.crossFileEdges === 0) failures.push(`${dir}: ZERO cross-file edges`);
+    if (isControl && r.edges.some((e) => e.provenance === 'heuristic')) {
+      failures.push(
+        `${dir}: a CONTROL fixture with a heuristic edge — the baseline itself says a ` +
+          `synthesizer bridged code that contains no dispatch shape`
+      );
+    }
   } catch (err) {
     process.stderr.write(`FAILED\n`);
     failures.push(`${dir}: ${err.message}`);

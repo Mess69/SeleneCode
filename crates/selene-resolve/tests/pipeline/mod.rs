@@ -29,7 +29,7 @@
 
 use std::path::Path;
 
-use selene_core::{EdgeKind, Node, NodeKind};
+use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance};
 use selene_db::SurrealStore;
 use selene_extract::Indexer;
 use selene_resolve::{FrameworkResolver, ReferenceResolver, StoreContext, run_framework_extract};
@@ -84,19 +84,19 @@ impl Pipeline {
     }
 
     /// Every synthesized (`heuristic`) edge out of `from_id`, with its metadata.
-    pub async fn synth_edges_from(&self, from_id: &str) -> Vec<selene_core::Edge> {
+    pub async fn synth_edges_from(&self, from_id: &str) -> Vec<Edge> {
         self.store()
             .outgoing(from_id, &[EdgeKind::Calls], None)
             .await
             .expect("outgoing")
             .into_iter()
             .map(|n| n.edge)
-            .filter(|e| e.provenance == Some(selene_core::Provenance::Heuristic))
+            .filter(|e| e.provenance == Some(Provenance::Heuristic))
             .collect()
     }
 
     /// Every edge INTO `id` (any kind), for precision assertions.
-    pub async fn store_edges_into(&self, id: &str) -> Vec<selene_core::Edge> {
+    pub async fn store_edges_into(&self, id: &str) -> Vec<Edge> {
         self.store()
             .incoming(id, &[EdgeKind::Calls, EdgeKind::References])
             .await
@@ -107,7 +107,7 @@ impl Pipeline {
     }
 
     /// Every edge OUT of `id`, for precision assertions.
-    pub async fn store_edges_out_of(&self, id: &str) -> Vec<selene_core::Edge> {
+    pub async fn store_edges_out_of(&self, id: &str) -> Vec<Edge> {
         self.store()
             .outgoing(id, &[EdgeKind::Calls, EdgeKind::References], None)
             .await
@@ -208,6 +208,33 @@ impl Pipeline {
         hits.remove(0)
     }
 
+    /// Every SYNTHESIZED edge in the graph (`provenance: heuristic`).
+    ///
+    /// The control fixtures assert this is EMPTY. That is the precision half of the
+    /// coverage gate: every positive flow assertion is satisfied by a synthesizer that
+    /// bridges everything in sight, and only a control catches one that guesses.
+    pub async fn synthesized_edges(&self) -> Vec<Edge> {
+        let mut nodes: Vec<Node> = Vec::new();
+        for kind in NodeKind::ALL {
+            nodes.extend(self.store().get_nodes_by_kind(kind).await.expect("by kind"));
+        }
+        let ids: Vec<String> = nodes.iter().map(|n| n.id.clone()).collect();
+        let out = self
+            .store()
+            .outgoing_batch(&ids, &EdgeKind::ALL)
+            .await
+            .expect("outgoing");
+        let mut edges: Vec<Edge> = out
+            .into_values()
+            .flatten()
+            .map(|n| n.edge)
+            .filter(|e| e.provenance == Some(Provenance::Heuristic))
+            .collect();
+        edges.sort_by(|a, b| (&a.source, &a.target).cmp(&(&b.source, &b.target)));
+        edges.dedup_by(|a, b| a.source == b.source && a.target == b.target);
+        edges
+    }
+
     /// Every node of a kind — for asserting a *node* exists at all (the yaml config
     /// keys, whose absence makes every `@Value` dangle).
     pub async fn nodes_of_kind(&self, kind: NodeKind) -> Vec<Node> {
@@ -284,6 +311,17 @@ impl Pipeline {
 /// while bypassing its `detect()`, and a framework that cannot detect itself in its own
 /// fixture is a framework that emits nothing in production.
 pub async fn index_and_resolve_detected(dir: &Path) -> Pipeline {
+    detected_pipeline(dir, true).await
+}
+
+/// [`index_and_resolve_detected`] for a fixture that has **no framework** — the
+/// synthesizer projects and the controls are plain code by construction, and demanding
+/// a `detect()` hit there would be demanding the opposite of what they exist to be.
+pub async fn index_and_synthesize_detected(dir: &Path) -> Pipeline {
+    detected_pipeline(dir, false).await
+}
+
+async fn detected_pipeline(dir: &Path, require_framework: bool) -> Pipeline {
     let store = SurrealStore::in_memory().await.expect("in-memory store");
     store.apply_schema().await.expect("schema");
     let indexer = Indexer::new(dir.to_path_buf(), store);
@@ -293,14 +331,19 @@ pub async fn index_and_resolve_detected(dir: &Path) -> Pipeline {
         .expect("store context");
     let detected: Vec<&'static dyn FrameworkResolver> =
         selene_resolve::frameworks::detect_frameworks(&ctx);
-    assert!(
-        !detected.is_empty(),
-        "{dir:?}: NO framework detected in its own fixture — detect() is the first hop \
-         of every flow, and it emits nothing"
-    );
+    if require_framework {
+        assert!(
+            !detected.is_empty(),
+            "{dir:?}: NO framework detected in its own fixture — detect() is the first \
+             hop of every flow, and it emits nothing"
+        );
+    }
     let store = ctx.into_store();
     drop(store);
-    index_and_resolve(dir, &detected).await
+    // …and SYNTHESIZE. The coverage gate asserts synthesizer flows, so the driver it
+    // uses must run the passes — a gate whose driver skips the very thing it asserts
+    // would pass by asserting nothing.
+    index_resolve_and_synthesize(dir, &detected).await
 }
 
 /// Index `dir`, emit framework nodes, resolve every reference, persist the edges.

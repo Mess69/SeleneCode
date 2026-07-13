@@ -227,6 +227,239 @@
       "frameworks": [],
       "routes": 2
     },
+    "callback": {
+      "edges": [
+        {
+          "source": "class:App@src/app.ts",
+          "target": "method:constructor@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:App@src/app.ts",
+          "target": "method:mutateElement@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:App@src/app.ts",
+          "target": "method:triggerRender@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:App@src/app.ts",
+          "target": "property:scene@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Scene@src/scene.ts",
+          "target": "method:onUpdate@src/scene.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Scene@src/scene.ts",
+          "target": "method:triggerUpdate@src/scene.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Scene@src/scene.ts",
+          "target": "property:callbacks@src/scene.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "class:App@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "class:Scene@src/scene.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:renderScene@src/renderer.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./renderer@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./renderer@src/app.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./scene@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./scene@src/app.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/renderer.ts",
+          "target": "function:renderScene@src/renderer.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/scene.ts",
+          "target": "class:Scene@src/scene.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/scene.ts",
+          "target": "type_alias:Callback@src/scene.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:constructor@src/app.ts",
+          "target": "class:Scene@src/scene.ts",
+          "kind": "instantiates",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:constructor@src/app.ts",
+          "target": "method:onUpdate@src/scene.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:constructor@src/app.ts",
+          "target": "method:triggerRender@src/app.ts",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:mutateElement@src/app.ts",
+          "target": "method:triggerUpdate@src/scene.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:onUpdate@src/scene.ts",
+          "target": "type_alias:Callback@src/scene.ts",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:triggerRender@src/app.ts",
+          "target": "function:renderScene@src/renderer.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:triggerUpdate@src/scene.ts",
+          "target": "method:triggerRender@src/app.ts",
+          "kind": "calls",
+          "provenance": "heuristic",
+          "synthesizedBy": "callback"
+        },
+        {
+          "source": "property:scene@src/app.ts",
+          "target": "class:Scene@src/scene.ts",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 16,
+      "crossFileEdges": 8,
+      "frameworks": [],
+      "routes": 0
+    },
+    "callback-control": {
+      "edges": [
+        {
+          "source": "class:Lonely@src/lonely.ts",
+          "target": "method:onThing@src/lonely.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Lonely@src/lonely.ts",
+          "target": "property:things@src/lonely.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Shouter@src/lonely.ts",
+          "target": "method:emitAll@src/lonely.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Shouter@src/lonely.ts",
+          "target": "property:other@src/lonely.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/lonely.ts",
+          "target": "class:Lonely@src/lonely.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/lonely.ts",
+          "target": "class:Shouter@src/lonely.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 7,
+      "crossFileEdges": 0,
+      "frameworks": [],
+      "routes": 0
+    },
     "django": {
       "edges": [
         {
@@ -472,6 +705,423 @@
       "crossFileEdges": 12,
       "frameworks": [],
       "routes": 5
+    },
+    "django-orm": {
+      "edges": [
+        {
+          "source": "class:ModelIterable@db/iterables.py",
+          "target": "method:__init__@db/iterables.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ModelIterable@db/iterables.py",
+          "target": "method:__iter__@db/iterables.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:QuerySet@db/query.py",
+          "target": "method:__init__@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:QuerySet@db/query.py",
+          "target": "method:_fetch_all@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:QuerySet@db/query.py",
+          "target": "method:_prefetch_related_objects@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:SQLCompiler@db/compiler.py",
+          "target": "method:execute_sql@db/compiler.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/compiler.py",
+          "target": "class:SQLCompiler@db/compiler.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/iterables.py",
+          "target": "class:ModelIterable@db/iterables.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/iterables.py",
+          "target": "class:SQLCompiler@db/compiler.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/iterables.py",
+          "target": "import:.compiler@db/iterables.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/iterables.py",
+          "target": "import:.compiler@db/iterables.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/query.py",
+          "target": "class:ModelIterable@db/iterables.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/query.py",
+          "target": "class:QuerySet@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/query.py",
+          "target": "import:.iterables@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/query.py",
+          "target": "import:.iterables@db/query.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:__iter__@db/iterables.py",
+          "target": "class:SQLCompiler@db/compiler.py",
+          "kind": "instantiates",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:__iter__@db/iterables.py",
+          "target": "method:execute_sql@db/compiler.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:_fetch_all@db/query.py",
+          "target": "method:__iter__@db/iterables.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:_fetch_all@db/query.py",
+          "target": "method:_prefetch_related_objects@db/query.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 14,
+      "crossFileEdges": 5,
+      "frameworks": [],
+      "routes": 0
+    },
+    "django-orm-control": {
+      "edges": [
+        {
+          "source": "class:QuerySet@db/query.py",
+          "target": "method:_fetch_all@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@db/query.py",
+          "target": "class:QuerySet@db/query.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 3,
+      "crossFileEdges": 0,
+      "frameworks": [],
+      "routes": 0
+    },
+    "event": {
+      "edges": [
+        {
+          "source": "class:Application@src/app.ts",
+          "target": "method:use@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Bus@src/bus.ts",
+          "target": "method:emit@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Bus@src/bus.ts",
+          "target": "method:on@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:Bus@src/bus.ts",
+          "target": "property:map@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "class:Application@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:initApp@src/init.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:onmount@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:refresh@src/app.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "function:refresh@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./bus@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./bus@src/app.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./init@src/app.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/app.ts",
+          "target": "import:./init@src/app.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/bus.ts",
+          "target": "class:Bus@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/bus.ts",
+          "target": "class:Bus@src/bus.ts",
+          "kind": "instantiates",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/bus.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/bus.ts",
+          "target": "type_alias:Handler@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/init.ts",
+          "target": "function:initApp@src/init.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:onmount@src/app.ts",
+          "target": "function:initApp@src/init.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:on@src/bus.ts",
+          "target": "type_alias:Handler@src/bus.ts",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:use@src/app.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:use@src/app.ts",
+          "target": "function:onmount@src/app.ts",
+          "kind": "calls",
+          "provenance": "heuristic",
+          "synthesizedBy": "event-emitter"
+        }
+      ],
+      "nodes": 16,
+      "crossFileEdges": 6,
+      "frameworks": [],
+      "routes": 0
+    },
+    "event-control": {
+      "edges": [
+        {
+          "source": "file:@src/bus.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/bus.ts",
+          "target": "function:on@src/bus.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/only_on.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/only_on.ts",
+          "target": "constant:bus@src/bus.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/only_on.ts",
+          "target": "function:doThing@src/only_on.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/only_on.ts",
+          "target": "function:neverFires@src/only_on.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/only_on.ts",
+          "target": "import:./bus@src/only_on.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/only_on.ts",
+          "target": "import:./bus@src/only_on.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:neverFires@src/only_on.ts",
+          "target": "function:doThing@src/only_on.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 7,
+      "crossFileEdges": 2,
+      "frameworks": [],
+      "routes": 0
     },
     "express": {
       "edges": [
@@ -1375,6 +2025,140 @@
       "crossFileEdges": 13,
       "frameworks": [],
       "routes": 6
+    },
+    "react-render": {
+      "edges": [
+        {
+          "source": "class:App@src/App.tsx",
+          "target": "method:handleClick@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:App@src/App.tsx",
+          "target": "method:helper@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:App@src/App.tsx",
+          "target": "method:render@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:App@src/App.tsx",
+          "target": "property:state@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:NoRender@src/NoRender.tsx",
+          "target": "method:bump@src/NoRender.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "class:App@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "function:StaticCanvas@src/StaticCanvas.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "import:./StaticCanvas@src/App.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/App.tsx",
+          "target": "import:./StaticCanvas@src/App.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/NoRender.tsx",
+          "target": "class:NoRender@src/NoRender.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/StaticCanvas.tsx",
+          "target": "function:StaticCanvas@src/StaticCanvas.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/StaticCanvas.tsx",
+          "target": "function:renderStaticScene@src/renderer.ts",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/StaticCanvas.tsx",
+          "target": "import:./renderer@src/StaticCanvas.tsx",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/StaticCanvas.tsx",
+          "target": "import:./renderer@src/StaticCanvas.tsx",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/renderer.ts",
+          "target": "function:renderStaticScene@src/renderer.ts",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:StaticCanvas@src/StaticCanvas.tsx",
+          "target": "function:renderStaticScene@src/renderer.ts",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:handleClick@src/App.tsx",
+          "target": "method:render@src/App.tsx",
+          "kind": "calls",
+          "provenance": "heuristic",
+          "synthesizedBy": "react-render"
+        },
+        {
+          "source": "method:render@src/App.tsx",
+          "target": "function:StaticCanvas@src/StaticCanvas.tsx",
+          "kind": "calls",
+          "provenance": "heuristic",
+          "synthesizedBy": "jsx-render"
+        }
+      ],
+      "nodes": 15,
+      "crossFileEdges": 4,
+      "frameworks": [],
+      "routes": 0
     },
     "spring": {
       "edges": [
