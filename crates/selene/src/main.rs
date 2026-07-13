@@ -48,6 +48,21 @@ enum Command {
 
 #[tokio::main]
 async fn main() -> Result<()> {
+    // The libraries emit `tracing` spans — including `resolve_and_persist_batched`'s
+    // per-phase timings — and a span with no subscriber installed goes into the void. That
+    // is not hypothetical: it is exactly how a resolution cost that dominated indexing
+    // survived three phases unmeasured. Off by default (an MCP server must never write to
+    // stdout, and stderr noise is its own bug); opt in with `RUST_LOG=info`.
+    //
+    // stdio MCP: stdout is the JSON-RPC transport. The subscriber MUST write to stderr.
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            tracing_subscriber::EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("warn")),
+        )
+        .with_writer(std::io::stderr)
+        .init();
+
     match Cli::parse().command {
         Command::Index { path } => index(path).await,
         Command::Serve { mcp, path } => serve(mcp, path).await,

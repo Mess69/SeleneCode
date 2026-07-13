@@ -180,6 +180,12 @@ DEFINE INDEX IF NOT EXISTS unresolved_from_node ON unresolved_ref FIELDS fromNod
 DEFINE INDEX IF NOT EXISTS unresolved_ref_name ON unresolved_ref FIELDS referenceName;
 DEFINE INDEX IF NOT EXISTS unresolved_file_path ON unresolved_ref FIELDS filePath;
 DEFINE INDEX IF NOT EXISTS unresolved_status ON unresolved_ref FIELDS status;
+-- The 3-part resolution key, composite. `delete_resolved`/`mark_failed` filter on exactly
+-- (fromNodeId, referenceName, referenceKind) — the #760 key — and there was no index over
+-- it: `referenceKind` had none at all, so every keyed write degraded to an index hit on one
+-- field plus a filter. Persist measured **82% of a whole index run** (42.8 s of 52 s on
+-- codegraph, vs 2.6 s for the resolve ladder itself).
+DEFINE INDEX IF NOT EXISTS unresolved_key ON unresolved_ref FIELDS fromNodeId, referenceName, referenceKind;
 ";
 
 /// `meta` table: opaque `key -> value` store (record id = key). Backs

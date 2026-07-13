@@ -3791,6 +3791,8 @@ dependencies = [
  "selene-mcp",
  "selene-resolve",
  "tokio",
+ "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]
