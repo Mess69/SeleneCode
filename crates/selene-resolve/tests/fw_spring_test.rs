@@ -739,6 +739,15 @@ fn spring_declares_the_config_languages_and_sits_in_registry_order() {
         );
     }
 
+    // Position, not the whole list: Tasks 12–20 each append a resolver, and a test
+    // that pins the full vector would redden on every one of them for no reason.
+    // What matters is that spring is registered, and that registry order (which IS
+    // resolve precedence) matches REGISTRY_ORDER's declaration.
     let names: Vec<&str> = all_framework_resolvers().iter().map(|r| r.name()).collect();
-    assert_eq!(names, vec!["flask", "fastapi", "spring"]);
+    let spring = names.iter().position(|n| *n == "spring");
+    assert!(spring.is_some(), "spring is registered");
+    assert!(
+        names.iter().position(|n| *n == "fastapi") < spring,
+        "REGISTRY_ORDER declares fastapi before spring"
+    );
 }

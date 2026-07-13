@@ -89,14 +89,40 @@
 //! EventEmitter, React re-render, JSX child, Django ORM) — closure-collection,
 //! gin-middleware-chain, mybatis-java-xml, rn-event-channel, the rest.
 //!
+//! # Known open hops in v0 — stated, never half-drawn
+//!
+//! The invariant (PRD §8.2) is that dispatch coverage is **end-to-end or not at
+//! all**: a flow that stops one hop short is worse than one that was never drawn,
+//! because it *looks* like an answer and the agent goes back to reading files
+//! anyway. So where v0 cannot close a hop, it emits **nothing** and says so here:
+//!
+//! - **Gin's middleware chain** (`c.Next()` → the next registered `HandlerFunc`).
+//!   Nothing in the source names the successor; closing it needs the
+//!   `gin-middleware-chain` synthesizer (Phase 8). A Go route therefore binds to
+//!   its **handler** — the last argument — and the middleware in between gets no
+//!   edge at all. See `frameworks::go`.
+//! - **Go route group prefixes** (`v1 := r.Group("/api/v1")`). The prefix lives at
+//!   the group's declaration, arbitrarily far from the registration, and joining
+//!   the two needs dataflow this pass does not have. Routes carry the path as
+//!   written (`POST /articles`), plus the file+line of the registration site. TS
+//!   parity, carried deliberately.
+//! - **Spring's `@Value` bridge depends on pass order.** The `@Value` reference is
+//!   named after the config key, and the only node declaring that name is the bind
+//!   node the framework-extract pass emits — so the resolution context (whose
+//!   `known_names` is warmed once, in `StoreContext::new`) MUST be built *after*
+//!   [`frameworks::run_framework_extract`]. Built before, the step-3 pre-filter
+//!   drops every `@Value` ref and the config bridge is silently inert. Part C's
+//!   batch driver owns that ordering.
+//!
 //! # Build status (Phase 3)
 //!
-//! Landed: the spike (Task 1, `tests/spike_seam.rs`), the skeleton (Task 2),
-//! the [`ReferenceResolver`] ladder (Task 3 — built-in filters, the fast
-//! pre-filter, the language gates, `create_edges`), imports (4–6), and the
-//! framework registry + route contract + strip-comments (Task 11). Still stubs,
-//! in ladder order: the name matcher (7–8), chains (9), function refs (10), the
-//! eleven framework resolvers (12–20), the synthesizers and the batch driver
+//! Landed: the spike (Task 1, `tests/spike_seam.rs`), the skeleton (Task 2), the
+//! [`ReferenceResolver`] ladder (Task 3 — built-in filters, the fast pre-filter,
+//! the language gates, `create_edges`), imports (4–6), the name matcher (7–8),
+//! chained calls + the conformance pass (9), function refs (10), the framework
+//! registry + route contract + strip-comments (11), and the framework resolvers
+//! for flask/fastapi (15), spring (16) and go (17). Still stubs: the remaining
+//! framework resolvers (12–14, 18–20), the synthesizers, and the batch driver
 //! (Part C).
 
 mod builtins;
