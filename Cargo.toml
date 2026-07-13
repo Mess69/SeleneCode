@@ -61,6 +61,19 @@ wait-timeout = "0.2"
 # for non-contract deps. Used by detection sniffers + generated-file
 # classifier (Task 3) and the C/C++ pre-parse blankers (Task 12).
 regex        = "1"
+# Resolution (Phase 3). None of these three are in the roadmap's pins table —
+# added at the Phase 3 Task 1 spike, which measured/justified each:
+#   fancy-regex — the ONLY reason: the `regex` crate has no lookaround, and the
+#     receiver-inference tables need one negative lookahead (Lua/Luau #1124,
+#     `(?![\w.]|\s*[({"'\[])`). Every other resolver pattern stays on `regex`.
+#   lru — the LRUCache port (maps/resolution.md §Caches): insertion-ordered,
+#     `get` refreshes recency, `put` evicts oldest — the TS semantics exactly.
+#   json5 — tsconfig/jsconfig JSONC tolerance (comments + trailing commas).
+#     Weaker tolerance than TS's `stripJsonc` means aliases silently vanish and
+#     every aliased import regresses to unresolved, so the spike gates it.
+fancy-regex  = "0.16"
+lru          = "0.16"
+json5        = "0.4"
 # v0 grammar crates — pinned EXACT (=x.y.z) per rust-ecosystem-2026-07.md §3:
 # node-type names are extraction contracts, so a silent grammar bump would
 # drift every language config. Only selene-extract opts in. All depend on

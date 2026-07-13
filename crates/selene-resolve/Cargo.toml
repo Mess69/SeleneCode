@@ -7,6 +7,28 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { workspace = true }
+# The GraphStore TRAIT only — the resolver is generic over `S: GraphStore` and
+# never names SurrealStore (Phase 3 Global Constraints). SurrealStore appears
+# in dev-dependencies, for integration tests, and nowhere else.
+selene-db = { workspace = true }
+regex = { workspace = true }
+# Lookaround only (Lua/Luau receiver pattern #1124) — see the root Cargo.toml note.
+fancy-regex = { workspace = true }
+lru = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+tempfile = { workspace = true }
+# Spike (Task 1) only: the JSONC-tolerance bake-off. Task 4 keeps the winner.
+json5 = { workspace = true }
+jsonc-parser = { workspace = true }
+# Spike (Task 1) only: the F4 real-repo warm-cache measurement indexes this repo
+# with the real extractor. selene-resolve NEVER depends on selene-extract at
+# build time — the pipeline is extract -> resolve (decision D2).
+selene-extract = { workspace = true }
 
 [lints]
 workspace = true
