@@ -38,6 +38,7 @@
 //! warning, and is skipped. One broken resolver must never fail an index — the
 //! blast radius of a bad regex is one framework, not the whole graph.
 
+pub mod python;
 pub mod routes;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -145,7 +146,8 @@ pub const REGISTRY_ORDER: &[&str] = &[
 /// Empty until Tasks 12–20 land — Task 11 builds the seam, not the frameworks.
 /// Each of those tasks appends its resolver here, in the order above.
 fn builtin_resolvers() -> Vec<&'static dyn FrameworkResolver> {
-    Vec::new()
+    // In REGISTRY_ORDER. Each of Tasks 12–20 appends its row here, in that order.
+    vec![&python::Flask, &python::FastApi]
 }
 
 static REGISTRY: LazyLock<Vec<&'static dyn FrameworkResolver>> = LazyLock::new(builtin_resolvers);
