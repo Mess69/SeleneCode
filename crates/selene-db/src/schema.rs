@@ -90,6 +90,9 @@ DEFINE FIELD IF NOT EXISTS isAbstract ON node TYPE option<bool>;
 DEFINE FIELD IF NOT EXISTS decorators ON node TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS typeParameters ON node TYPE array<string> DEFAULT [];
 DEFINE FIELD IF NOT EXISTS returnType ON node TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS routeMethod ON node TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS routePath ON node TYPE option<string>;
+DEFINE FIELD IF NOT EXISTS framework ON node TYPE option<string>;
 DEFINE FIELD IF NOT EXISTS updatedAt ON node TYPE int;
 DEFINE INDEX IF NOT EXISTS node_kind ON node FIELDS kind;
 DEFINE INDEX IF NOT EXISTS node_name ON node FIELDS name;
@@ -98,6 +101,8 @@ DEFINE INDEX IF NOT EXISTS node_file_path ON node FIELDS filePath;
 DEFINE INDEX IF NOT EXISTS node_language ON node FIELDS language;
 DEFINE INDEX IF NOT EXISTS node_qualified_name ON node FIELDS qualifiedName;
 DEFINE INDEX IF NOT EXISTS node_file_line ON node FIELDS filePath, startLine;
+DEFINE INDEX IF NOT EXISTS node_route ON node FIELDS kind, routeMethod, routePath;
+DEFINE INDEX IF NOT EXISTS node_framework ON node FIELDS framework;
 ";
 
 /// The four FULLTEXT `(index name, node field)` pairs, in schema order. The

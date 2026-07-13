@@ -80,6 +80,15 @@ impl GraphStore for SurrealStore {
         SurrealStore::count_nodes_named(self, name).await
     }
 
+    async fn find_route(
+        &self,
+        framework: Option<&str>,
+        method: Option<&str>,
+        path: &str,
+    ) -> Result<Vec<Node>> {
+        SurrealStore::find_route(self, framework, method, path).await
+    }
+
     // -------------------------------------------------------------------
     // Edges (src/edges.rs)
     // -------------------------------------------------------------------

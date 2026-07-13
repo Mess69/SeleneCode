@@ -335,6 +335,25 @@ pub trait GraphStore: Send + Sync {
     /// *without* materializing its 10k candidate nodes.
     fn count_nodes_named(&self, name: &str) -> impl Future<Output = Result<u64>> + Send;
 
+    /// Route nodes matching the given semantics — the **only** way to look a
+    /// route up.
+    ///
+    /// A route's id is the ordinary hashed node id: it does **not** encode the
+    /// method or path (unlike the CodeGraph TS build, whose route ids were
+    /// literal `route:{file}:{line}:{METHOD}:{path}` strings that downstream
+    /// code key-matched on). The semantics live in the indexed `routeMethod` /
+    /// `routePath` / `framework` fields instead, so callers query them —
+    /// never parse or string-build an id.
+    ///
+    /// `framework` and `method` are optional filters; `path` is required.
+    /// Ordered by `(file_path, start_line, name)` for determinism.
+    fn find_route(
+        &self,
+        framework: Option<&str>,
+        method: Option<&str>,
+        path: &str,
+    ) -> impl Future<Output = Result<Vec<Node>>> + Send;
+
     // -------------------------------------------------------------------
     // Edges
     // -------------------------------------------------------------------

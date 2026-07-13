@@ -77,7 +77,8 @@ use crate::{Error, Result, SurrealStore};
 pub(crate) const NODE_FIELDS: &str = "\
 kind, name, qualifiedName, filePath, language, startLine, endLine, startColumn, endColumn, \
 docstring, signature, visibility, isExported, isAsync, isStatic, isAbstract, decorators, \
-typeParameters, returnType, updatedAt, record::id(id) AS id";
+typeParameters, returnType, routeMethod, routePath, framework, updatedAt, \
+record::id(id) AS id";
 
 /// Every *stored content* column of the `node` table (i.e. [`NODE_FIELDS`]
 /// minus the `record::id(id)` projection), in the same order. Drives the
@@ -87,7 +88,7 @@ typeParameters, returnType, updatedAt, record::id(id) AS id";
 /// content replace (an omitted optional field is `NONE` in `$input`, so the
 /// stored column is cleared). Must stay in sync with `Node`'s serde shape
 /// and the schema (`src/schema.rs`).
-const NODE_CONTENT_FIELDS: [&str; 20] = [
+const NODE_CONTENT_FIELDS: [&str; 23] = [
     "kind",
     "name",
     "qualifiedName",
@@ -107,6 +108,11 @@ const NODE_CONTENT_FIELDS: [&str; 20] = [
     "decorators",
     "typeParameters",
     "returnType",
+    // Route fields — set only on `NodeKind::Route` nodes emitted by the
+    // framework registry (`selene-resolve`); `None`/absent on every other node.
+    "routeMethod",
+    "routePath",
+    "framework",
     "updatedAt",
 ];
 
@@ -301,6 +307,50 @@ impl SurrealStore {
         Ok(rows.len() as u64)
     }
 
+    /// Route nodes matching the given semantics, via the `node_route` index.
+    ///
+    /// **This is the ONE way to look a route up.** A route's id is the ordinary
+    /// hashed node id (see `selene_core::Node`'s route-field docs) — it does NOT
+    /// encode the method or path, so downstream code must never parse or
+    /// string-build one. `framework`/`method` are optional filters; `path` is
+    /// required (it is the discriminator a caller always knows).
+    ///
+    /// Results are ordered by `(filePath, startLine, name)` so a caller that
+    /// gets several routes back gets them deterministically.
+    pub async fn find_route(
+        &self,
+        framework: Option<&str>,
+        method: Option<&str>,
+        path: &str,
+    ) -> Result<Vec<Node>> {
+        let mut sql = format!(
+            "SELECT {NODE_FIELDS} FROM node \
+             WHERE kind = $kind AND routePath = $path"
+        );
+        if framework.is_some() {
+            sql.push_str(" AND framework = $framework");
+        }
+        if method.is_some() {
+            sql.push_str(" AND routeMethod = $method");
+        }
+        sql.push_str(" ORDER BY filePath, startLine, name");
+
+        let mut query = self
+            .db()
+            .query(sql)
+            .bind(("kind", NodeKind::Route.as_str()))
+            .bind(("path", path.to_string()));
+        if let Some(f) = framework {
+            query = query.bind(("framework", f.to_string()));
+        }
+        if let Some(m) = method {
+            query = query.bind(("method", m.to_string()));
+        }
+        let mut resp = query.await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        rows.into_iter().map(row_to_node).collect()
+    }
+
     /// Count of **nodes** named exactly `name` — the counterpart to
     /// [`Self::count_nodes_matching_name_in_files`]'s *file* count (three
     /// `helper`s in two files: this answers 3, that answers 2).
@@ -387,6 +437,12 @@ mod tests {
             decorators: vec!["#[inline]".to_string()],
             type_parameters: vec!["T".to_string()],
             return_type: Some("bool".to_string()),
+            // Route fields Some(..) so no `skip_serializing_if` fires — this
+            // test's contract is "every field of Node appears in the DB field
+            // lists", which only holds on a node where nothing is skipped.
+            route_method: Some("GET".to_string()),
+            route_path: Some("/full".to_string()),
+            framework: Some("express".to_string()),
             updated_at: 42,
         };
 

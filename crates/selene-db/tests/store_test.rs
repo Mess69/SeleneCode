@@ -168,6 +168,9 @@ fn node(name: &str, file_path: &str) -> Node {
         decorators: vec![],
         type_parameters: vec![],
         return_type: None,
+        route_method: None,
+        route_path: None,
+        framework: None,
         updated_at: 0,
     }
 }
@@ -197,6 +200,9 @@ fn maximal_node(name: &str, file_path: &str) -> Node {
         decorators: vec!["#[inline]".to_string()],
         type_parameters: vec!["T".to_string()],
         return_type: Some("bool".to_string()),
+        route_method: None,
+        route_path: None,
+        framework: None,
         updated_at: 42,
     }
 }
