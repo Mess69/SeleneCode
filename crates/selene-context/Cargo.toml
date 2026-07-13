@@ -17,6 +17,7 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 
 [dev-dependencies]
+regex = { workspace = true }
 selene-extract = { path = "../selene-extract" }
 selene-resolve = { path = "../selene-resolve" }
 selene-db = { path = "../selene-db", features = ["kv-mem"] }
