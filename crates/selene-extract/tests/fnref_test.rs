@@ -210,6 +210,56 @@ public:
 }
 
 #[test]
+fn cpp_captures_address_of_in_assignment_rhs() {
+    // `rhs` is a GATED position (design doc rule 2 — only file-scope
+    // initializers are ungated) AND an `address_of_only` one (rule 4). An `&`
+    // form must survive BOTH: explicit_ref clears the C++ bare-id drop, and the
+    // name clears the gate by matching a same-file function.
+    let code = r#"
+void target_cb(int x) {}
+
+void setup(Ops *o) {
+    o->cb = &target_cb;
+}
+"#;
+    let r = extract_from_source("h.cpp", code, Language::Cpp);
+    let from = id_of(&r, NodeKind::Function, "setup");
+    assert_one(&r, "target_cb", &from, 5, 13);
+}
+
+#[test]
+fn cpp_captures_address_of_in_local_varinit() {
+    // Same for `varinit` — a LOCAL initializer stays gated (only FILE-scope
+    // ones skip the gate), so this pins the `&` form surviving there too.
+    let code = r#"
+void target_cb(int x) {}
+
+void setup() {
+    auto p = &target_cb;
+}
+"#;
+    let r = extract_from_source("h.cpp", code, Language::Cpp);
+    let from = id_of(&r, NodeKind::Function, "setup");
+    assert_one(&r, "target_cb", &from, 5, 14);
+}
+
+#[test]
+fn cpp_bare_id_in_local_varinit_is_dropped() {
+    // …while a BARE id in the same local position is dropped by
+    // `address_of_only` — the file-scope table is the ONLY place C++ accepts
+    // one (design doc rule 4).
+    let code = r#"
+void target_cb(int x) {}
+
+void setup() {
+    auto p = target_cb;
+}
+"#;
+    let r = extract_from_source("h.cpp", code, Language::Cpp);
+    assert!(fn_refs(&r).is_empty(), "got {:?}", fn_ref_names(&r));
+}
+
+#[test]
 fn cpp_file_scope_initializer_table_keeps_bare_ids() {
     let code = r#"
 void cb_a(int x) {}

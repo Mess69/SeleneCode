@@ -764,7 +764,10 @@ fn visit(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>)
         // cb_t table[] = { cb_a, cb_b }`. The scan halts at nested function
         // definitions (their bodies are walked — and attributed — separately)
         // and flush-time dedup absorbs any overlap with the initializers
-        // `extract_variable` DOES walk.
+        // `extract_variable` DOES walk — AND the fact that this node itself was
+        // already offered to `maybe_capture_fn_refs` pre-ladder, so the scan's
+        // depth-0 visit re-offers it (TS does the same: ts:954 then ts:1074;
+        // the `(from_node_id, name)` dedup key collapses the pair).
         body::scan_fn_ref_subtree(s, node, 0);
     } else if t.import_types.contains(&node_type) {
         extract_import(rules, s, node);
