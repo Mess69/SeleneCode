@@ -109,7 +109,27 @@ impl<S: GraphStore> ContextBuilder<S> {
     }
 
     /// **The Flow section** — built from the query's own terms first (the agent named the
-    /// endpoints it cares about), falling back to the ranked roots.
+    /// endpoints it cares about), falling back to the **gathered subgraph**.
+    ///
+    /// # Why the fallback is the subgraph and not the roots
+    ///
+    /// It used to be the 3 ranked roots, and it almost never produced a flow — including on
+    /// queries where the right symbol *was* a root. Two reasons, both fatal:
+    ///
+    /// 1. **The roots are frequently types.** Ask "how does an unresolved reference become a
+    ///    graph edge" and the best-ranked symbols are `UnresolvedRef`, `Edge`, `GraphStore` —
+    ///    nouns, and nouns are *sinks*: nothing flows out of a struct. A BFS seeded on three
+    ///    sinks walks nowhere.
+    /// 2. **Three names cannot span a chain.** The chain is
+    ///    `resolve_and_persist_batched → resolve_all → resolve_one`, and `resolve_all` is an
+    ///    intermediate no ranking would ever surface — it matches no query word and answers no
+    ///    question on its own. It is only visible from its neighbors.
+    ///
+    /// The subgraph already contains all of it: pass 11 walked callers and callees from every
+    /// root, so the intermediates are sitting right there. Seeding the BFS with the subgraph —
+    /// roots first, then the rest — is what lets the spine assemble. This is also what TS does:
+    /// its `## Call paths` section is a DFS over the *subgraph's* `calls` edges, not over the
+    /// roots (`maps/mcp-context.md` §`ContextBuilder.findRelevantContext`).
     async fn render_flow_section(&self, query: &str, ctx: &RelevantContext) -> Result<String> {
         // 1. The symbols the agent NAMED. If it said "handleLogin … hashPassword", those are
         //    the endpoints it wants a chain between — not whatever ranked highest.
@@ -120,10 +140,17 @@ impl<S: GraphStore> ContextBuilder<S> {
             return Ok(render_flow(&steps));
         }
 
-        // 2. Otherwise, the ranked roots: the chain through what we believe the answer is.
-        let roots: Vec<String> = ctx.roots.iter().map(|r| r.node.name.clone()).collect();
-        if roots.len() >= 2
-            && let Some(steps) = build_flow_from_named_symbols(&self.qm, &roots).await?
+        // 2. Otherwise, the gathered subgraph: roots first (they are the answer we believe in),
+        //    then everything the walk pulled in around them (which is where the intermediates
+        //    live).
+        let mut names: Vec<String> = ctx.roots.iter().map(|r| r.node.name.clone()).collect();
+        for n in ctx.subgraph.nodes.values() {
+            if !names.contains(&n.name) {
+                names.push(n.name.clone());
+            }
+        }
+        if names.len() >= 2
+            && let Some(steps) = build_flow_from_named_symbols(&self.qm, &names).await?
         {
             return Ok(render_flow(&steps));
         }
