@@ -6,13 +6,13 @@
 //!  3. TitleCase prefix search over definitions (+15 + brevity)(Task 5) ✅
 //!  4. per-term FTS + multi-term boost (+5), test dampen (×0.3),
 //!     dominant-file core-dir boost (+25)                      (Task 5) ✅
-//!  5. term-group co-occurrence rerank                         (Task 6) — stub
-//!  6. camelCase-boundary LIKE matches                         (Task 6) — stub
-//!  7. compound ≥2-term LIKE matches                           (Task 6) — stub
-//!  8. sort → slice(search_limit*3) → min-score → imports→defs → cap roots (Task 6) — stub
-//!  9. confidence: LOW iff ≥2 terms AND no result with 2 hits or a distinctive name (T6)
-//! 10. type-hierarchy expansion (budget max_nodes/4, 2 passes)  (Task 6) — stub
-//! 11. BFS both directions → trims → edge recovery              (Task 6) — stub
+//!  5. term-group co-occurrence rerank                         (Task 6) ✅
+//!  6. camelCase-boundary LIKE matches                         (Task 6) ✅
+//!  7. compound ≥2-term LIKE matches                           (Task 6) ✅
+//!  8. sort → slice(search_limit*3) → min-score → cap roots     (Task 6) ✅
+//!  9. confidence: LOW iff ≥2 terms AND nothing with 2 hits or a distinctive name (T6) ✅
+//! 10. type-hierarchy expansion (budget max_nodes/4)            (Task 6) ✅
+//! 11. BFS both directions → trims → edge recovery              (Task 6) ✅
 //! ```
 //!
 //! Every weight below is **ported, not chosen**. The numbers are the product: `+20` for
@@ -22,8 +22,8 @@
 //! is 10× wrong, so the tests assert the **numbers**.
 
 use indexmap::IndexMap;
-use selene_core::{Node, NodeKind};
-use selene_db::GraphStore;
+use selene_core::{Edge, EdgeKind, Node, NodeKind};
+use selene_db::{GraphStore, Subgraph};
 use selene_graph::QueryManager;
 
 use crate::error::Result;
@@ -373,16 +373,360 @@ fn upsert(
 }
 
 // =============================================================================
-// Task 6 fills these — the pass list above is the contract; it is never re-ordered.
+// Passes 5–11 — `find_relevant_context`
 // =============================================================================
-//
-//  5. term-group co-occurrence rerank
-//  6. camelCase-boundary LIKE matches
-//  7. compound ≥2-term LIKE matches
-//  8. sort → slice → min-score → imports→definitions → cap roots
-//  9. confidence (LOW iff ≥2 terms AND nothing with 2 hits or a distinctive name)
-// 10. type-hierarchy expansion
-// 11. BFS both directions → trims → edge recovery
+
+/// How sure we are that the graph actually answered the question.
+///
+/// **`Low` is not an error.** It is the honest half of the product: when the graph cannot
+/// answer, saying so — and saying what to do next — beats returning thin context that *looks*
+/// like an answer. A confident wrong answer is the one failure mode an agent cannot detect.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Confidence {
+    /// Something matched two terms, or matched a name the query did not contain.
+    High,
+    /// ≥2 terms were asked for and nothing matched more than one of them, and no result had
+    /// a name the query did not already contain. The graph is guessing.
+    Low,
+}
+
+/// The gathered context, and how much to trust it.
+#[derive(Debug, Clone)]
+pub struct RelevantContext {
+    /// The nodes and edges worth showing.
+    pub subgraph: Subgraph,
+    /// See [`Confidence`] — `Low` is guidance, never an error.
+    pub confidence: Confidence,
+    /// The roots the walk started from, best first.
+    pub roots: Vec<ScoredNode>,
+}
+
+/// **Passes 1–11.** The whole gather.
+///
+/// Returns an EMPTY context — never an `Err` — when nothing is relevant, when the query was
+/// all stopwords, or when the project is not indexed. Those are answers, and the caller turns
+/// them into guidance. An `Err` here becomes an `isError` at the MCP layer (and the rmcp
+/// spike proved an escaping `?` becomes a JSON-RPC *transport* failure), and one `isError`
+/// early makes an agent abandon the tool for the session.
+pub async fn find_relevant_context<S: GraphStore>(
+    qm: &QueryManager<S>,
+    query: &str,
+    opts: &FindOptions,
+    dominant: Option<&DominantFile>,
+) -> Result<RelevantContext> {
+    let terms = extract_search_terms(query);
+
+    // Passes 1–4.
+    let mut scored = score_candidates(qm, query, opts, dominant).await?;
+
+    // --- pass 5: term-group co-occurrence rerank ------------------------------
+    rerank_by_term_groups(&mut scored, &terms);
+
+    // --- passes 6 & 7: LIKE matches -------------------------------------------
+    let like = like_passes(qm, &terms, opts).await?;
+    let mut by_id: IndexMap<String, ScoredNode> = IndexMap::new();
+    for s in scored.into_iter().chain(like) {
+        match by_id.get_mut(&s.node.id) {
+            // The channels are alternatives, not additions: take the BEST score any of them
+            // gave a node, exactly as the merge in pass 4 does.
+            Some(existing) => {
+                existing.score = existing.score.max(s.score);
+                existing.term_hits = existing.term_hits.max(s.term_hits);
+                existing.distinctive |= s.distinctive;
+            }
+            None => {
+                by_id.insert(s.node.id.clone(), s);
+            }
+        }
+    }
+    let mut scored: Vec<ScoredNode> = by_id.into_values().collect();
+
+    // --- pass 8: sort → slice → min-score → cap roots --------------------------
+    sort_candidates(&mut scored);
+    scored.truncate(opts.search_limit * 3);
+    scored.retain(|s| s.score >= opts.min_score);
+
+    // --- pass 9: confidence ---------------------------------------------------
+    let confidence = confidence_of(&scored, &terms);
+
+    let roots: Vec<ScoredNode> = scored.into_iter().take(opts.search_limit).collect();
+    if roots.is_empty() {
+        // NOT an error. "Nothing relevant" is an answer, and the caller renders guidance.
+        return Ok(RelevantContext {
+            subgraph: Subgraph {
+                nodes: IndexMap::new(),
+                edges: Vec::new(),
+                roots: Vec::new(),
+            },
+            confidence,
+            roots,
+        });
+    }
+
+    // --- pass 10: type-hierarchy expansion ------------------------------------
+    let mut nodes: IndexMap<String, Node> = IndexMap::new();
+    let mut edges: Vec<Edge> = Vec::new();
+    for r in &roots {
+        nodes.insert(r.node.id.clone(), r.node.clone());
+    }
+
+    let hierarchy_budget = opts.max_nodes / 4;
+    let mut added = 0usize;
+    for r in &roots {
+        if added >= hierarchy_budget {
+            break;
+        }
+        if let Ok(sub) = qm.type_hierarchy(&r.node.id).await {
+            for (id, n) in sub.nodes {
+                if added >= hierarchy_budget {
+                    break;
+                }
+                if !nodes.contains_key(&id) {
+                    nodes.insert(id, n);
+                    added += 1;
+                }
+            }
+            edges.extend(sub.edges);
+        }
+    }
+
+    // --- pass 11: BFS both directions, per root -------------------------------
+    let per_root = (opts.max_nodes / roots.len()).max(1);
+    for r in &roots {
+        for entry in qm
+            .callees(&r.node.id, opts.traversal_depth)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .chain(
+                qm.callers(&r.node.id, opts.traversal_depth)
+                    .await
+                    .unwrap_or_default(),
+            )
+            .take(per_root * 2)
+        {
+            nodes
+                .entry(entry.node.id.clone())
+                .or_insert_with(|| entry.node.clone());
+            edges.push(entry.edge);
+        }
+    }
+
+    // --- pass 11's trims ------------------------------------------------------
+    let root_ids: Vec<String> = roots.iter().map(|r| r.node.id.clone()).collect();
+    trim_nodes(&mut nodes, &root_ids, opts);
+
+    // --- pass 11's edge recovery ----------------------------------------------
+    // The BFS only recorded the edges it walked. Anything ALREADY in the gathered set that
+    // is connected to something else in it is a relationship the agent should see — and it
+    // would otherwise be invisible, which is a rendered graph with missing lines.
+    let ids: Vec<String> = nodes.keys().cloned().collect();
+    if let Ok(recovered) = qm
+        .store()
+        .edges_between(
+            &ids,
+            &[
+                EdgeKind::Calls,
+                EdgeKind::Extends,
+                EdgeKind::Implements,
+                EdgeKind::References,
+                EdgeKind::Overrides,
+            ],
+        )
+        .await
+    {
+        edges.extend(recovered);
+    }
+
+    // Deterministic, deduplicated edges.
+    edges.sort_by(|a, b| {
+        (&a.source, &a.target, a.kind.as_str()).cmp(&(&b.source, &b.target, b.kind.as_str()))
+    });
+    edges.dedup_by(|a, b| a.source == b.source && a.target == b.target && a.kind == b.kind);
+    // …and only edges whose BOTH ends survived the trims (a dangling edge renders as a line
+    // to nowhere).
+    edges.retain(|e| nodes.contains_key(&e.source) && nodes.contains_key(&e.target));
+
+    Ok(RelevantContext {
+        subgraph: Subgraph {
+            nodes,
+            edges,
+            roots: root_ids,
+        },
+        confidence,
+        roots,
+    })
+}
+
+/// **Pass 5.** Group query terms that are stem variants of one another (`indexed`, `index`)
+/// so they count as ONE concept, then boost nodes matching ≥2 distinct concepts.
+///
+/// Without the grouping, stem variants inflate the match count and hand a false multi-term
+/// boost to a symbol that matched one root word three ways.
+fn rerank_by_term_groups(scored: &mut [ScoredNode], terms: &[String]) {
+    if terms.len() < 2 {
+        return;
+    }
+    let groups = term_groups(terms);
+    if groups.len() < 2 {
+        return;
+    }
+
+    for s in scored.iter_mut() {
+        let hay = format!("{} {}", s.node.name, s.node.file_path).to_lowercase();
+        let concepts = groups
+            .iter()
+            .filter(|g| g.iter().any(|t| hay.contains(&t.to_lowercase())))
+            .count();
+        if concepts >= 2 {
+            s.score += (concepts - 1) as f64 * weights::MULTI_TERM;
+            s.term_hits = s.term_hits.max(concepts);
+        }
+    }
+}
+
+/// Terms that are substrings of one another are one concept. Longest first, so the longest
+/// term names the group.
+pub fn term_groups(terms: &[String]) -> Vec<Vec<String>> {
+    let mut sorted: Vec<&String> = terms.iter().collect();
+    sorted.sort_by_key(|t| std::cmp::Reverse(t.len()));
+
+    let mut groups: Vec<Vec<String>> = Vec::new();
+    let mut assigned: Vec<&String> = Vec::new();
+
+    for t in &sorted {
+        if assigned.contains(t) {
+            continue;
+        }
+        let mut group = vec![(*t).clone()];
+        assigned.push(t);
+        for other in &sorted {
+            if assigned.contains(other) {
+                continue;
+            }
+            let (a, b) = (t.to_lowercase(), other.to_lowercase());
+            if a.contains(&b) || b.contains(&a) {
+                group.push((*other).clone());
+                assigned.push(other);
+            }
+        }
+        groups.push(group);
+    }
+    groups
+}
+
+/// **Passes 6 & 7.** camelCase-boundary and compound (≥2-term) LIKE matches — the names FTS
+/// cannot see, because FTS tokenizes and `handleLoginRequest` is one token.
+async fn like_passes<S: GraphStore>(
+    qm: &QueryManager<S>,
+    terms: &[String],
+    opts: &FindOptions,
+) -> Result<Vec<ScoredNode>> {
+    let mut out: Vec<ScoredNode> = Vec::new();
+
+    // Pass 6: each term as a substring — catches the camelCase boundary (`login` inside
+    // `handleLoginRequest`).
+    for term in terms {
+        let hits = qm
+            .store()
+            .search_name_like(term, &opts.node_kinds, opts.search_limit * 2)
+            .await
+            .map_err(selene_graph::GraphError::from)?;
+        for c in hits {
+            let distinctive = is_distinctive(&c.node.name, terms);
+            out.push(ScoredNode {
+                score: c.raw_score,
+                node: c.node,
+                term_hits: 1,
+                distinctive,
+            });
+        }
+    }
+
+    // Pass 7: a node whose name contains TWO OR MORE of the terms is a compound hit —
+    // `ShardSearchRequest` for "shard search request" — and outranks a one-term match.
+    if terms.len() >= 2 {
+        for s in out.iter_mut() {
+            let name = s.node.name.to_lowercase();
+            let hits = terms
+                .iter()
+                .filter(|t| name.contains(&t.to_lowercase()))
+                .count();
+            if hits >= 2 {
+                s.score += (hits - 1) as f64 * weights::MULTI_TERM;
+                s.term_hits = s.term_hits.max(hits);
+            }
+        }
+    }
+
+    Ok(out)
+}
+
+/// **Pass 9.** `Low` **iff** the query named ≥2 terms **and** nothing matched more than one of
+/// them **and** nothing has a name the query did not already contain.
+///
+/// The second half is what makes it useful: if the graph hands back a symbol the agent did
+/// not name, the graph knew something. If every hit is just the words the agent typed, it
+/// did not.
+pub fn confidence_of(scored: &[ScoredNode], terms: &[String]) -> Confidence {
+    if terms.len() < 2 {
+        return Confidence::High;
+    }
+    let strong = scored.iter().any(|s| s.term_hits >= 2 || s.distinctive);
+    if strong {
+        Confidence::High
+    } else {
+        Confidence::Low
+    }
+}
+
+/// Pass 11's four trims, in order. **Roots are never trimmed** — they are the answer.
+fn trim_nodes(nodes: &mut IndexMap<String, Node>, roots: &[String], opts: &FindOptions) {
+    // 1. per-file cap: max(5, ceil(max_nodes * 0.2)). One file must not eat the budget.
+    let per_file = std::cmp::max(5, (opts.max_nodes as f64 * 0.2).ceil() as usize);
+    // 2. non-production cap: max(3, ceil(max_nodes * 0.15)). Tests/generated code are real,
+    //    but they are not the answer.
+    let non_prod = std::cmp::max(3, (opts.max_nodes as f64 * 0.15).ceil() as usize);
+
+    let mut per_file_count: IndexMap<String, usize> = IndexMap::new();
+    let mut non_prod_count = 0usize;
+    let mut keep: IndexMap<String, Node> = IndexMap::new();
+
+    for (id, node) in nodes.iter() {
+        let is_root = roots.contains(id);
+
+        if !is_root {
+            let count = per_file_count.entry(node.file_path.clone()).or_insert(0);
+            if *count >= per_file {
+                continue;
+            }
+            if is_test_file(&node.file_path) {
+                if non_prod_count >= non_prod {
+                    continue;
+                }
+                non_prod_count += 1;
+            }
+            *count += 1;
+        }
+
+        keep.insert(id.clone(), node.clone());
+        // 3. the hard cap — but never at the cost of a root.
+        if keep.len() >= opts.max_nodes
+            && keep.keys().filter(|k| roots.contains(k)).count() == roots.len()
+        {
+            break;
+        }
+    }
+
+    // 4. every root survives, whatever the caps said.
+    for id in roots {
+        if let Some(n) = nodes.get(id) {
+            keep.entry(id.clone()).or_insert_with(|| n.clone());
+        }
+    }
+
+    *nodes = keep;
+}
 
 #[cfg(test)]
 mod tests {

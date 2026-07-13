@@ -35,7 +35,8 @@ pub use budgets::{
 };
 pub use error::{ContextError, Result};
 pub use relevance::{
-    DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, ScoredNode, brevity, is_test_file,
-    score_candidates, sort_candidates, weights,
+    Confidence, DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, RelevantContext, ScoredNode,
+    brevity, confidence_of, find_relevant_context, is_test_file, score_candidates, sort_candidates,
+    term_groups, weights,
 };
 pub use stopwords::{STOPWORDS, extract_search_terms, extract_symbols_from_query};
