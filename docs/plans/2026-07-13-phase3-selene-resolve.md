@@ -842,7 +842,7 @@ For a `calls` ref, **drop `constant` nodes whose language is `yaml` or `properti
 | case | confidence |
 |---|---|
 | single candidate | **0.9** (cross-language: **0.5**) |
-| `count_nodes_named(name) > AMBIGUOUS_NAME_CEILING` (**500**) | **decline — return `None`** (#999) |
+| `candidates.len() > AMBIGUOUS_NAME_CEILING` (**500**) — the GATED, import-filtered list | **decline — return `None`** (#999) |
 | else `find_best_match` → proximity **≥ 30** | **0.7** |
 | else | **0.4** |
 > The cross-language single-candidate branch is mostly unreachable for `references` (the gate
@@ -869,9 +869,15 @@ For a `calls` ref, **drop `constant` nodes whose language is `yaml` or `properti
   `prefer_call_site_file` / `pick_closest_file_node` exactly as tabled above. `prefer_call_site_file`
   returns the same-file subset when it is non-empty, else the input unchanged (it is a *filter*,
   not a sort — a same-file candidate always beats a cross-file one).
-- [ ] `AMBIGUOUS_NAME_CEILING` uses `ctx.count_nodes_named(name)` (the store's counting
-  primitive), **not** `nodes_by_name(..).len()` — the whole point of the ceiling is to decline
-  **without** materializing 10k nodes. Env override `SELENE_AMBIGUOUS_NAME_CEILING`.
+- [ ] `AMBIGUOUS_NAME_CEILING` compares against **`candidates.len()`** — the list AFTER the
+  strategy's gating and import-kind filtering — exactly as TS does (`name-matcher.ts:382`:
+  `if (candidates.length > AMBIGUOUS_NAME_CEILING) return null;`).
+  **CORRECTED 2026-07-13** (this line previously said `ctx.count_nodes_named(name)`; the
+  implementer went to the TS source instead of obeying the plan, and was right): the raw node
+  count includes the `import`-kind nodes this strategy has just excluded (#915). A package like
+  `react`, re-declared as an import node in hundreds of files, would trip the ceiling and
+  **silently lose the edges to its one real definition**. `count_nodes_named` remains on the
+  trait as an honest primitive for other callers. Env override `SELENE_AMBIGUOUS_NAME_CEILING`.
 - [ ] Wire `src/resolver.rs` ladder **step 10**: `match_reference` under `gate_language`.
 - [ ] TDD — port the named blocks of `__tests__/resolution.test.ts`: name-matcher basics
   (exact match; **cross-module confidence lowering**; same-module preference; qualified names);
