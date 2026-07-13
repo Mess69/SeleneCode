@@ -576,8 +576,12 @@ fn the_dispatcher_prefers_a_qualified_match_over_an_exact_one() {
     assert_eq!(hit.confidence, 0.85);
 }
 
+/// A `function_ref` short-circuits the whole strategy ladder: it resolves through
+/// `match_function_ref` (Task 10) or not at all. It must never reach the exact-name
+/// or fuzzy strategies, where a wrong callback edge would claim a registration that
+/// does not exist.
 #[test]
-fn a_function_ref_never_reaches_the_name_strategies() {
+fn a_function_ref_short_circuits_to_its_own_matcher() {
     let ctx = FakeContext::new().with_node(ts_node(
         "function:handler",
         NodeKind::Function,
@@ -585,15 +589,39 @@ fn a_function_ref_never_reaches_the_name_strategies() {
         "handler",
         "src/h.ts",
     ));
+
+    // It resolves — but through the FUNCTION-REF matcher, with its own rules and its
+    // own `resolved_by`, not through the name strategies.
+    let hit = match_reference(
+        &r("handler", "function_ref", "src/a.ts", Language::Typescript),
+        &ctx,
+    )
+    .expect("a unique cross-file handler resolves");
+    assert_eq!(hit.target_node_id, "function:handler");
+    assert_eq!(
+        hit.resolved_by,
+        ResolvedBy::FunctionRef,
+        "NOT ExactMatch — the function-ref matcher owns this reference kind"
+    );
+    assert_eq!(hit.confidence, 0.8, "cross-file unique-or-drop, not 0.9");
+
+    // And it never falls through to fuzzy: a case-different name resolves to NOTHING,
+    // where an ordinary `calls` ref would have fuzzy-matched it at 0.5.
     assert!(
         match_reference(
-            &r("handler", "function_ref", "src/a.ts", Language::Typescript),
+            &r("HANDLER", "function_ref", "src/a.ts", Language::Typescript),
             &ctx
         )
         .is_none(),
-        "a function_ref short-circuits to its own matcher (Task 10) — it must \
-         never fall through to exact/fuzzy, where a wrong callback edge would \
-         claim a registration that does not exist"
+        "no fuzzy fallback, ever — a case difference is not a registration"
+    );
+    assert!(
+        match_reference(
+            &r("HANDLER", "calls", "src/a.ts", Language::Typescript),
+            &ctx
+        )
+        .is_some(),
+        "…while an ordinary call DOES reach fuzzy — which is exactly the difference"
     );
 }
 

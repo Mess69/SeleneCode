@@ -28,6 +28,7 @@ use crate::context::ResolutionContext;
 use crate::families::{crosses_known_family, same_language_family};
 use crate::imports::{resolve_jvm_import, resolve_via_import};
 use crate::matcher::chains::is_deferrable_chain;
+use crate::matcher::fnref::{match_function_ref, resolve_this_member_fn_ref};
 use crate::matcher::match_reference;
 use crate::types::ResolvedRef;
 
@@ -135,12 +136,35 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         let mut candidates: Vec<ResolvedRef> = Vec::new();
 
         // --- step 4: `function_ref` — a dedicated, strictly-gated path --------
+        // A function-as-value reference NEVER reaches the frameworks loop, the name
+        // matcher, or fuzzy: a wrong callback edge claims a registration that does
+        // not exist, which is worse than admitting we do not know.
         if r.reference_kind == "function_ref" {
-            // TODO(Task 10): `this.`-prefixed → resolve_this_member_fn_ref ONLY;
-            // else resolve_via_import (accepted only when the target's kind is
-            // function/method), then match_function_ref. A function_ref NEVER
-            // reaches the frameworks loop, the name matcher, or fuzzy.
-            return None;
+            // `this.<member>` values resolve ONLY against the enclosing class's own
+            // members — never a same-named symbol elsewhere.
+            if r.reference_name.starts_with("this.") {
+                let (hit, defer) = resolve_this_member_fn_ref(r, &self.ctx);
+                if defer {
+                    // The member may be INHERITED, and the implements/extends edges
+                    // do not exist yet (#808) — retry in the supertype pass.
+                    self.deferred_this_member_refs.push(r.clone());
+                }
+                return self.gate_language(hit, r);
+            }
+
+            // An imported callback resolves through its import — the most precise
+            // cross-file signal there is. Accepted ONLY if the target really is a
+            // function or a method.
+            if let Some(via) = self.gate_language(resolve_via_import(r, &self.ctx), r)
+                && self
+                    .ctx
+                    .node_by_id(&via.target_node_id)
+                    .is_some_and(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
+            {
+                return Some(via);
+            }
+
+            return self.gate_language(match_function_ref(r, &self.ctx), r);
         }
 
         // --- step 5: JVM FQN imports -----------------------------------------

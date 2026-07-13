@@ -17,6 +17,7 @@
 //! silently re-points references across the whole graph.
 
 pub mod chains;
+pub mod fnref;
 pub mod method;
 pub mod names;
 pub mod receiver;
@@ -28,6 +29,7 @@ use crate::context::ResolutionContext;
 use crate::matcher::chains::{
     match_cpp_call_chain, match_dotted_call_chain, match_scoped_call_chain,
 };
+use crate::matcher::fnref::match_function_ref;
 use crate::matcher::method::match_method_call;
 use crate::matcher::names::{
     match_by_exact_name, match_by_file_path, match_by_qualified_name, match_fuzzy,
@@ -44,8 +46,7 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     // never through the qualified/exact/fuzzy fallthrough below. A wrong callback
     // edge is worse than none: it claims a registration that does not exist.
     if r.reference_kind == "function_ref" {
-        // TODO(Task 10): `return match_function_ref(r, ctx);`
-        return None;
+        return match_function_ref(r, ctx);
     }
 
     // Wave 2 (Phase 8), both in this position and both NO-FALLTHROUGH:

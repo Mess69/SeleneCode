@@ -93,6 +93,7 @@ pub use matcher::chains::{
     CHAIN_LANGUAGES, is_deferrable_chain, match_cpp_call_chain, match_dotted_call_chain,
     match_scoped_call_chain,
 };
+pub use matcher::fnref::{match_function_ref, resolve_this_member_fn_ref};
 pub use matcher::match_reference;
 pub use matcher::method::{match_method_call, resolve_method_on_type};
 pub use matcher::names::{
