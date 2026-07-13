@@ -39,6 +39,7 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use selene_core::{EdgeKind, Language, Node, NodeKind};
 use selene_db::GraphStore;
@@ -91,6 +92,20 @@ pub trait ResolutionContext: Send + Sync {
     /// the maintainer decision (Open Coordination Point 1b); this method keeps
     /// the store's real semantics and an honest name until then.
     fn count_files_with_name(&self, name: &str) -> u64;
+
+    /// How many **nodes** are named exactly `name`, across every file.
+    ///
+    /// This is what the `AMBIGUOUS_NAME_CEILING` (#999) guard compares against
+    /// (Task 7): above the ceiling a name is *ubiquitous*, and the matcher
+    /// **declines rather than guesses**. The whole point of a counting primitive
+    /// here is to decline **without materializing** the ten thousand candidates —
+    /// so this must never be implemented as `nodes_by_name(name).len()`.
+    ///
+    /// Distinct from [`Self::count_files_with_name`] on purpose: the spike (F2)
+    /// found the store's original primitive counted distinct FILES, which would
+    /// have compared 500 against a file count and left the guard silently never
+    /// firing. `selene-db` now carries both, with honest names.
+    fn count_nodes_named(&self, name: &str) -> u64;
 
     /// Method nodes of `language` on type `ty` named `method`: the nodes whose
     /// `qualified_name` is `"{ty}::{method}"` or ends with `"::{ty}::{method}"`.
@@ -175,6 +190,31 @@ pub trait ResolutionContext: Send + Sync {
     /// Every distinct node name in the graph — the `has_any_possible_match`
     /// pre-filter's hash lookup, hit once per reference.
     fn known_names(&self) -> &HashSet<String>;
+
+    // ---- health -------------------------------------------------------------
+
+    /// How many store reads have **failed** over this context's life.
+    ///
+    /// # Why this exists, and why it is on the trait
+    ///
+    /// Every read below degrades a store malfunction to an empty result (errors
+    /// are collected, never thrown — a reference that cannot be looked up is a
+    /// reference that does not resolve, and unwinding through a hundred strategy
+    /// frames would take down an index of a million over one bad row). The
+    /// hazard is that this makes a **store outage byte-identical to a clean
+    /// no-match**: nothing resolves, and nothing says why — which is exactly the
+    /// *vacuous resolution* the Phase 3 gate exists to catch, arriving through
+    /// the back door.
+    ///
+    /// So the degradation is counted, not silent. Part C's batch driver reports
+    /// this in its stats, and the gate's non-vacuity assertion fails the run when
+    /// it is non-zero: **a resolution pass that swallowed store errors is not a
+    /// resolution pass, it is a lie about one.**
+    ///
+    /// The default is `0` — an in-memory context has no store to fail.
+    fn store_read_errors(&self) -> u64 {
+        0
+    }
 }
 
 // =============================================================================
@@ -207,6 +247,7 @@ pub struct StoreContext<S: GraphStore> {
     method_match_cache: SyncLru<String, Vec<Node>>, // "{lang} {ty}::{method}"
     node_by_id_cache: SyncLru<String, Option<Node>>,
     count_cache: SyncLru<String, u64>,
+    node_count_cache: SyncLru<String, u64>,
     supertype_cache: SyncLru<String, Vec<Node>>,
     member_cache: SyncLru<String, Vec<Node>>,
     file_cache: SyncLru<String, Option<String>>, // content-bearing
@@ -216,6 +257,10 @@ pub struct StoreContext<S: GraphStore> {
 
     /// ~24 kinds, never evicted — a plain map, not an LRU (`#1180`).
     kind_cache: std::sync::Mutex<HashMap<NodeKind, Vec<Node>>>,
+
+    /// Store reads that FAILED. See [`ResolutionContext::store_read_errors`] —
+    /// a swallowed store error must never be indistinguishable from a clean miss.
+    store_read_errors: AtomicU64,
 
     // Project singletons. `None` = absent (Task 4 populates them at construction).
     aliases: Option<AliasMap>,
@@ -278,6 +323,7 @@ impl<S: GraphStore> StoreContext<S> {
             method_match_cache: SyncLru::new(limit),
             node_by_id_cache: SyncLru::new(limit),
             count_cache: SyncLru::new(limit),
+            node_count_cache: SyncLru::new(limit),
             supertype_cache: SyncLru::new(limit),
             member_cache: SyncLru::new(limit),
             file_cache: SyncLru::new(content_limit),
@@ -285,6 +331,7 @@ impl<S: GraphStore> StoreContext<S> {
             import_mapping_cache: SyncLru::new(limit),
             re_export_cache: SyncLru::new(limit),
             kind_cache: std::sync::Mutex::new(HashMap::new()),
+            store_read_errors: AtomicU64::new(0),
             aliases: None,
             go_module: None,
             workspace_packages: None,
@@ -299,15 +346,38 @@ impl<S: GraphStore> StoreContext<S> {
 
     /// Drive one async store read from the sync strategy layer.
     ///
-    /// A store malfunction degrades to the empty result rather than unwinding
-    /// through a hundred strategy frames: errors are collected, never thrown,
-    /// and a reference that cannot be looked up is a reference that does not
-    /// resolve. (The batch driver reports store health separately.)
+    /// A store malfunction **degrades to an empty result** rather than unwinding
+    /// through a hundred strategy frames: errors are collected, never thrown, and
+    /// a reference that cannot be looked up is a reference that does not resolve.
+    ///
+    /// But it is **counted and logged**, never silent. A swallowed store error
+    /// that left no trace would make an outage look byte-identical to a repo with
+    /// nothing to resolve — the vacuous-resolution failure mode, arriving through
+    /// the back door. [`Self::store_read_errors`] is what the batch driver's stats
+    /// and the gate's non-vacuity assertion read.
     fn blocking<T, F>(&self, fut: F) -> Option<T>
     where
         F: Future<Output = std::result::Result<T, selene_db::Error>>,
     {
-        self.handle.block_on(fut).ok()
+        match self.handle.block_on(fut) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                let count = self.store_read_errors.fetch_add(1, Ordering::Relaxed) + 1;
+                tracing::warn!(
+                    error = %e,
+                    store_read_errors = count,
+                    "graph-store read failed during resolution; degrading this lookup to \
+                     an empty result. References that needed it will not resolve."
+                );
+                None
+            }
+        }
+    }
+
+    /// Store reads that have failed over this context's life (see the trait's
+    /// [`ResolutionContext::store_read_errors`] for why this is not optional).
+    pub fn store_read_error_count(&self) -> u64 {
+        self.store_read_errors.load(Ordering::Relaxed)
     }
 
     /// Drop every cached read (`clear_caches()`): the node caches go stale the
@@ -320,6 +390,7 @@ impl<S: GraphStore> StoreContext<S> {
         self.method_match_cache.clear();
         self.node_by_id_cache.clear();
         self.count_cache.clear();
+        self.node_count_cache.clear();
         self.supertype_cache.clear();
         self.member_cache.clear();
         self.file_cache.clear();
@@ -390,6 +461,14 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
             self.blocking(self.store.count_nodes_matching_name_in_files(name))
                 .unwrap_or(0)
         })
+    }
+
+    fn count_nodes_named(&self, name: &str) -> u64 {
+        self.node_count_cache
+            .get_or_insert_with(name.to_string(), || {
+                self.blocking(self.store.count_nodes_named(name))
+                    .unwrap_or(0)
+            })
     }
 
     fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Node> {
@@ -527,5 +606,9 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn known_names(&self) -> &HashSet<String> {
         &self.known_names
+    }
+
+    fn store_read_errors(&self) -> u64 {
+        self.store_read_error_count()
     }
 }

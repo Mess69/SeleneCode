@@ -48,7 +48,7 @@ fn lower_name_lookup_is_case_folding() {
 /// and a fake that "helpfully" counted nodes would hide the discrepancy from
 /// every test written against it.
 #[test]
-fn count_files_with_name_counts_files_not_nodes() {
+fn count_files_with_name_counts_files_and_count_nodes_named_counts_nodes() {
     let ctx = FakeContext::new()
         .with_node(ts_fn("function:a1", "get", "src/a.ts"))
         .with_node(ts_fn("function:a2", "get", "src/a.ts")) // same file
@@ -58,7 +58,14 @@ fn count_files_with_name_counts_files_not_nodes() {
     assert_eq!(
         ctx.count_files_with_name("get"),
         2,
-        "but only two FILES contain one — the store's actual semantics"
+        "…but only two FILES contain one"
+    );
+    assert_eq!(
+        ctx.count_nodes_named("get"),
+        3,
+        "the AMBIGUOUS_NAME_CEILING (#999) guard compares against THIS one — the \
+         spike (F2) found the store's original primitive returned the file count, \
+         which would have left the guard silently never firing"
     );
 }
 

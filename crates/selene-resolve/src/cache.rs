@@ -64,10 +64,12 @@ pub struct SyncLru<K: Hash + Eq, V> {
 impl<K: Hash + Eq, V: Clone> SyncLru<K, V> {
     /// A cache holding at most `capacity` entries (clamped to ≥ 1).
     pub fn new(capacity: usize) -> Self {
-        // `max(1)`: NonZeroUsize is a type-level guarantee, and a zero-capacity
-        // cache would be a silent "cache nothing" — the clamp is honest.
-        #[allow(clippy::unwrap_used)] // max(1) makes this infallible
-        let cap = NonZeroUsize::new(capacity.max(1)).unwrap();
+        // A zero capacity would be a silent "cache nothing", so it clamps to 1.
+        // `unwrap_or(MIN)` rather than an `unwrap` on an infallible `max(1)`:
+        // the sanctioned exception in this crate is a compile-time-literal
+        // `Regex::new`, and this is not that — removing the panic path outright
+        // is strictly better than justifying one.
+        let cap = NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN);
         Self {
             inner: Mutex::new(LruCache::new(cap)),
         }

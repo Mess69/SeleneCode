@@ -293,6 +293,78 @@ async fn read_file_refuses_to_escape_the_project_root() {
     .unwrap();
 }
 
+/// **The `spawn_blocking` contract, pinned.**
+///
+/// `StoreContext`'s methods are sync and drive the async store through
+/// `Handle::block_on`, which **panics** when called from a runtime worker thread.
+/// The whole design rests on the resolver running under `spawn_blocking` (Part C's
+/// driver guarantees it) — and until now that hazard lived only in a doc comment,
+/// where a future task could violate it silently and only find out in production.
+///
+/// This test fixes it as a contract: calling a context method directly from an
+/// async task panics, loudly and immediately. If someone later "fixes" the seam by
+/// hand-rolling an executor, this test fails and they have to argue with it — which
+/// is the point, because the alternative failure mode (a silent deadlock) is far
+/// worse than a panic.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_context_method_called_from_a_runtime_worker_panics() {
+    let store = seeded_store().await;
+    let ctx = StoreContext::new(store, PathBuf::from("/tmp/fake-root"))
+        .await
+        .unwrap();
+
+    // Silence the panic's backtrace print — the panic IS the expected outcome.
+    let prev = std::panic::take_hook();
+    std::panic::set_hook(Box::new(|_| {}));
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // A warm-cache read is fine (it touches no store)...
+        assert!(ctx.known_names().contains("Dog"));
+        // ...but a GRAPH read must reach the store, and block_on cannot run here.
+        ctx.nodes_by_name("Dog")
+    }));
+    std::panic::set_hook(prev);
+
+    assert!(
+        result.is_err(),
+        "a StoreContext graph read from inside an async task MUST panic — the \
+         resolver is required to run under spawn_blocking (see context.rs's \
+         sync/async seam docs). A silent success here would mean the seam had \
+         been replaced by something that can deadlock instead."
+    );
+}
+
+/// A store read that FAILS is degraded to an empty result — but it is **counted**,
+/// never silent. Without the counter, a store outage looks byte-identical to a repo
+/// with nothing to resolve: nothing binds, and nothing says why. That is the
+/// vacuous-resolution failure the Phase 3 gate exists to catch, arriving through the
+/// back door.
+#[tokio::test(flavor = "multi_thread")]
+async fn store_read_errors_are_counted_not_swallowed() {
+    let store = seeded_store().await;
+    let ctx = StoreContext::new(store, PathBuf::from("/tmp/fake-root"))
+        .await
+        .unwrap();
+
+    tokio::task::spawn_blocking(move || {
+        assert_eq!(
+            ctx.store_read_errors(),
+            0,
+            "a healthy store reports zero read errors"
+        );
+        // A successful lookup and a clean MISS both leave the counter at zero —
+        // a miss is an ordinary outcome, not a malfunction.
+        assert_eq!(ctx.nodes_by_name("Dog").len(), 1);
+        assert!(ctx.nodes_by_name("NoSuchSymbol").is_empty());
+        assert_eq!(
+            ctx.store_read_errors(),
+            0,
+            "a MISS is not an error — only a store malfunction is"
+        );
+    })
+    .await
+    .unwrap();
+}
+
 /// An empty index yields an empty-but-valid context: no panics, no errors, every
 /// lookup a clean miss. (The resolver runs on a fresh repo before anything is
 /// indexed; a context that errored here would surface as an `isError` to an

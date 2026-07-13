@@ -231,6 +231,12 @@ impl ResolutionContext for FakeContext {
         files.len() as u64
     }
 
+    fn count_nodes_named(&self, name: &str) -> u64 {
+        self.tick();
+        // NODES, not files — the distinction the spike's F2 finding turns on.
+        self.nodes.iter().filter(|n| n.name == name).count() as u64
+    }
+
     fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Node> {
         self.tick();
         let exact = format!("{ty}::{method}");

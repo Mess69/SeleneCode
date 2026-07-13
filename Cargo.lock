@@ -3639,10 +3639,12 @@ dependencies = [
  "selene-core",
  "selene-db",
  "selene-extract",
+ "serde",
  "serde_json",
  "tempfile",
  "thiserror",
  "tokio",
+ "tracing",
 ]
 
 [[package]]

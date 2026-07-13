@@ -74,6 +74,13 @@ regex        = "1"
 fancy-regex  = "0.16"
 lru          = "0.16"
 json5        = "0.4"
+# Structured diagnostics. Adopted at Phase 3 for the ONE thing that must never be
+# silent: a store read that fails mid-resolution. Without it, a store outage is
+# byte-identical to a clean no-match — nothing resolves and nothing says why,
+# which is the vacuous-resolution failure the Phase 3 gate exists to catch.
+# A `warn!` with no subscriber installed is a no-op, so this costs nothing until
+# a surface (CLI/MCP) installs one.
+tracing      = "0.1"
 # v0 grammar crates — pinned EXACT (=x.y.z) per rust-ecosystem-2026-07.md §3:
 # node-type names are extraction contracts, so a silent grammar bump would
 # drift every language config. Only selene-extract opts in. All depend on
