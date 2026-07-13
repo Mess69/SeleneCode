@@ -69,6 +69,62 @@ fn field_valued_functions_are_methods_hof_included() {
         && u.reference_name == "track"));
 }
 
+// -----------------------------------------------------------------------------
+// Class-field initializers are walked (TS tree-sitter.ts:996-1006). A #808
+// property demotion consumes the field subtree, so its initializer's calls /
+// instantiations must be walked explicitly — and attribute to the PROPERTY
+// node (TS pushes `propNode.id` before `visitFunctionBody`).
+// -----------------------------------------------------------------------------
+
+#[test]
+fn class_field_initializer_emits_instantiates_from_the_property() {
+    let code = "class Svc {\n  client = new HttpClient();\n}\n";
+    let r = extract("svc.ts", code);
+
+    let client = find(&r, NodeKind::Property, "client").unwrap();
+    let inst: Vec<_> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Instantiates.as_str())
+        .collect();
+    assert_eq!(inst.len(), 1, "exactly one instantiates ref: {inst:?}");
+    assert_eq!(inst[0].reference_name, "HttpClient");
+    assert_eq!(inst[0].from_node_id, client.id);
+    assert_eq!(inst[0].line, Some(2));
+}
+
+#[test]
+fn class_field_initializer_emits_calls_from_the_property() {
+    let code = "class Svc {\n  handler = makeHandler();\n}\n";
+    let r = extract("svc.ts", code);
+
+    let handler = find(&r, NodeKind::Property, "handler").unwrap();
+    let calls: Vec<_> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Calls.as_str())
+        .collect();
+    assert_eq!(calls.len(), 1, "exactly one calls ref: {calls:?}");
+    assert_eq!(calls[0].reference_name, "makeHandler");
+    assert_eq!(calls[0].from_node_id, handler.id);
+    assert_eq!(calls[0].line, Some(2));
+}
+
+#[test]
+fn class_field_initializer_walk_leaves_property_nodes_unchanged() {
+    // Existing-behavior guard: walking the value must not add/alter nodes.
+    let code = "class Svc {\n  private static client = new HttpClient();\n}\n";
+    let r = extract("svc.ts", code);
+
+    let client = find(&r, NodeKind::Property, "client").unwrap();
+    assert_eq!(client.qualified_name, "Svc::client");
+    assert_eq!(client.visibility, Some(selene_core::Visibility::Private));
+    assert_eq!(client.is_static, Some(true));
+    assert!(find(&r, NodeKind::Method, "client").is_none());
+    // The initializer creates no nodes of its own — File + Class + Property.
+    assert_eq!(r.nodes.len(), 3, "{:?}", r.nodes);
+}
+
 // =============================================================================
 // describe('Arrow Function Export Extraction')
 // =============================================================================

@@ -575,6 +575,34 @@ def reg():
 }
 
 #[test]
+fn ts_class_field_object_literal_captures_class_and_property_scoped() {
+    // TS `tree-sitter.ts:996-1010` runs BOTH walks over a #808-demoted class
+    // field: `visitFunctionBody(value)` under the PROPERTY scope, then
+    // `scanFnRefSubtree(field)` under the CLASS scope. Two distinct
+    // `from_node_id`s, so the flush dedup on `(from_node_id, name)` keeps both
+    // — TS emits 2 candidates here and so do we (before the initializer walk
+    // landed, the Rust port emitted only the class-scoped one).
+    let code = r#"
+function onClick() {}
+
+class Panel {
+  static handlers = { click: onClick };
+}
+"#;
+    let r = extract_from_source("panel.ts", code, Language::Typescript);
+    let refs = fn_refs(&r);
+    assert_eq!(fn_ref_names(&r), vec!["onClick", "onClick"], "{refs:?}");
+
+    let panel = id_of(&r, NodeKind::Class, "Panel");
+    let handlers = id_of(&r, NodeKind::Property, "handlers");
+    let mut froms: Vec<&str> = refs.iter().map(|u| u.from_node_id.as_str()).collect();
+    froms.sort_unstable();
+    let mut want = vec![panel.as_str(), handlers.as_str()];
+    want.sort_unstable();
+    assert_eq!(froms, want, "one class-scoped + one property-scoped");
+}
+
+#[test]
 fn wave_two_languages_capture_nothing() {
     // Task 15b closed the v0 set (Go/Rust/Java/Kotlin/C#/Ruby/PHP now have
     // rows — see below). A wave-2 language has no grammar and no spec: it must
