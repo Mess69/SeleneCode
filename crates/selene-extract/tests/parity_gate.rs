@@ -77,7 +77,7 @@ struct Totals {
     refs: usize,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct FileCounts {
     /// The language TS detected FROM THE PATH. Compared against Rust's own
     /// detection — see `language_detection_agrees`.
@@ -108,6 +108,33 @@ struct Deviations {
     deviation: Vec<Deviation>,
     #[serde(default, rename = "name-deviation")]
     name_deviation: Vec<NameDeviation>,
+    #[serde(default, rename = "grammar-drift")]
+    grammar_drift: Vec<GrammarDrift>,
+}
+
+/// A place where the Rust port links a DIFFERENT tree-sitter grammar than TS ran,
+/// the AST shape differs, and the port compensates so the OUTPUT does not.
+///
+/// This is not a deviation — that is the whole point. It is the opposite: a claim
+/// that despite a real grammar difference, parity holds EXACTLY. Recording it as a
+/// `[[deviation]]` would be wrong (there is nothing divergent to record, and the
+/// entry would be reported stale); leaving it only in a code comment is how the
+/// last three of these got lost.
+///
+/// So it is machine-checked from the other side: `grammar_drift_holds_exact_parity`
+/// asserts the named fixture has ZERO count and ZERO name differences. If the
+/// compensation ever breaks, the fixture diffs and the gate fails — and the entry
+/// tells the next person why the code carries two shapes.
+#[derive(Debug, Deserialize)]
+struct GrammarDrift {
+    fixture: String,
+    /// The grammar crate the Rust port links.
+    rust_grammar: String,
+    /// The grammar the TS reference ran.
+    ts_grammar: String,
+    /// The AST shapes that differ.
+    shapes: String,
+    reason: String,
 }
 
 /// One justified TS↔Rust divergence. `reason` is mandatory — a deviation
@@ -603,6 +630,67 @@ fn ts_rust_extraction_name_parity() {
         }
     }
     assert!(failure.is_empty(), "{failure}");
+}
+
+/// A `[[grammar-drift]]` entry CLAIMS that a grammar difference is fully
+/// compensated. Hold it to that: the named fixture must be at EXACT parity, in
+/// counts and in names. A drift entry is otherwise just a comment that lies.
+#[test]
+fn grammar_drift_holds_exact_parity() {
+    let baseline = load_baseline();
+    let drifts = load_deviations_file().grammar_drift;
+    assert!(
+        !drifts.is_empty(),
+        "no grammar-drift entries — if that is right, delete this test"
+    );
+
+    for d in &drifts {
+        assert!(
+            d.reason.trim().len() >= 20 && !d.shapes.trim().is_empty(),
+            "grammar-drift {} must name its shapes and its reason",
+            d.fixture
+        );
+        let expected = baseline.files.get(&d.fixture).unwrap_or_else(|| {
+            panic!(
+                "grammar-drift names {}, which is not in the baseline",
+                d.fixture
+            )
+        });
+        let r = extract_fixture(&d.fixture);
+
+        let counts = diff_all(
+            &Baseline {
+                codegraph_commit: baseline.codegraph_commit.clone(),
+                file_count: 1,
+                totals: Totals {
+                    nodes: 0,
+                    edges: 0,
+                    refs: 0,
+                },
+                files: BTreeMap::from([(d.fixture.clone(), expected.clone())]),
+            },
+            &BTreeMap::from([(d.fixture.clone(), counters_from_rust(&r))]),
+        );
+        let ts = names_from_baseline(expected);
+        let rs = names_from_rust(&r);
+        let names = [
+            diff_names_one(&d.fixture, "nodes", &ts.nodes, &rs.nodes),
+            diff_names_one(&d.fixture, "refs", &ts.refs, &rs.refs),
+        ]
+        .concat();
+
+        assert!(
+            counts.is_empty() && names.is_empty(),
+            "\ngrammar-drift entry for {} claims the {} vs {} difference is fully\n\
+             compensated — but the fixture is NOT at exact parity:\n  counts: {:?}\n  names:  {:?}\n\
+             Either the compensation broke, or the claim was never true.\n",
+            d.fixture,
+            d.rust_grammar,
+            d.ts_grammar,
+            counts,
+            names
+        );
+    }
 }
 
 /// The anti-vacuity assertion. If `expected.json` were ever regenerated without

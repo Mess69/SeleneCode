@@ -2,15 +2,15 @@
 
 **Gate: GREEN, tolerance 0, on COUNTS and NAMES.** The Rust port (`selene-extract`)
 reproduces the real CodeGraph TypeScript extractor's node/edge/reference counts *and the
-identity of every symbol it names* over a shared, byte-identical fixture corpus — with two
-justified deviations, both cases where TS is wrong and we deliberately refuse to reproduce it.
+identity of every symbol it names* over a shared, byte-identical fixture corpus — with three
+justified deviations, every one a reference TS emits that can never resolve to anything.
 
 | | value |
 |---|---|
 | **Baseline** | codegraph `9ccf5d022cdc4c5f33f2cd374f23fa70401e62f0` (`src/` pristine) |
-| **Corpus** | 68 fixtures, 13 languages, `crates/selene-extract/tests/fixtures/parity/` |
-| **Gate** | `crates/selene-extract/tests/parity_gate.rs` — 8 assertions, tolerance 0 |
-| **Deviations** | 2 (C++ phantom bases; C# record base name) — see §4 |
+| **Corpus** | 69 fixtures, 13 languages, `crates/selene-extract/tests/fixtures/parity/` |
+| **Gate** | `crates/selene-extract/tests/parity_gate.rs` — 9 assertions, tolerance 0 |
+| **Deviations** | 3 (C++ phantom bases; C# enum storage type; C# record base name) + 1 grammar-drift — see §4 |
 
 ---
 
@@ -18,22 +18,23 @@ justified deviations, both cases where TS is wrong and we deliberately refuse to
 
 | | nodes | edges | refs | total |
 |---|---:|---:|---:|---:|
-| **TS (codegraph 9ccf5d0)** | 380 | 325 | 299 | **1004** |
-| **Rust (selene-extract)** | 380 | 325 | 297 | **1002** |
-| delta | 0 | 0 | −2 | **−2 (0.2%)** |
+| **TS (codegraph 9ccf5d0)** | 386 | 330 | 300 | **1016** |
+| **Rust (selene-extract)** | 386 | 330 | 297 | **1013** |
+| delta | 0 | 0 | −3 | **−3 (0.3%)** |
 
-The `−2` refs are the two C++ phantom base classes of §4 — inheritance TS invents from
-classes that have no base clause. Every other counter, and every other *name*, matches exactly.
+The `−3` refs are the three references TS emits that can never resolve (§4): two C++ phantom
+base classes, and an enum "inheriting from" `byte`. Every other counter, and every other
+*name*, matches exactly.
 
 ## 2. Per-language
 
-Counts are the TS baseline; Rust matches all of them except the two C++ phantoms.
+Counts are the TS baseline; Rust matches all of them except the three unresolvable refs of §4.
 
 | Language | fixtures | nodes | edges | refs |
 |---|--:|--:|--:|--:|
 | c | 3 | 22 | 19 | 12 |
 | cpp | 7 | 40 | 37 | 24 |
-| csharp | 4 | 35 | 31 | 16 |
+| csharp | 5 | 41 | 36 | 17 |
 | go | 6 | 31 | 28 | 28 |
 | java | 6 | 38 | 32 | 22 |
 | javascript | 5 | 23 | 18 | 18 |
@@ -44,12 +45,12 @@ Counts are the TS baseline; Rust matches all of them except the two C++ phantoms
 | rust | 6 | 29 | 28 | 33 |
 | tsx | 5 | 19 | 14 | 22 |
 | typescript | 6 | 41 | 35 | 48 |
-| **total** | **68** | **380** | **325** | **299** |
+| **total** | **69** | **386** | **330** | **300** |
 
 ## 3. What the gate asserts — and the holes it used to have
 
-Eight assertions. Five of them exist because the gate was, at various points, **green while
-comparing nothing**. Each is a hole that was actually open, not a hypothetical.
+Nine assertions. Most exist because the gate was, at various points, **green while comparing
+nothing**. Each closes a hole that was actually open, not a hypothetical.
 
 | Assertion | The hole it closes |
 |---|---|
@@ -60,6 +61,7 @@ comparing nothing**. Each is a hole that was actually open, not a hypothetical.
 | `baseline_is_not_vacuous` | **the all-zeros baseline.** `extractFromSource` with an unloaded grammar does not throw — it returns an empty result (tree-sitter.ts:427-450). A baseline dumped without grammar init would be all zeros and the gate would pass forever. Also asserts the name sets are populated, so the name half cannot pass by comparing empty vectors. |
 | `harness_catches_a_synthetic_mismatch` / `name_harness_...` | **a differ that doesn't diff.** Both perturb known-good inputs (a bumped count, a rename, an over-emission, a duplicate) and require the harness to report exactly the injected fault. |
 | `every_deviation_is_justified` | a deviation without a cited cause is an unexamined bug wearing a deviation's clothes. |
+| `grammar_drift_holds_exact_parity` | **a ledger entry that lies.** A `[[grammar-drift]]` entry *claims* a grammar difference is fully compensated; this holds it to that, by requiring the named fixture to be at zero count AND zero name difference. |
 
 Two further defenses live outside the Rust test:
 
@@ -72,9 +74,13 @@ Two further defenses live outside the Rust test:
 **Stale deviations fail the gate too** — an entry matching no observed difference is reported
 and fails, so a fixed divergence cannot leave a whitelist that silently re-permits a regression.
 
-## 4. The two deviations — TS is wrong, we stay silent
+## 4. The three deviations — TS is wrong, we stay silent
 
-`deviations.toml` is the authority; both entries carry TS line numbers.
+`deviations.toml` is the authority; every entry carries TS line numbers, a fixture that
+exercises it, and a focused test. **Every one is the same failure**: TS emits a reference to
+something that has no definition node and can never resolve. Emitting it would be worse than
+useless — it would tell an agent a falsehood about the graph. That is what the Global
+Constraints' **"silent beats wrong"** rule forbids.
 
 ### 4.1 C++ phantom base classes (`cpp/f.cpp`, `cpp/service.cpp`)
 
@@ -102,7 +108,22 @@ We gate the arm to Go. A false inheritance edge is what **"silent beats wrong"**
 would tell an agent that `Factory` derives from `Widget`.
 Guard: `cpp_member_return_type_is_not_a_base_class` (`tests/lang_cpp_test.rs`).
 
-### 4.2 C# record base name (`csharp/Records.cs`) — invisible to the count gate
+### 4.2 C# enum storage type (`csharp/Enums.cs`)
+
+```csharp
+public enum Status : byte { Active, Inactive }   // TS: extends:byte
+public enum Plain { One }                        // TS: (nothing) — the control
+```
+
+TS runs `extractInheritance` on enums (tree-sitter.ts:1873), and its `base_list` arm
+(ts:5442) takes every child of the clause — so it asserts that `Status` **inherits from**
+`byte`. It does not. C# enums cannot inherit; `: byte` chooses the storage width. `byte` is a
+`predefined_type` keyword: not a symbol, no definition node, nothing to resolve to, ever.
+
+Our enum path does not call the inheritance pass.
+Guard: `csharp_enum_storage_type_is_not_a_base_class` (`tests/lang_csharp_test.rs`).
+
+### 4.3 C# record base name (`csharp/Records.cs`) — invisible to the count gate
 
 ```csharp
 public record DerivedRec(int A, string B) : SimplePositional(A);
@@ -114,6 +135,19 @@ type head and emit `extends:SimplePositional`, which resolves.
 
 `refs.extends` is **1 on both sides**. Only the name half of the gate can see this at all; it
 is the reason that half exists.
+
+### 4.4 Not a deviation: the Kotlin grammar drift (`[[grammar-drift]]`)
+
+We link `tree-sitter-kotlin-ng`; TS ran the older `tree-sitter-kotlin`. Two AST shapes differ
+— the supertypes sit under a plural `delegation_specifiers` **wrapper**, and a `user_type`'s
+name leaf is an `identifier`, not a `type_identifier` — and the walker compensates for both.
+
+The output is **identical**, so this is the opposite of a deviation, and recording it as one
+would have made the ledger lie (it would fail `ts != rust`, and be reported stale). It gets
+its own entry kind, whose claim is machine-checked from the other side:
+`grammar_drift_holds_exact_parity` requires `kotlin/Inherit.kt` to stay at **zero** count and
+**zero** name difference. The entry explains why the code carries two shapes; the assertion
+guarantees it keeps being true. A comment could do neither.
 
 ## 5. Reproducing
 

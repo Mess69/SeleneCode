@@ -33,20 +33,33 @@
 //! deviations anywhere else — a second list would drift out of sync with the one
 //! the gate enforces.
 //!
-//! As of the Phase 2 gate the ledger holds exactly two divergences, both cases of
-//! **"silent beats wrong"** where TS is the one that is wrong:
+//! As of the Phase 2 gate the ledger holds **three divergences** — every one a case
+//! of **"silent beats wrong"**, where TS emits a reference that cannot resolve to
+//! anything and we deliberately emit nothing:
 //!
 //! 1. **C++ phantom base classes.** TS's Go-struct-embedding arm is not
 //!    language-gated, and C++ spells member declarations `field_declaration` too —
 //!    so TS reads a member's type (a return type, or a pointer field's type) as an
 //!    inherited base and emits `extends` refs from classes that have no base clause
-//!    at all. We gate that arm to Go and emit nothing.
-//! 2. **C# record base names.** For `record D(int A) : Base(A)`, TS emits the raw
+//!    at all. We gate that arm to Go.
+//! 2. **C# enum storage types.** For `enum Status : byte`, TS emits `extends:byte`
+//!    — asserting the enum *inherits from* `byte`. C# enums cannot inherit; `: byte`
+//!    picks the storage width, and `byte` is a keyword with no definition node.
+//!    [`walker`]'s enum path does not call the inheritance pass.
+//! 3. **C# record base names.** For `record D(int A) : Base(A)`, TS emits the raw
 //!    `primary_constructor_base_type` text — the literal `Base(A)`, argument list
 //!    included — which no symbol carries and no resolver can match. We unwrap to
-//!    the type head (`Base`). The counts agree, so only the NAME gate sees this.
+//!    the type head (`Base`). The counts agree, so only the NAME half sees this.
 //!
-//! Both are documented in full, with the TS line numbers, in `deviations.toml`.
+//! …plus one **grammar drift** (`[[grammar-drift]]`), which is the opposite of a
+//! deviation: Kotlin's `tree-sitter-kotlin-ng` shapes differ from the grammar TS
+//! ran, the walker compensates, and the output is *identical*. It is recorded so
+//! that the compensation is explained — and machine-checked, by asserting the
+//! fixture stays at exact count AND name parity.
+//!
+//! All four are documented in full, with TS line numbers and fixtures, in
+//! `deviations.toml`. Each is gated: a fixture exercises it, and a stale entry
+//! fails the build.
 
 mod error;
 mod fnref;

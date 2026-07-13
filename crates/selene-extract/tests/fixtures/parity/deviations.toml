@@ -5,7 +5,7 @@
 # no observed difference FAILS the gate as stale — a fixed divergence must not
 # leave a permanent whitelist behind.
 #
-# TWO kinds of entry, because the gate has two halves:
+# THREE kinds of entry:
 #
 #   [[deviation]]       a COUNT divergence.
 #     fixture = path under tests/fixtures/parity/
@@ -19,8 +19,18 @@
 #     ts, rust = the `kind:name` each engine emits ("" = that side emits nothing)
 #     reason  = as above
 #
+#   [[grammar-drift]]   NOT a divergence — the opposite. We link a different
+#     tree-sitter grammar than TS ran, the AST shape differs, and the port
+#     compensates so the OUTPUT does not. Recorded here because it explains why
+#     the code carries two shapes, and MACHINE-CHECKED from the other side:
+#     `grammar_drift_holds_exact_parity` asserts the named fixture has ZERO count
+#     and ZERO name differences. If the compensation breaks, the gate fails.
+#
 # A count divergence also shows up as a name divergence (a ref TS emits and we do
 # not is missing from both halves), so such a case needs BOTH entries.
+#
+# EVERY intentional divergence lives HERE. Not in a commit message, not in a code
+# comment — those get lost, and three of these nearly did.
 
 # =============================================================================
 # C++ — TS invents base classes that do not exist. TS is wrong; we emit nothing.
@@ -119,3 +129,59 @@ set = "refs"
 ts = "extends:SimplePositional(A)"
 rust = "extends:SimplePositional"
 reason = "TS emits the raw `primary_constructor_base_type` text, primary-ctor args and all — a name no symbol carries and no resolver can match. We unwrap to the type head, which resolves. Porting TS verbatim would be a knowingly-dead reference ('silent beats wrong')."
+
+# =============================================================================
+# C# — an enum's base list names a STORAGE TYPE, not a supertype.
+# =============================================================================
+#
+#     public enum Status : byte { Active, Inactive }
+#
+# TS calls `extractInheritance` on enum declarations (tree-sitter.ts:1873), whose
+# `base_list` arm (ts:5442-5458) takes every named child of the clause and emits it as
+# `extends`. For a C# enum the base list holds the UNDERLYING INTEGRAL TYPE, so TS emits
+# `extends:byte` — asserting that the enum `Status` INHERITS FROM `byte`.
+#
+# It does not. C# enums cannot inherit; `: byte` chooses the storage width. The ref points
+# at a `predefined_type` keyword that is not a symbol, has no definition node anywhere, and
+# can never resolve. An agent reading the graph would be told `Status` has a supertype.
+#
+# Verified against the real TS build at codegraph 9ccf5d0: `enum Status : byte` -> extends:byte;
+# the base-less control `enum Plain` in the same fixture -> no ref. So this fires on exactly
+# the construct described, and nothing else.
+#
+# NOT PORTED, deliberately: `extract_enum` does not call the inheritance pass. A false
+# inheritance edge is what "silent beats wrong" (Global Constraints) forbids. This entry, and
+# the csharp/Enums.cs fixture, exist so the decision is GATED rather than asserted in prose —
+# it previously lived only in a doc comment, where nothing checked it.
+
+[[deviation]]
+fixture = "csharp/Enums.cs"
+counter = "refs.extends"
+ts = 1
+rust = 0
+reason = "TS emits `extends:byte` for `enum Status : byte` (ts:1873 runs extractInheritance on enums; its base_list arm ts:5442 takes every child). A C# enum's base list is its STORAGE TYPE, not a supertype — enums cannot inherit — so the ref claims a false supertype and points at a keyword that has no definition node. Not ported: 'silent beats wrong'."
+
+[[deviation]]
+fixture = "csharp/Enums.cs"
+counter = "refs"
+ts = 1
+rust = 0
+reason = "Rollup of the refs.extends storage-type phantom above — the same single TS false positive, counted once in the per-kind bucket and once in the file total."
+
+[[name-deviation]]
+fixture = "csharp/Enums.cs"
+set = "refs"
+ts = "extends:byte"
+rust = ""
+reason = "Identity side of the enum storage-type phantom: TS names `byte` as a base class of `enum Status`. `byte` is a predefined_type keyword, not a symbol — there is no node it could ever resolve to. We emit nothing."
+
+# =============================================================================
+# GRAMMAR DRIFT — handled, output identical. Machine-checked to stay that way.
+# =============================================================================
+
+[[grammar-drift]]
+fixture = "kotlin/Inherit.kt"
+rust_grammar = "tree-sitter-kotlin-ng"
+ts_grammar = "tree-sitter-kotlin"
+shapes = "(1) the supertypes sit under a plural `delegation_specifiers` WRAPPER, not as direct children of `class_declaration`; (2) a `user_type`'s name leaf is an `identifier`, not a `type_identifier`."
+reason = "The Rust port links tree-sitter-kotlin-ng; the TS reference ran the older tree-sitter-kotlin. The AST differs in the two ways above, so `extract_inheritance` recurses into the wrapper and `kotlin_delegation_target` accepts BOTH leaf spellings. Output is IDENTICAL to TS (extends:BaseService, extends:Greeter) — this is not a divergence, it is the compensation that prevents one, recorded so the next reader knows why the code carries two shapes. `grammar_drift_holds_exact_parity` asserts this fixture stays at exact count AND name parity, so a broken compensation fails the gate."

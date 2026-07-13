@@ -251,3 +251,32 @@ fn extracts_csharp_class_base_list() {
         vec!["BaseItem", "IPlugin", "ClientBase"]
     );
 }
+
+/// A C# enum's base list names its STORAGE TYPE, not a supertype — so it emits NO
+/// `extends` ref.
+///
+/// TS runs `extractInheritance` on enums (tree-sitter.ts:1873) and its `base_list`
+/// arm (ts:5442) takes every child, so TS emits `extends:byte` for
+/// `enum Status : byte` — asserting the enum INHERITS FROM `byte`. It does not: C#
+/// enums cannot inherit, `: byte` picks the storage width, and `byte` is a
+/// `predefined_type` keyword with no definition node anywhere to resolve to.
+///
+/// A false inheritance edge is what "silent beats wrong" forbids, so `extract_enum`
+/// does not call the inheritance pass. Recorded as a justified deviation against
+/// `csharp/Enums.cs` in deviations.toml — this test is its semantic half.
+#[test]
+fn csharp_enum_storage_type_is_not_a_base_class() {
+    let code = "public enum Status : byte\n{\n    Active,\n    Inactive,\n}\n\npublic enum Plain\n{\n    One,\n}\n";
+    let r = extract("Enums.cs", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    assert!(
+        !r.unresolved.iter().any(|u| u.reference_kind == "extends"),
+        "an enum's storage type leaked as a base class: {:?}",
+        r.unresolved
+    );
+    // The enums and their members are still extracted normally.
+    assert!(find(&r, NodeKind::Enum, "Status").is_some());
+    assert!(find(&r, NodeKind::Enum, "Plain").is_some());
+    assert!(find(&r, NodeKind::EnumMember, "Active").is_some());
+}
