@@ -2310,6 +2310,55 @@ fn emit_ruby_require_refs(s: &mut Session<'_>, node: Node<'_>, from_id: &str) {
     });
 }
 
+/// A PHP FQN `Foo\Bar\Baz` → the stored `Foo\Bar::Baz` spelling, as an `imports`
+/// ref.
+///
+/// PHP classes are STORED namespace-qualified (`Foo\Bar::Baz` — see the PHP
+/// `namespace` capture), so this is the spelling that resolves to the RIGHT
+/// definition. It matters because Laravel-style codebases carry many same-named
+/// contracts (`Factory`, `Dispatcher`, `Guard`) in different namespaces, and a
+/// bare-name match cannot disambiguate them. A global-namespace class (no `\`)
+/// already matches by simple name, so it emits nothing.
+///
+/// Port of `pushPhpUseRef` (tree-sitter.ts:3500-3512).
+pub(crate) fn push_php_use_ref(s: &mut Session<'_>, fqn: &str, from_id: &str, node: Node<'_>) {
+    let clean = fqn.trim_start_matches('\\');
+    let Some(last_sep) = clean.rfind('\\') else {
+        return; // global-namespace class — the simple name already matches
+    };
+    let qualified = format!("{}::{}", &clean[..last_sep], &clean[last_sep + 1..]);
+    s.add_unresolved(UnresolvedReference {
+        from_node_id: from_id.to_string(),
+        reference_name: qualified,
+        reference_kind: EdgeKind::Imports.as_str().to_string(),
+        line: Some(u32::try_from(node.start_position().row).unwrap_or(0) + 1),
+        column: Some(u32::try_from(node.start_position().column).unwrap_or(0)),
+        file_path: None,
+        language: None,
+    });
+}
+
+/// Single `use Foo\Bar\Baz;` → the namespace-qualified `imports` ref.
+/// Port of `emitPhpUseRefs` (tree-sitter.ts:3453-3458).
+fn emit_php_use_refs(s: &mut Session<'_>, node: Node<'_>, from_id: &str) {
+    let mut cursor = node.walk();
+    let Some(clause) = node
+        .named_children(&mut cursor)
+        .find(|c| c.kind() == "namespace_use_clause")
+    else {
+        return;
+    };
+    let mut c2 = clause.walk();
+    let Some(qn) = clause
+        .named_children(&mut c2)
+        .find(|c| c.kind() == "qualified_name")
+    else {
+        return; // bare `use Mockery;` — no namespace to qualify
+    };
+    let fqn = get_node_text(qn, s.source()).to_string();
+    push_php_use_ref(s, &fqn, from_id, node);
+}
+
 /// Imports: hook first (single-module languages); Python inline
 /// multi-import + from-import per-name refs are core machinery (map §11).
 fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: Node<'_>) {
@@ -2356,6 +2405,14 @@ fn extract_import(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node: 
             && let Some(parent_id) = s.scope_id().cloned()
         {
             emit_ruby_require_refs(s, node, &parent_id);
+        }
+        // PHP `use Foo\Bar\Baz;` → a SECOND `imports` ref in the namespace-
+        // qualified `Foo\Bar::Baz` spelling. (Grouped `use Foo\{A, B}` never
+        // reaches here — `PhpRules::visit_node` owns it and emits its own.)
+        if s.language == Language::Php
+            && let Some(parent_id) = s.scope_id().cloned()
+        {
+            emit_php_use_refs(s, node, &parent_id);
         }
         // INSERTION POINT (Task 9): Rust use-binding refs.
         // INSERTION POINT (Task 14): PHP use refs, Ruby require refs.
@@ -2457,11 +2514,26 @@ fn extract_decorators_for(s: &mut Session<'_>, decl: Node<'_>, decorated_id: &st
         ) {
             return;
         }
+        // Find the leading identifier: skip the `@` punct, unwrap a
+        // `call_expression` if the decorator is invoked with args
+        // (tree-sitter.ts:4799-4822).
+        //
+        // The accepted node types are TS's list EXACTLY, and the two that are
+        // NOT in it are load-bearing omissions:
+        //
+        // - Python's call node is `call`, not `call_expression`, and its callee
+        //   `app.route` is an `attribute`. Accepting either made `@app.route("/x")`
+        //   emit a bogus `decorates:route` — the LAST dotted segment, which names
+        //   nothing: there is no `route` symbol, the decorator is `app.route`. TS
+        //   matches neither node type, so `target` stays null and it emits NO
+        //   `decorates` ref at all; the hop is already carried by `calls:app.route`
+        //   from the ordinary call walk. This was a Rust-side OVER-emission — the
+        //   only one the parity corpus has ever found.
         let mut target: Option<Node<'_>> = None;
         let mut cursor = n.walk();
         let children: Vec<Node<'_>> = n.named_children(&mut cursor).collect();
         for child in children {
-            if child.kind() == "call_expression" || child.kind() == "call" {
+            if child.kind() == "call_expression" {
                 target = get_child_by_field(child, "function").or_else(|| child.named_child(0));
                 if target.is_some() {
                     break;
@@ -2471,7 +2543,6 @@ fn extract_decorators_for(s: &mut Session<'_>, decl: Node<'_>, decorated_id: &st
                 child.kind(),
                 "identifier"
                     | "member_expression"
-                    | "attribute" // python decorator callee `app.route` parses as attribute
                     | "scoped_identifier"
                     | "navigation_expression"
                     | "user_type"

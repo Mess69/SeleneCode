@@ -16,6 +16,15 @@
 //! forever. Justified divergences are enumerated one-by-one in
 //! `deviations.toml`, each naming its cause.
 //!
+//! ## Two halves: counts AND names
+//!
+//! `ts_rust_extraction_count_parity` compares arity; `ts_rust_extraction_name_parity`
+//! compares IDENTITY (`kind:name`, as a sorted multiset). The second is not
+//! redundant — a count gate is structurally blind to a divergence that keeps the
+//! count and changes the thing, and a port under count-pressure is precisely the
+//! process that manufactures those. Both halves have their own deviation kind in
+//! `deviations.toml` (`[[deviation]]` / `[[name-deviation]]`).
+//!
 //! ## Failure modes this gate is built to prevent
 //!
 //! 1. **A vacuously-passing gate.** If the TS dumper had run without grammar
@@ -23,10 +32,22 @@
 //!    empty result + `parser_error` for an unloaded grammar — tree-sitter.ts:427-450).
 //!    The dumper refuses to write such a baseline, and `baseline_is_not_vacuous`
 //!    below re-asserts it from the Rust side: the committed baseline must be
-//!    non-trivial and every fixture must have parsed.
+//!    non-trivial, every fixture must have parsed, and the name sets must be
+//!    populated (else the name half would compare empty vectors and pass).
 //! 2. **Stale deviations.** A deviation entry that matches no observed
 //!    difference FAILS the gate — otherwise a fixed bug would leave a permanent
 //!    "known deviation" that silently permits a future regression.
+//! 3. **An UNGATED fixture.** The diff iterates the BASELINE, so a fixture added
+//!    to the corpus but never dumped is compared by nobody while the gate still
+//!    says green. `every_fixture_on_disk_is_gated` asserts set equality between
+//!    the corpus on disk and the baseline's keys. (This was live: ten heritage
+//!    fixtures sat ungated behind a green gate.)
+//! 4. **Comparing two different extractors.** TS detects language from the PATH,
+//!    Rust from path AND CONTENT — they can disagree (a C fixture re-detected as
+//!    C++). `language_detection_agrees` asserts they don't.
+//! 5. **A differ that doesn't diff.** `harness_catches_a_synthetic_mismatch` and
+//!    `name_harness_catches_a_synthetic_mismatch` perturb known-good inputs and
+//!    require the harness to report exactly the injected fault.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -58,6 +79,9 @@ struct Totals {
 
 #[derive(Debug, Deserialize)]
 struct FileCounts {
+    /// The language TS detected FROM THE PATH. Compared against Rust's own
+    /// detection — see `language_detection_agrees`.
+    language: String,
     #[serde(rename = "nodesByKind")]
     nodes_by_kind: BTreeMap<String, usize>,
     #[serde(rename = "edgesByKind")]
@@ -70,12 +94,20 @@ struct FileCounts {
     edge_count: usize,
     #[serde(rename = "refCount")]
     ref_count: usize,
+    /// Every node as `kind:name`, sorted. Identity, not arity.
+    #[serde(rename = "nodeNames", default)]
+    node_names: Vec<String>,
+    /// Every ref as `kind:name`, sorted. Identity, not arity.
+    #[serde(rename = "refNames", default)]
+    ref_names: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct Deviations {
     #[serde(default)]
     deviation: Vec<Deviation>,
+    #[serde(default, rename = "name-deviation")]
+    name_deviation: Vec<NameDeviation>,
 }
 
 /// One justified TS↔Rust divergence. `reason` is mandatory — a deviation
@@ -86,6 +118,22 @@ struct Deviation {
     counter: String,
     ts: usize,
     rust: usize,
+    reason: String,
+}
+
+/// One justified TS↔Rust divergence in a NAME (identity), where the counts agree.
+///
+/// A count gate is structurally blind to this: `extends:SimplePositional(A)` and
+/// `extends:SimplePositional` both count 1. `ts` and `rust` are the `kind:name`
+/// strings each engine emits for the same construct; either may be absent
+/// (`""`) if only one side emits it at all.
+#[derive(Debug, Deserialize)]
+struct NameDeviation {
+    fixture: String,
+    /// `"refs"` or `"nodes"`.
+    set: String,
+    ts: String,
+    rust: String,
     reason: String,
 }
 
@@ -132,6 +180,104 @@ fn counters_from_rust(r: &ExtractionResult) -> Counters {
 }
 
 // -----------------------------------------------------------------------------
+// Name model — identity, not arity.
+// -----------------------------------------------------------------------------
+
+/// The `kind:name` multiset of a fixture's nodes and refs, each sorted.
+///
+/// The counter model above cannot see a divergence that PRESERVES the count and
+/// changes the identity. That is not a hypothetical: TS emits
+/// `extends:SimplePositional(A)` — the raw `primary_constructor_base_type` text,
+/// primary-ctor args included — where we emit `extends:SimplePositional`. Both
+/// count 1 in `refs.extends`. Ours resolves; TS's never can.
+///
+/// A port being pushed to make counts match is precisely the process that
+/// produces "right number, wrong thing", so the gate diffs names too. Justified
+/// name divergences live in `deviations.toml` as `[[name-deviation]]`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct NameSets {
+    nodes: Vec<String>,
+    refs: Vec<String>,
+}
+
+fn names_from_baseline(f: &FileCounts) -> NameSets {
+    let mut n = NameSets {
+        nodes: f.node_names.clone(),
+        refs: f.ref_names.clone(),
+    };
+    n.nodes.sort();
+    n.refs.sort();
+    n
+}
+
+fn names_from_rust(r: &ExtractionResult) -> NameSets {
+    let mut nodes: Vec<String> = r
+        .nodes
+        .iter()
+        .map(|n| format!("{}:{}", n.kind.as_str(), n.name))
+        .collect();
+    let mut refs: Vec<String> = r
+        .unresolved
+        .iter()
+        .map(|u| format!("{}:{}", u.reference_kind, u.reference_name))
+        .collect();
+    nodes.sort();
+    refs.sort();
+    NameSets { nodes, refs }
+}
+
+/// One `kind:name` present on exactly one side.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NameDiff {
+    fixture: String,
+    set: String,
+    /// The name TS emitted and Rust did not (or `""`).
+    ts: String,
+    /// The name Rust emitted and TS did not (or `""`).
+    rust: String,
+}
+
+/// Multiset difference in both directions, so a DUPLICATE emitted once too often
+/// is caught as well as a rename.
+fn diff_names_one(fixture: &str, set: &str, ts: &[String], rust: &[String]) -> Vec<NameDiff> {
+    let mut only_ts = ts.to_vec();
+    let mut only_rust = rust.to_vec();
+    // Cancel matched pairs (multiset-aware: removes ONE occurrence per match).
+    for name in ts {
+        if let Some(i) = only_rust.iter().position(|r| r == name) {
+            only_rust.remove(i);
+            let j = only_ts.iter().position(|t| t == name).unwrap();
+            only_ts.remove(j);
+        }
+    }
+    let mut diffs = Vec::new();
+    // Pair them up positionally so a plain RENAME reads as one ts↔rust line.
+    let n = only_ts.len().max(only_rust.len());
+    for i in 0..n {
+        diffs.push(NameDiff {
+            fixture: fixture.to_string(),
+            set: set.to_string(),
+            ts: only_ts.get(i).cloned().unwrap_or_default(),
+            rust: only_rust.get(i).cloned().unwrap_or_default(),
+        });
+    }
+    diffs
+}
+
+fn diff_names_all(baseline: &Baseline, rust: &BTreeMap<String, NameSets>) -> Vec<NameDiff> {
+    let mut diffs = Vec::new();
+    for (fixture, expected) in &baseline.files {
+        let Some(rs) = rust.get(fixture) else {
+            continue;
+        };
+        let ts = names_from_baseline(expected);
+        diffs.extend(diff_names_one(fixture, "nodes", &ts.nodes, &rs.nodes));
+        diffs.extend(diff_names_one(fixture, "refs", &ts.refs, &rs.refs));
+    }
+    diffs
+}
+
+// -----------------------------------------------------------------------------
 // Harness
 // -----------------------------------------------------------------------------
 
@@ -150,11 +296,38 @@ fn load_baseline() -> Baseline {
     serde_json::from_str(&raw).expect("parse expected.json")
 }
 
-fn load_deviations() -> Vec<Deviation> {
+fn load_deviations_file() -> Deviations {
     let p = fixtures_dir().join("deviations.toml");
     let raw = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {}: {e}", p.display()));
-    let d: Deviations = toml::from_str(&raw).expect("parse deviations.toml");
-    d.deviation
+    toml::from_str(&raw).expect("parse deviations.toml")
+}
+
+fn load_deviations() -> Vec<Deviation> {
+    load_deviations_file().deviation
+}
+
+/// Every fixture ON DISK, as paths relative to the corpus root — the same keys
+/// the dumper writes. `.json`/`.toml` (the baseline and this ledger) are not
+/// fixtures.
+fn fixtures_on_disk() -> BTreeSet<String> {
+    fn walk(dir: &Path, root: &Path, out: &mut BTreeSet<String>) {
+        for entry in std::fs::read_dir(dir).expect("read fixtures dir") {
+            let p = entry.expect("dir entry").path();
+            if p.is_dir() {
+                walk(&p, root, out);
+            } else if !matches!(
+                p.extension().and_then(|e| e.to_str()),
+                Some("json") | Some("toml")
+            ) {
+                let rel = p.strip_prefix(root).expect("under root");
+                out.insert(rel.to_string_lossy().replace('\\', "/"));
+            }
+        }
+    }
+    let root = fixtures_dir();
+    let mut out = BTreeSet::new();
+    walk(&root, &root, &mut out);
+    out
 }
 
 /// Re-extract one fixture with the Rust engine, keyed by the SAME relative path
@@ -283,6 +456,155 @@ fn ts_rust_extraction_count_parity() {
     assert!(failure.is_empty(), "{failure}");
 }
 
+/// **Every fixture on disk MUST be in the baseline.**
+///
+/// `diff_all` iterates `baseline.files` — so a fixture added to the corpus but
+/// never dumped into `expected.json` is compared by NOBODY, and the gate still
+/// reports green. That is not hypothetical: this corpus carried 10 undumped
+/// heritage fixtures in exactly that state, silently ungated, while the gate
+/// said GREEN.
+///
+/// The set must match EXACTLY in both directions: an extra baseline key means a
+/// fixture was deleted without regenerating, which would panic in
+/// `extract_fixture` anyway — but fail here, with a message that says what to do.
+#[test]
+fn every_fixture_on_disk_is_gated() {
+    let baseline = load_baseline();
+    let on_disk = fixtures_on_disk();
+    let in_baseline: BTreeSet<String> = baseline.files.keys().cloned().collect();
+
+    let ungated: Vec<&String> = on_disk.difference(&in_baseline).collect();
+    let orphaned: Vec<&String> = in_baseline.difference(&on_disk).collect();
+
+    assert!(
+        ungated.is_empty(),
+        "\n{} fixture(s) on disk are NOT in the baseline — they are gated by NOTHING:\n{}\n\
+         Regenerate: cd ../codegraph && npx vite-node <selene>/tools/parity/dump-ts-extraction.mjs \\\n\
+         \x20   <selene>/crates/selene-extract/tests/fixtures/parity \\\n\
+         \x20   <selene>/crates/selene-extract/tests/fixtures/parity/expected.json\n",
+        ungated.len(),
+        ungated
+            .iter()
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+    assert!(
+        orphaned.is_empty(),
+        "\n{} baseline entr(ies) have no fixture on disk (deleted without regenerating):\n{}",
+        orphaned.len(),
+        orphaned
+            .iter()
+            .map(|f| format!("  - {f}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    );
+}
+
+/// **Both engines must be looking at the same language.**
+///
+/// TS detects from the PATH (`detectLanguage(rel)`); Rust detects from path AND
+/// CONTENT (`detect_language(rel, Some(&source))`). They can disagree — the
+/// dumper itself warns that a C fixture may be re-detected as C++. If they ever
+/// did, the gate would be comparing the output of two DIFFERENT extractors and
+/// calling the result parity. Assert they agree, per fixture.
+#[test]
+fn language_detection_agrees() {
+    let baseline = load_baseline();
+    let mut wrong = Vec::new();
+    for (rel, f) in &baseline.files {
+        let abs = fixtures_dir().join(rel);
+        let source = std::fs::read_to_string(&abs).unwrap_or_else(|e| panic!("read {rel}: {e}"));
+        let rust = detect_language(rel, Some(&source));
+        let rust = format!("{rust:?}").to_lowercase();
+        // TS spells them the same modulo case (`csharp`, `tsx`, `cpp`, …).
+        if rust != f.language.to_lowercase() {
+            wrong.push(format!("  {rel:<32} ts={:<12} rust={rust}", f.language));
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "\n{} fixture(s) where TS and Rust detect DIFFERENT languages — the gate would be\n\
+         comparing two different extractors and calling it parity:\n{}\n",
+        wrong.len(),
+        wrong.join("\n")
+    );
+}
+
+/// **Names, not just counts.** See `NameSets`.
+///
+/// The count gate is structurally blind to a divergence that keeps the count and
+/// changes the identity. We already know of one (`csharp/Records.cs`:
+/// `extends:SimplePositional(A)` vs `extends:SimplePositional`), and a port under
+/// count-pressure is exactly the thing that manufactures more. Justified name
+/// divergences are `[[name-deviation]]` entries in `deviations.toml`.
+#[test]
+fn ts_rust_extraction_name_parity() {
+    let baseline = load_baseline();
+    let devs = load_deviations_file().name_deviation;
+
+    let rust: BTreeMap<String, NameSets> = baseline
+        .files
+        .keys()
+        .map(|rel| (rel.clone(), names_from_rust(&extract_fixture(rel))))
+        .collect();
+
+    let diffs = diff_names_all(&baseline, &rust);
+
+    let mut unexplained: Vec<&NameDiff> = Vec::new();
+    let mut used: Vec<usize> = Vec::new();
+    for d in &diffs {
+        match devs.iter().position(|x| {
+            x.fixture == d.fixture && x.set == d.set && x.ts == d.ts && x.rust == d.rust
+        }) {
+            Some(i) => used.push(i),
+            None => unexplained.push(d),
+        }
+    }
+    let stale: Vec<&NameDeviation> = devs
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| !used.contains(i))
+        .map(|(_, d)| d)
+        .collect();
+
+    let mut failure = String::new();
+    if !unexplained.is_empty() {
+        failure.push_str(&format!(
+            "\n{} UNEXPLAINED name difference(s) vs the TS build (codegraph {}).\n\
+             The COUNTS may well match — this is the identity gate:\n",
+            unexplained.len(),
+            baseline.codegraph_commit
+        ));
+        for d in &unexplained {
+            failure.push_str(&format!(
+                "  {:<28} {:<6} ts={:<34} rust={}\n",
+                d.fixture,
+                d.set,
+                if d.ts.is_empty() { "—" } else { &d.ts },
+                if d.rust.is_empty() { "—" } else { &d.rust },
+            ));
+        }
+        failure.push_str(
+            "\nEach is a real bug OR a justified divergence. Fix it, or add a\n\
+             [[name-deviation]] to tests/fixtures/parity/deviations.toml (cite the TS source).\n",
+        );
+    }
+    if !stale.is_empty() {
+        failure.push_str(&format!(
+            "\n{} STALE name-deviation entr(ies) — they match no observed difference:\n",
+            stale.len()
+        ));
+        for d in &stale {
+            failure.push_str(&format!(
+                "  {:<28} {:<6} ts={:<34} rust={}\n",
+                d.fixture, d.set, d.ts, d.rust
+            ));
+        }
+    }
+    assert!(failure.is_empty(), "{failure}");
+}
+
 /// The anti-vacuity assertion. If `expected.json` were ever regenerated without
 /// grammar init, every count would be 0 and `ts_rust_extraction_count_parity`
 /// would still pass — against a Rust side that also emitted nothing. Pin the
@@ -311,6 +633,19 @@ fn baseline_is_not_vacuous() {
     // one silently-empty fixture is a hole in the gate's coverage.
     for (rel, f) in &baseline.files {
         assert!(f.node_count > 0, "{rel}: TS baseline has 0 nodes");
+        // The NAME sets must be populated and consistent with the counts —
+        // otherwise `ts_rust_extraction_name_parity` would compare empty vectors
+        // and pass vacuously, exactly the trap this whole section exists to close.
+        assert_eq!(
+            f.node_names.len(),
+            f.node_count,
+            "{rel}: baseline nodeNames missing/short — regenerate with the current dumper"
+        );
+        assert_eq!(
+            f.ref_names.len(),
+            f.ref_count,
+            "{rel}: baseline refNames missing/short — regenerate with the current dumper"
+        );
     }
 
     // ...and on the Rust side, so a fixture the Rust port cannot parse at all
@@ -343,6 +678,69 @@ fn every_deviation_is_justified() {
             d.fixture, d.counter
         );
     }
+    for d in load_deviations_file().name_deviation {
+        assert!(
+            d.reason.trim().len() >= 20,
+            "name-deviation {}/{} has no real justification: {:?}",
+            d.fixture,
+            d.set,
+            d.reason
+        );
+        assert_ne!(
+            d.ts, d.rust,
+            "name-deviation {}/{} records ts == rust — that is not a deviation",
+            d.fixture, d.set
+        );
+        assert!(
+            matches!(d.set.as_str(), "nodes" | "refs"),
+            "name-deviation {}: `set` must be \"nodes\" or \"refs\", got {:?}",
+            d.fixture,
+            d.set
+        );
+    }
+}
+
+/// The NAME differ must actually differ — the same self-test the counter differ
+/// gets. A `diff_names_one` that silently returned `vec![]` would make the
+/// identity gate green forever, which is the failure mode it exists to prevent.
+#[test]
+fn name_harness_catches_a_synthetic_mismatch() {
+    let ts = vec!["extends:Base".to_string(), "calls:f".to_string()];
+
+    // Identical ⇒ no diffs.
+    assert!(diff_names_one("x", "refs", &ts, &ts.clone()).is_empty());
+
+    // A RENAME that preserves the count — the exact blind spot of the counter
+    // gate — must be caught, and reported as one ts↔rust line.
+    let renamed = vec!["extends:Base(A)".to_string(), "calls:f".to_string()];
+    let d = diff_names_one("x", "refs", &ts, &renamed);
+    assert_eq!(d.len(), 1, "count-preserving rename must be caught: {d:?}");
+    assert_eq!(d[0].ts, "extends:Base");
+    assert_eq!(d[0].rust, "extends:Base(A)");
+
+    // An OVER-emission (Rust emits something TS never does) is caught with an
+    // empty `ts` side — this is how the Python `decorates:route` bug surfaces.
+    let extra = vec![
+        "extends:Base".to_string(),
+        "calls:f".to_string(),
+        "decorates:route".to_string(),
+    ];
+    let d = diff_names_one("x", "refs", &ts, &extra);
+    assert_eq!(d.len(), 1);
+    assert_eq!(d[0].ts, "");
+    assert_eq!(d[0].rust, "decorates:route");
+
+    // MULTIPLICITY matters: the same name emitted twice where TS emits it once
+    // is a duplicate, not a match. (A supertrait double-emit would look like this.)
+    let dupe = vec![
+        "extends:Base".to_string(),
+        "extends:Base".to_string(),
+        "calls:f".to_string(),
+    ];
+    let d = diff_names_one("x", "refs", &ts, &dupe);
+    assert_eq!(d.len(), 1, "duplicate must be caught: {d:?}");
+    assert_eq!(d[0].rust, "extends:Base");
+    assert_eq!(d[0].ts, "");
 }
 
 /// The harness must actually catch a mismatch. Without this, a bug in `diff_all`

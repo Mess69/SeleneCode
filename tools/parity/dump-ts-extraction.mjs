@@ -123,6 +123,20 @@ function countBy(items, key) {
   return Object.fromEntries(Object.entries(counts).sort(([a], [b]) => a.localeCompare(b)));
 }
 
+/**
+ * The `kind:name` of every item, sorted.
+ *
+ * NAMES, not just counts. A count gate cannot see a divergence that keeps the
+ * count and changes the identity — "extends:Base" becoming "extends:Base(A)"
+ * costs nothing in `refsByKind.extends`, yet the second can never resolve. That
+ * failure mode is exactly what a port under count-pressure produces, so the
+ * baseline records the names and the gate diffs them (see `NameSets` in
+ * parity_gate.rs). Sorted + multiset, so ORDER never matters but MULTIPLICITY does.
+ */
+function namesOf(items, kindKey, nameKey) {
+  return items.map((it) => `${it[kindKey]}:${it[nameKey]}`).sort();
+}
+
 const results = {};
 const broken = [];
 
@@ -143,6 +157,9 @@ for (const rel of files) {
     nodeCount: r.nodes.length,
     edgeCount: r.edges.length,
     refCount: r.unresolvedReferences.length,
+    // Identity, not just arity — see `namesOf`.
+    nodeNames: namesOf(r.nodes, 'kind', 'name'),
+    refNames: namesOf(r.unresolvedReferences, 'referenceKind', 'referenceName'),
   };
 }
 

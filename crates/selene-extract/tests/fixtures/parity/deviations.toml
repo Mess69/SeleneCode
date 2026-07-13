@@ -1,38 +1,121 @@
-# Justified TS<->Rust extraction count divergences (Task 19 parity gate).
+# Justified TS<->Rust extraction divergences (the Phase 2 parity gate).
 #
 # The gate's tolerance is ZERO. Every difference is either a real bug (fix it) or
 # a justified deviation (an entry here, naming its cause). An entry that matches
 # no observed difference FAILS the gate as stale — a fixed divergence must not
 # leave a permanent whitelist behind.
 #
-# Schema: fixture = path under tests/fixtures/parity/
-#         counter = "nodes" | "edges" | "refs" | "<group>.<kind>"
-#         ts, rust = the exact counts observed on each side
-#         reason  = why this is correct-by-design, citing the source
-
-# --- C++ ---------------------------------------------------------------------
-# TS emits a phantom `extends` on a class that has NO base clause. Bisected:
-#   class Factory { public: static Widget create(); };   ->  TS: extends:Widget
-# There is no inheritance in that source at all; TS's C++ base-class lookup
-# misreads the return type of the first member declaration after the `public:`
-# access specifier as a base class. (Verified in isolation against the real TS
-# build at codegraph 9ccf5d0 — the phantom ref appears with only the struct+class
-# present, before the out-of-line definition is added.)
+# TWO kinds of entry, because the gate has two halves:
 #
-# NOT PORTED, deliberately: emitting `extends:Widget` from Factory would be a
-# false inheritance edge, and the Global Constraints' "silent beats wrong" rule
-# forbids it. Rust emitting nothing here is the CORRECT behavior, and this is the
-# one place in the corpus where the Rust port is right and TS is wrong.
+#   [[deviation]]       a COUNT divergence.
+#     fixture = path under tests/fixtures/parity/
+#     counter = "nodes" | "edges" | "refs" | "<group>.<kind>"
+#     ts, rust = the exact counts observed on each side
+#     reason  = why this is correct-by-design, citing the source
+#
+#   [[name-deviation]]  an IDENTITY divergence, where the counts may well AGREE.
+#     fixture = path under tests/fixtures/parity/
+#     set     = "nodes" | "refs"
+#     ts, rust = the `kind:name` each engine emits ("" = that side emits nothing)
+#     reason  = as above
+#
+# A count divergence also shows up as a name divergence (a ref TS emits and we do
+# not is missing from both halves), so such a case needs BOTH entries.
+
+# =============================================================================
+# C++ — TS invents base classes that do not exist. TS is wrong; we emit nothing.
+# =============================================================================
+#
+# ROOT CAUSE (found by porting the very arm that causes it). TS's `extractInheritance`
+# has an arm for GO STRUCT EMBEDDING (tree-sitter.ts:5359-5376): a `field_declaration`
+# with no `field_identifier` means the type IS the name (`type DB struct { *Head }`).
+# That arm is NOT language-gated — and C++ spells a member declaration
+# `field_declaration` too. Compounding it, TS's check
+#
+#     child.namedChildren.some(c => c.type === 'field_identifier')
+#
+# only looks at DIRECT named children. In C++ a member's name is nested inside its
+# DECLARATOR, so it is never a direct child:
+#
+#     static Widget create();   ->  declarator: (function_declarator (field_identifier))
+#     Client *client_;          ->  declarator: (pointer_declarator  (field_identifier))
+#
+# Both therefore look "embedded" to TS, which takes the member's TYPE as a base class.
+# So ANY C++ member whose declarator nests its name (function, pointer, array,
+# reference) and whose type is a bare `type_identifier` becomes a phantom supertype —
+# a member's RETURN TYPE or a FIELD's type, indifferently. Primitive-typed members
+# (`int x;`) are spared only because `int` is a `primitive_type`, not a `type_identifier`.
+#
+# Verified against the real TS build at codegraph 9ccf5d0: a class with NO base clause
+# emits `extends` refs for its members' types, while a genuine
+# `class Derived : public Base` correctly emits `extends:Base`.
+#
+# NOT PORTED, deliberately: a false inheritance edge is exactly what the Global
+# Constraints' "silent beats wrong" rule forbids — it would tell an agent that
+# `Factory` derives from `Widget`, which is true in no sense. We gate the arm to Go.
+# `cpp_member_return_type_is_not_a_base_class` (tests/lang_cpp_test.rs) guards it.
+
 [[deviation]]
 fixture = "cpp/f.cpp"
 counter = "refs.extends"
 ts = 1
 rust = 0
-reason = "TS false positive: tree-sitter.ts C++ base-class lookup misreads the `Widget` return type of the first member after `public:` as a base class; the source has no base clause. Not ported — 'silent beats wrong' (Global Constraints)."
+reason = "TS false positive: its ungated Go-struct-embedding arm reads the RETURN TYPE of `static Widget create();` as an embedded base (the field_identifier is nested in a function_declarator, so TS's direct-children check misses it). `class Factory` has no base clause. Not ported — 'silent beats wrong'."
 
 [[deviation]]
 fixture = "cpp/f.cpp"
 counter = "refs"
 ts = 2
 rust = 1
-reason = "Rollup of the refs.extends phantom above — same single TS false positive, counted once in the per-kind bucket and once in the file total."
+reason = "Rollup of the refs.extends phantom above — the same single TS false positive, counted once in the per-kind bucket and once in the file total."
+
+[[name-deviation]]
+fixture = "cpp/f.cpp"
+set = "refs"
+ts = "extends:Widget"
+rust = ""
+reason = "Identity side of the cpp/f.cpp phantom: TS names a base class `Widget` that `class Factory` does not have — it is the return type of a member. We emit nothing."
+
+[[deviation]]
+fixture = "cpp/service.cpp"
+counter = "refs.extends"
+ts = 1
+rust = 0
+reason = "The same TS false positive as cpp/f.cpp, reached via a FIELD instead of a return type: TS reads `Client *client_;` as an embedded base (the field_identifier is nested in a pointer_declarator). `class Service` has no base clause. Not ported — 'silent beats wrong'."
+
+[[deviation]]
+fixture = "cpp/service.cpp"
+counter = "refs"
+ts = 5
+rust = 4
+reason = "Rollup of the refs.extends phantom above — the same single TS false positive, counted once in the per-kind bucket and once in the file total."
+
+[[name-deviation]]
+fixture = "cpp/service.cpp"
+set = "refs"
+ts = "extends:Client"
+rust = ""
+reason = "Identity side of the cpp/service.cpp phantom: TS names a base class `Client` that `class Service` does not have — it is the type of the pointer field `Client *client_;`. We emit nothing."
+
+# =============================================================================
+# C# — TS's record base NAME is malformed. Rust is right, and the COUNTS AGREE,
+# so only the identity half of the gate can see this at all.
+# =============================================================================
+#
+#     public record DerivedRec(int A, string B) : SimplePositional(A);
+#
+# The base is a `primary_constructor_base_type` whose TEXT is `SimplePositional(A)` —
+# the primary-constructor ARGUMENT LIST included. TS takes that text verbatim
+# (tree-sitter.ts:5442-5458 falls through to `getNodeText(baseType)`), emitting a
+# reference to a symbol named `SimplePositional(A)`, which exists nowhere and can never
+# resolve to the `SimplePositional` record. We unwrap to the type head.
+#
+# `refs.extends` is 1 on BOTH sides, so the count gate is structurally blind to this.
+# It is the reason the identity gate exists.
+
+[[name-deviation]]
+fixture = "csharp/Records.cs"
+set = "refs"
+ts = "extends:SimplePositional(A)"
+rust = "extends:SimplePositional"
+reason = "TS emits the raw `primary_constructor_base_type` text, primary-ctor args and all — a name no symbol carries and no resolver can match. We unwrap to the type head, which resolves. Porting TS verbatim would be a knowingly-dead reference ('silent beats wrong')."

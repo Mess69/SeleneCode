@@ -205,6 +205,18 @@ impl Session<'_> {
         let source = self.source();
         let language = self.language();
 
+        // Ruby `call` nodes use `receiver` + `method` fields (tree-sitter-ruby),
+        // NOT the `object`/`name`/`function` fields every branch below expects —
+        // so without this they fell through to the generic path, which took the
+        // RECEIVER as the callee and DROPPED the method name: `@db.query(id)`
+        // produced a `calls` ref to `@db` (unresolvable) and no method edge was
+        // ever recorded, so a Ruby method's callers/impact were invisible
+        // (tree-sitter.ts:3843-3898, #1108 follow-up).
+        if language == Language::Ruby && matches!(node.kind(), "call" | "method_call") {
+            self.extract_ruby_call(node, &caller_id);
+            return;
+        }
+
         let mut callee_name = String::new();
 
         // Java/Kotlin `method_invocation`, PHP `member_call_expression` /
@@ -463,6 +475,84 @@ impl Session<'_> {
 
         if !callee_name.is_empty() {
             self.push_call_ref(&caller_id, callee_name, node);
+        }
+    }
+
+    /// Ruby `call` / `method_call` — `receiver` + `method` fields.
+    ///
+    /// Builds `receiver.method` so the resolver (and local-variable type
+    /// inference) can link the hop; `Foo.new` stays an instantiation; `self`/
+    /// `super` receivers collapse to the bare method name. A CONSTANT receiver
+    /// (`JSON.parse`) additionally emits a `references` ref — a class used only
+    /// via its class methods still records a dependent, which is the edge the old
+    /// receiver-as-callee behavior happened to provide and which making the callee
+    /// correct would otherwise have silently dropped.
+    ///
+    /// Verbatim port of tree-sitter.ts:3843-3898.
+    fn extract_ruby_call(&mut self, node: Node<'_>, caller_id: &str) {
+        let source = self.source();
+        let Some(method_node) = get_child_by_field(node, "method") else {
+            return; // operator / element-reference call with no method name
+        };
+        let method_name = get_node_text(method_node, source).to_string();
+        if method_name.is_empty() {
+            return;
+        }
+
+        let Some(receiver_node) = get_child_by_field(node, "receiver") else {
+            // Bare `foo(...)` — just the method name (ts:3860-3862).
+            self.push_call_ref(caller_id, method_name, node);
+            return;
+        };
+        let receiver_name = get_node_text(receiver_node, source).to_string();
+
+        // `Foo.new` / `Foo::Bar.new` is construction — emit `instantiates` against
+        // the class (last `::` segment), preserving the "what creates X" edge
+        // (ts:3866-3874).
+        if method_name == "new" {
+            let class_name = match receiver_name.rfind("::") {
+                Some(i) => receiver_name[i + 2..].to_string(),
+                None => receiver_name.clone(),
+            };
+            if class_name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_uppercase())
+            {
+                self.add_unresolved(UnresolvedReference {
+                    from_node_id: caller_id.to_string(),
+                    reference_name: class_name,
+                    reference_kind: EdgeKind::Instantiates.as_str().to_string(),
+                    line: Some(u32::try_from(node.start_position().row).unwrap_or(0) + 1),
+                    column: Some(u32::try_from(node.start_position().column).unwrap_or(0)),
+                    file_path: None,
+                    language: None,
+                });
+                return;
+            }
+        }
+
+        // `self`/`super` add nothing to the callee's identity (ts:3876-3877).
+        let skip = matches!(receiver_name.as_str(), "self" | "super");
+        let callee = if skip {
+            method_name
+        } else {
+            format!("{receiver_name}.{method_name}")
+        };
+        self.push_call_ref(caller_id, callee, node);
+
+        // A capitalized (`constant`) receiver is itself a dependency on that
+        // constant (ts:3885-3897).
+        if !skip && receiver_node.kind() == "constant" {
+            self.add_unresolved(UnresolvedReference {
+                from_node_id: caller_id.to_string(),
+                reference_name: receiver_name,
+                reference_kind: EdgeKind::References.as_str().to_string(),
+                line: Some(u32::try_from(receiver_node.start_position().row).unwrap_or(0) + 1),
+                column: Some(u32::try_from(receiver_node.start_position().column).unwrap_or(0)),
+                file_path: None,
+                language: None,
+            });
         }
     }
 

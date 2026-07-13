@@ -102,6 +102,11 @@ unresolved:
     referenceKind: imports
     line: 4
     column: 0
+  - fromNodeId: "namespace:e6aa75a14e71c690de7756edf95bae66"
+    referenceName: "App\\Contracts::Sellable"
+    referenceKind: imports
+    line: 4
+    column: 0
   - fromNodeId: "class:cfd60639903721c6f9889ef13588f7a9"
     referenceName: Discountable
     referenceKind: implements

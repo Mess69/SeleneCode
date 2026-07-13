@@ -339,3 +339,54 @@ fn extracts_php_type_hint_refs() {
     // never a primitive (`string`/`int`/`void`) or a `$var` name.
     assert_eq!(type_refs, vec!["UserService", "User"]);
 }
+
+/// A `use Foo\Bar\Baz;` emits a SECOND `imports` ref in the namespace-QUALIFIED
+/// `Foo\Bar::Baz` spelling — the form PHP classes are stored under, and therefore
+/// the only one that resolves to the right definition when several namespaces carry
+/// a same-named contract (Laravel's `Factory`, `Dispatcher`, `Guard`).
+/// Port of `pushPhpUseRef` / `emitPhpUseRefs` (tree-sitter.ts:3453-3458, 3500-3512).
+#[test]
+fn php_use_emits_namespace_qualified_import_ref() {
+    let code = "<?php\n\nnamespace App\\Services;\n\nuse PHPUnit\\Framework\\TestCase;\nuse Mockery as m;\n";
+    let r = extract("composite.php", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "imports")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(
+        imports.contains(&"PHPUnit\\Framework\\TestCase"),
+        "{imports:?}"
+    );
+    assert!(
+        imports.contains(&"PHPUnit\\Framework::TestCase"),
+        "{imports:?}"
+    );
+    // A global-namespace class already matches by simple name — no `::` form.
+    assert!(imports.contains(&"Mockery"), "{imports:?}");
+    assert!(!imports.iter().any(|i| i.starts_with("::")), "{imports:?}");
+}
+
+/// GROUPED `use Foo\{A, B};` emits the qualified spelling too — one ref per member.
+#[test]
+fn php_grouped_use_emits_namespace_qualified_refs() {
+    let code = "<?php use Illuminate\\Database\\{Model, Builder};\n";
+    let r = extract("Models.php", code);
+
+    let imports: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == "imports")
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert_eq!(
+        imports,
+        vec![
+            "Illuminate\\Database::Model",
+            "Illuminate\\Database::Builder"
+        ]
+    );
+}

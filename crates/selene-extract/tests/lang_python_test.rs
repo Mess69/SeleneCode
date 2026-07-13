@@ -130,16 +130,25 @@ fn decorated_declaration_docstrings_and_decorates_refs() {
         Some("decorated class")
     );
 
-    // Decorator refs: invoked decorator unwraps its callee and takes the
-    // last dotted segment; bare decorator keeps its name.
+    // Decorator refs: a BARE decorator keeps its name; a CALL-FORM decorator emits
+    // no `decorates` ref at all.
+    //
+    // CORRECTED (this test previously pinned a bug). It asserted
+    // `decorates.contains("route")` — the last dotted segment of `@app.route("/x")`
+    // — and the implementation obliged. But `route` names NOTHING: there is no
+    // `route` symbol; the decorator is `app.route`. The real TS build emits no
+    // `decorates` ref here at all: its target loop accepts `call_expression`, not
+    // Python's `call`, and never `attribute` (tree-sitter.ts:4802-4822), so the
+    // target stays null. The hop is carried by `calls:app.route` instead — see
+    // `python_call_form_decorator_emits_no_decorates_ref`. The parity gate caught
+    // this; the test had encoded the over-emission as intent.
     let decorates: Vec<&str> = r
         .unresolved
         .iter()
         .filter(|u| u.reference_kind == "decorates")
         .map(|u| u.reference_name.as_str())
         .collect();
-    assert!(decorates.contains(&"route"), "decorates: {decorates:?}");
-    assert!(decorates.contains(&"dataclass"), "decorates: {decorates:?}");
+    assert_eq!(decorates, vec!["dataclass"], "decorates: {decorates:?}");
 }
 
 #[test]
@@ -415,4 +424,39 @@ fn python_call_arguments_are_not_base_classes() {
         "a call's args leaked as base classes: {:?}",
         r.unresolved
     );
+}
+
+/// A CALL-FORM decorator emits NO `decorates` ref.
+///
+/// This is the one OVER-emission the parity corpus has ever found on the Rust side.
+/// Python's decorator callee `app.route` is an `attribute` inside a `call` — and TS's
+/// target loop accepts neither node type (it takes `call_expression` /`identifier`/
+/// `member_expression`/…, tree-sitter.ts:4802-4822), so `target` stays null and TS
+/// emits nothing. We had accepted both, then truncated `app.route` to its last dotted
+/// segment and emitted `decorates:route` — a name that denotes NOTHING: there is no
+/// `route` symbol, the decorator is `app.route`. The real hop is already carried by
+/// `calls:app.route` from the ordinary call walk.
+#[test]
+fn python_call_form_decorator_emits_no_decorates_ref() {
+    let code = "@app.route(\"/x\")\ndef py_handler():\n    return 1\n\n\ndef py_plain():\n    return 1\n\n\n@dataclass\nclass PyModel:\n    pass\n";
+    let r = extract("mod.py", code);
+    assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
+
+    let decorates: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Decorates.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    // ONLY the bare-name decorator. Never `route`.
+    assert_eq!(decorates, vec!["dataclass"], "bogus decorates ref");
+
+    // The decorator's call is still recorded as the call it is.
+    let calls: Vec<&str> = r
+        .unresolved
+        .iter()
+        .filter(|u| u.reference_kind == EdgeKind::Calls.as_str())
+        .map(|u| u.reference_name.as_str())
+        .collect();
+    assert!(calls.contains(&"app.route"), "calls: {calls:?}");
 }

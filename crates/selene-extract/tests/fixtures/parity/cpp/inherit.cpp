@@ -1,11 +1,10 @@
-struct Base {
-    int x;
-};
 
-struct Widget {
-    int y;
-};
+template<typename T> class Base {};
+template<typename D> class CRTPBase {};
+namespace ns { template<typename T> class Tpl {}; }
+class Plain {};
 
-class FOO : public Base { int a; };
-struct BAR : public Base { int b; };
-class Multi : public Base, public Widget { int c; };
+class Widget : public Base<int> {};
+class App : public CRTPBase<App> {};
+class Q : public ns::Tpl<int> {};
+class Both : public Base<char>, public Plain {};
