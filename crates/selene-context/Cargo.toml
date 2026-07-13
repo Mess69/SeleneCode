@@ -12,6 +12,7 @@ selene-db = { path = "../selene-db" }
 selene-graph = { path = "../selene-graph" }
 indexmap = { workspace = true }
 regex = { workspace = true }
+serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 
