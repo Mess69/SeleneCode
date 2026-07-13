@@ -583,14 +583,26 @@ pub async fn find_relevant_context<S: GraphStore>(
 
     // --- pass 8: sort → slice → min-score → cap roots --------------------------
     sort_candidates(&mut scored);
-    scored.truncate(opts.search_limit * 3);
     scored.retain(|s| s.score >= opts.min_score);
+
+    // The candidate pool the ROOT PICK may reach into. TS slices to `searchLimit*3` here — nine
+    // candidates — which is ample when you only ever take the top three off the front, and far
+    // too tight the moment the pick has to *span the query's concepts*: the best `edge` symbol
+    // for "how does an unresolved reference become a graph edge" sits around rank 8–10, and a
+    // pool of 9 cannot reliably see it. The pool is widened; **the root count is unchanged**,
+    // and so is the subgraph budget below it.
+    let pool: Vec<ScoredNode> = scored
+        .iter()
+        .take(opts.search_limit * ROOT_POOL_MULTIPLE)
+        .cloned()
+        .collect();
+    scored.truncate(opts.search_limit * 3);
 
     // --- pass 9: confidence ---------------------------------------------------
     let confidence = confidence_of(&scored, &terms);
 
     // --- pass 13: root diversity ----------------------------------------------
-    let roots: Vec<ScoredNode> = pick_diverse_roots(&scored, opts.search_limit);
+    let roots: Vec<ScoredNode> = pick_diverse_roots(&pool, &terms, opts.search_limit);
     if roots.is_empty() {
         // NOT an error. "Nothing relevant" is an answer, and the caller renders guidance.
         return Ok(RelevantContext {
@@ -944,30 +956,84 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
 }
 
 
-/// **Pass 13 — root diversity.** Pick `limit` roots, **never two with the same name**.
+/// **Pass 13 — root diversity.** Pick `limit` roots that are **distinct symbols** and that
+/// **span the query's concepts**.
 ///
-/// The graph legitimately holds three nodes named `insert_edges` — a trait declaration, its
-/// impl, and a delegating impl. Ranking scored all three, and the roots came back as
-/// *`insert_edges`, `insert_edges`, `insert_edges`*: the entire root budget spent on three
-/// spellings of one symbol, and with it every downstream section — the flow seeds, the file
-/// sections, the blast radius — collapsed onto a single concept.
+/// # Two ways the root budget was being wasted, and both silently
 ///
-/// One name, one root. The rest of the budget goes to symbols that say something new.
-pub fn pick_diverse_roots(scored: &[ScoredNode], limit: usize) -> Vec<ScoredNode> {
-    let mut seen: Vec<String> = Vec::new();
-    let mut roots: Vec<ScoredNode> = Vec::new();
+/// **One name, three roots.** The graph legitimately holds three nodes named `insert_edges` —
+/// a trait declaration, its impl, and a delegating impl. Ranking scored all three, and the
+/// roots came back as *`insert_edges`, `insert_edges`, `insert_edges`*: the whole root budget
+/// spent on three spellings of one symbol, and with it every downstream section — the flow
+/// seeds, the file sections, the blast radius — collapsed onto a single point.
+///
+/// **One pole, three roots.** Worse, and much harder to see. Asked *"how does an unresolved
+/// reference become a **graph edge**"*, the three best-scoring symbols were `UnresolvedReference`,
+/// `unresolved`, `GraphStore` — every one of them on the *unresolved* side of the question, and
+/// not one on the *edge* side. The answer that came back was a perfectly true, perfectly useless
+/// chain showing how an unresolved reference is **created** (`visit_node → extract_go_imports →
+/// add_unresolved`), because that is the only story the roots could tell. The half of the
+/// question the agent actually asked about — how it *becomes an edge* — had no root to stand on.
+///
+/// A question with two concepts is answered by code that touches both. So the roots must touch
+/// both: take the best candidate for each concept the query names **first**, and only then fill
+/// what is left by score. It costs nothing when a query has one concept, and it is the whole
+/// answer when it has two.
+pub fn pick_diverse_roots(scored: &[ScoredNode], terms: &[String], limit: usize) -> Vec<ScoredNode> {
+    let groups = term_groups(terms);
 
+    /// The concepts this candidate carries.
+    let concepts_of = |s: &ScoredNode| -> IndexSet<usize> {
+        let hay = format!("{} {}", s.node.name, s.node.file_path).to_lowercase();
+        groups
+            .iter()
+            .enumerate()
+            .filter(|(_, g)| g.iter().any(|t| hay.contains(&t.to_lowercase())))
+            .map(|(i, _)| i)
+            .collect()
+    };
+
+    let mut roots: Vec<ScoredNode> = Vec::new();
+    let mut seen_names: Vec<String> = Vec::new();
+    let mut covered: IndexSet<usize> = IndexSet::new();
+
+    // **Cover an UNCOVERED concept, best-scoring first.** A plain per-concept loop is not enough:
+    // there are usually more concepts than root slots, so iterating the concepts in order spends
+    // the whole budget on the first few and never reaches the last. Asked "how does an unresolved
+    // reference become a graph *edge*", that is precisely how `edge` — the destination, the
+    // actual subject of the question — ended up with no root at all.
+    //
+    // So take the best candidate that says something NEW, and repeat. (Maximal marginal
+    // relevance: rank, minus what is already represented.)
+    while roots.len() < limit {
+        let pick = scored.iter().find(|s| {
+            !seen_names.contains(&s.node.name.to_lowercase())
+                && concepts_of(s).iter().any(|c| !covered.contains(c))
+        });
+        let Some(p) = pick else { break };
+        covered.extend(concepts_of(p));
+        seen_names.push(p.node.name.to_lowercase());
+        roots.push(p.clone());
+    }
+
+    // Fill any remaining slots by rank — **never two roots with the same name**. The graph holds
+    // three nodes named `insert_edges` (a trait decl and two impls); they are three *spellings*,
+    // not three answers, and left alone they took the entire budget.
     for s in scored {
         if roots.len() >= limit {
             break;
         }
         let name = s.node.name.to_lowercase();
-        if seen.contains(&name) {
+        if seen_names.contains(&name) {
             continue;
         }
-        seen.push(name);
+        seen_names.push(name);
         roots.push(s.clone());
     }
+
+    // The rendered order is still rank order — concept coverage decides *membership*, not
+    // presentation, and the summary line must stay sorted best-first.
+    sort_candidates(&mut roots);
     roots
 }
 

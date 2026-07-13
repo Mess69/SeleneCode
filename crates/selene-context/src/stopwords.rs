@@ -179,6 +179,16 @@ pub const STOPWORDS: &[&str] = &[
     "run",
     "runs",
     "running",
+    // ── Beyond the TS list. Each was earned by a bad answer, which is the only way a word
+    //    gets in here. ──────────────────────────────────────────────────────────────────
+    //
+    // "become": from *"how does an unresolved reference **become** a graph edge"*. It is a pure
+    // English copula — it names no code — but it survived extraction as a search term, was
+    // handed its own concept group, and that group then competed for a root slot against
+    // `edge`, the actual subject of the question. A word that can never match a symbol must
+    // never cost a root.
+    "become",
+    "becomes",
 ];
 
 macro_rules! re {
