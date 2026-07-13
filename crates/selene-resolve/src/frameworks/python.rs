@@ -33,6 +33,7 @@ use crate::frameworks::{
     FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, manifest_mentions,
     route_node,
 };
+use crate::strip_comments::strip_comments_for_regex;
 
 /// `updated_at` for every node this module emits.
 ///
@@ -142,6 +143,10 @@ impl FrameworkResolver for Flask {
 
     fn extract(&self, path: &str, content: &str, _language: Language) -> FrameworkExtraction {
         let mut out = FrameworkExtraction::default();
+        // Comment-stripped, byte-offset preserving (Task 11's shared machinery): a
+        // commented-out decorator must not become a route, and blanking must not
+        // shift the line a route id is hashed from.
+        let content = &strip_comments_for_regex(content, Language::Python);
 
         for caps in FLASK_ROUTE.captures_iter(content) {
             let Some(whole) = caps.get(0) else { continue };
@@ -242,6 +247,8 @@ impl FrameworkResolver for FastApi {
 
     fn extract(&self, path: &str, content: &str, _language: Language) -> FrameworkExtraction {
         let mut out = FrameworkExtraction::default();
+        // See `Flask::extract` — the same contract, the same shared stripper.
+        let content = &strip_comments_for_regex(content, Language::Python);
 
         for caps in FASTAPI_ROUTE.captures_iter(content) {
             let Some(whole) = caps.get(0) else { continue };

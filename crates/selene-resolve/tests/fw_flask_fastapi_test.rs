@@ -391,23 +391,30 @@ fn flask_and_fastapi_are_registered_in_order() {
     );
 }
 
-/// A commented-out route emits nothing… except that the extractors read RAW
-/// source, so this documents the actual behavior: Python comments are not stripped
-/// before the regex runs, and a `#`-commented decorator still matches.
+/// A commented-out route emits **nothing**.
 ///
-/// It is recorded rather than "fixed" because the fix belongs in the shared
-/// comment-stripper (Task 11's `strip_comments_for_regex`, Part B), and silently
-/// diverging here would make two frameworks behave differently from the rest.
+/// This shipped as a KNOWN LIMIT in Task 15 (the Python extractors read raw
+/// source) and is now closed: both run over Task 11's shared
+/// `strip_comments_for_regex`, like every other extractor. A phantom route is not
+/// a harmless artifact — it is a node an agent can be sent to, and it will read
+/// the file to find out why it is empty.
 #[test]
-fn a_commented_out_decorator_is_a_known_limit_not_a_silent_one() {
-    let src = "# @app.route('/ghost')\n# def ghost():\n#     pass\n";
+fn a_commented_out_decorator_is_not_a_route() {
+    let src = "# @app.route('/ghost')\n# def ghost():\n#     pass\n\n@app.route('/real')\ndef real():\n    pass\n";
     let out = Flask.extract("app.py", src, Language::Python);
+    assert_eq!(out.nodes.len(), 1, "the ghost is not a route");
+    assert_eq!(out.nodes[0].name, "GET /real");
     assert_eq!(
-        out.nodes.len(),
-        1,
-        "KNOWN LIMIT, recorded not hidden: the extractors run over raw source, so a \
-         commented-out decorator still registers. The comment-stripper is shared \
-         machinery (Task 11) and this framework must not grow its own — see the \
-         report."
+        out.nodes[0].start_line, 5,
+        "the stripper is byte-offset preserving, so blanking the comment above does \
+         not shift the line this route's id is hashed from"
+    );
+
+    let src = "# @router.get('/ghost')\nasync def ghost():\n    pass\n";
+    assert!(
+        FastApi
+            .extract("api.py", src, Language::Python)
+            .nodes
+            .is_empty()
     );
 }
