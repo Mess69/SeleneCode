@@ -390,8 +390,19 @@ fn this_field_receiver_unwraps_to_field_name() {
 fn chained_factory_reencodes_with_paren_marker() {
     // `Foo.getInstance().bar()` — resolution must infer bar's class from
     // what the factory RETURNS; the `().` marker splits it (#645/#608).
-    // Factory args normalize to empty parens.
-    let code = "class App {\n    void run() {\n        Foo.getInstance().bar();\n        Foo.create(cfg).baz();\n    }\n}\n";
+    //
+    // Both assertions below are chosen to DISTINGUISH the rider from the
+    // generic object+name encoding that follows it. A single-line
+    // `Foo.getInstance().bar()` does NOT: the generic path spells the
+    // receiver as the object node's raw text (`Foo.getInstance()`) and joins
+    // it with `.bar`, producing the byte-identical `Foo.getInstance().bar` —
+    // so asserting that string pins nothing. The two shapes that only the
+    // rider can produce:
+    //   1. factory ARGS normalize away  (`Foo.create(cfg).baz` → `.create()`)
+    //   2. a MULTI-LINE fluent chain collapses (the rider re-spells the
+    //      receiver from its `object`/`name` fields; the generic path would
+    //      carry the newline + indentation of the raw receiver text).
+    let code = "class App {\n    void run() {\n        Foo\n            .getInstance()\n            .bar();\n        Foo.create(cfg).baz();\n    }\n}\n";
     let r = extract("App.java", code);
     let run_id = &find(&r, NodeKind::Method, "run").unwrap().id;
     let calls: Vec<&str> = r
@@ -402,10 +413,20 @@ fn chained_factory_reencodes_with_paren_marker() {
         .collect();
     assert!(
         calls.contains(&"Foo.getInstance().bar"),
-        "chained factory re-encode: {calls:?}"
+        "multi-line chain re-spelled from object/name fields: {calls:?}"
     );
     assert!(
         calls.contains(&"Foo.create().baz"),
         "factory args normalized away: {calls:?}"
+    );
+    // Nothing carries the raw receiver text (whitespace / un-normalized args) —
+    // the generic object+name path did not win either chain.
+    assert!(
+        !calls.iter().any(|c| c.contains(char::is_whitespace)),
+        "raw receiver text leaked: {calls:?}"
+    );
+    assert!(
+        !calls.contains(&"Foo.create(cfg).baz"),
+        "factory args survived: {calls:?}"
     );
 }

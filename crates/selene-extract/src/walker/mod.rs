@@ -1120,11 +1120,17 @@ fn extract_enum_members(s: &mut Session<'_>, node: Node<'_>) {
     }
 }
 
+/// The TS `findChildByTypes` (tree-sitter.ts:1347-1353): the first named
+/// child whose kind is in `types`.
+fn find_child_by_types<'t>(node: Node<'t>, types: &[&str]) -> Option<Node<'t>> {
+    let mut cursor = node.walk();
+    node.named_children(&mut cursor)
+        .find(|c| types.contains(&c.kind()))
+}
+
 /// Type alias (`type X = ...`). Returns the TS `skipChildren` bool: `true`
 /// when the alias was reclassified and its body walked; `false` for a plain
 /// alias (the walker then recurses into the alias value, matching TS).
-/// `resolve_type_alias_kind` reclassification bodies (Go `type_spec`
-/// struct/interface, C typedefs) land with Tasks 9/13 — INSERTION POINT.
 fn extract_type_alias(
     rules: &'static dyn LanguageRules,
     s: &mut Session<'_>,
@@ -1137,13 +1143,67 @@ fn extract_type_alias(
     let kind = rules
         .resolve_type_alias_kind(node, s.source())
         .unwrap_or(NodeKind::TypeAlias);
-    // INSERTION POINT (Task 9/13): struct/enum/interface reclassification
-    // with body walks (returns true).
     let extra = NodeExtra {
         docstring: get_preceding_docstring(node, s.source()),
         is_exported: rules.is_exported(node, s.source()),
         ..NodeExtra::default()
     };
+
+    // Reclassified struct/enum (tree-sitter.ts:2840-2859 / 2861-2885): the
+    // alias WRAPS the definition — Go `type Foo struct {…}` (type_spec →
+    // struct_type) and, ubiquitously, the C/C++ header idiom
+    // `typedef struct {…} Foo;` / `typedef enum {…} Status;`, whose inner
+    // specifier is ANONYMOUS. TS creates the node from the TYPEDEF name,
+    // pushes it, walks the inner specifier's body underneath, and returns
+    // true (skip children). Skipping children is load-bearing: let the
+    // generic ladder reach the inner `struct_specifier`/`enum_specifier` and
+    // it mints a phantom `<anonymous>` node and hangs the members off it
+    // (`<anonymous>::OK` — a QN no call site or FTS query can ever match).
+    if matches!(kind, NodeKind::Struct | NodeKind::Enum) {
+        let Some(id) = s
+            .create_node(kind, &name, node, extra)
+            .and_then(|i| s.id_of(i))
+        else {
+            return true; // TS: `if (!structNode) return true`
+        };
+        s.push_scope(id);
+        let t = rules.tables();
+        if kind == NodeKind::Struct {
+            // Go-style `type` field first, then the inner struct child (C
+            // typedef struct). INSERTION POINT (Task 7): extract_inheritance
+            // on the inner node (Go struct embedding).
+            if let Some(type_child) = get_child_by_field(node, "type")
+                .or_else(|| find_child_by_types(node, t.struct_types))
+            {
+                let body = get_child_by_field(type_child, t.body_field).unwrap_or(type_child);
+                let mut cursor = body.walk();
+                let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+                for child in children {
+                    visit(rules, s, child);
+                }
+            }
+        } else if let Some(inner_enum) = find_child_by_types(node, t.enum_types)
+            && let Some(body) = resolve_body(rules, inner_enum)
+        {
+            // Enum members go through the enum-member path so `enumerator`
+            // children become `enum_member` nodes under the alias.
+            let mut cursor = body.walk();
+            let children: Vec<Node<'_>> = body.named_children(&mut cursor).collect();
+            for child in children {
+                if t.enum_member_types.contains(&child.kind()) {
+                    extract_enum_members(s, child);
+                } else {
+                    visit(rules, s, child);
+                }
+            }
+        }
+        s.pop_scope();
+        return true;
+    }
+
+    // Plain alias (and the `interface` reclassification, which no v0 language
+    // reaches through this path — Go's `visit_node` consumes interface
+    // `type_spec`s before the ladder gets here).
     let Some(idx) = s.create_node(kind, &name, node, extra) else {
         return false;
     };
@@ -1585,6 +1645,49 @@ fn extract_variable(rules: &'static dyn LanguageRules, s: &mut Session<'_>, node
             let extra = NodeExtra {
                 docstring: docstring.clone(),
                 signature,
+                is_exported,
+                ..NodeExtra::default()
+            };
+            s.create_node(kind, &name, child, extra);
+        }
+        return;
+    }
+
+    // C++ file-scope `Foo x;` — the TS GENERIC variable fallback
+    // (tree-sitter.ts:2802-2818): scan the named children for a bare
+    // `identifier` (or `variable_declarator`) declarator and mint it. A C++
+    // `declaration`'s type sits in the `type` field, so the left/named_child(0)
+    // shape below only ever sees the TYPE node and a global object
+    // (`Foo gInstance;`, `static Registry reg;`) went unextracted entirely —
+    // no node, so no impact-radius edges into it.
+    //
+    // Gated to C++ although TS runs this fallback for every language that has
+    // no branch of its own (C++/Java/C#/Kotlin/PHP/Rust). The others cannot
+    // reach here or must not: Rust/PHP/Kotlin/Go consume their variable kinds
+    // in `visit_node` hooks first; Java/C# variable kinds are body-local
+    // (their file-scope walk never sees one). Kotlin is the sharp edge — a
+    // destructuring `val (a, b) = pair` falls THROUGH its hook to here, and
+    // the unfiltered TS scan mints the RHS `pair` as a phantom variable
+    // (verified against this tree). C++ is therefore the only language whose
+    // shape the fallback actually governs for us.
+    if s.language() == Language::Cpp {
+        let is_exported = rules.is_exported(node, s.source());
+        let mut cursor = node.walk();
+        let children: Vec<Node<'_>> = node.named_children(&mut cursor).collect();
+        for child in children {
+            if !matches!(child.kind(), "identifier" | "variable_declarator") {
+                continue;
+            }
+            let name = if child.kind() == "identifier" {
+                get_node_text(child, s.source()).to_string()
+            } else {
+                extract_name(rules, child, s.source())
+            };
+            if name.is_empty() || name == "<anonymous>" {
+                continue;
+            }
+            let extra = NodeExtra {
+                docstring: docstring.clone(),
                 is_exported,
                 ..NodeExtra::default()
             };
