@@ -10,27 +10,23 @@ recorded in `expected.json`.
 
 | Gate | Test | State |
 |---|---|---|
-| **Resolution parity** — TS ⇄ Rust edge identity, tolerance 0 | `crates/selene-resolve/tests/resolution_parity_gate.rs` | **RED** — one edge, and it is the synthesizers |
-| **Dispatch coverage** — *THE* Phase 3 gate | `crates/selene-resolve/tests/dispatch_coverage_gate.rs` | **GREEN** — 11/11 flows closed end-to-end |
+| **Resolution parity** — TS ⇄ Rust edge identity, tolerance 0 | `crates/selene-resolve/tests/resolution_parity_gate.rs` | **GREEN** — 303 edges, tolerance 0 |
+| **Dispatch coverage** — *THE* Phase 3 gate | `crates/selene-resolve/tests/dispatch_coverage_gate.rs` | **GREEN** — 11 framework + 4 synthesizer flows, 3 controls clean |
 
 ### Parity, in numbers
 
-Corpus: 11 project trees (express, react, django, flask, fastapi, spring, gin, axum,
-laravel, rails, aspnet).
+Corpus: 18 project trees — 11 framework, 4 synthesizer, 3 control.
 
 ```
-TS baseline:  199 edges    contains 114 · imports 37 · references 27 · calls 21
-                           tree-sitter 198 · heuristic 1 (jsx-render)
+TS baseline:  303 edges    contains 175 · imports 55 · calls 39 · references 31 · instantiates 3
+                           tree-sitter 298 · heuristic 5
+                           synthesized: callback, event-emitter, react-render, jsx-render
 
-Rust:         198 matched · 1 missing · 0 extra          (99.5% edge identity)
+Rust:         303 matched · 0 missing · 0 extra     — tolerance 0, all five channels
 ```
 
-The single missing edge is `function:App --calls[heuristic|jsx-render]--> function:Article`.
-It is **not** a divergence and is deliberately **not** deviation-listed: it is an unbuilt
-feature (the synthesizers — plan Tasks 21–26). Listing it would turn *"we have not built
-synthesis"* into a green gate, which is the exact false confidence Phase 2's counts-only
-gate manufactured. **The gate stays red until synthesis exists**, and it now says
-precisely that one thing.
+The gate went from RED (1 missing, the `jsx-render` heuristic edge) to GREEN when
+synthesis was actually **wired into the pipeline** — see the third seam, below.
 
 ### Coverage, in flows
 
@@ -55,7 +51,7 @@ Zero half-bridged flows.
 
 ---
 
-## What the gate caught — three inert seams, one bug class
+## What the gate caught — THREE inert seams, one bug class
 
 This is the headline, and it is worth stating plainly: **three of the resolver's seams
 were stubs that returned "nothing found", and every unit test passed anyway.**
@@ -65,6 +61,7 @@ were stubs that returned "nothing found", and every unit test passed anyway.**
 | `StoreContext::import_mappings()` | **Ladder step 8 in its entirety.** Go cross-package (#388), JVM FQN imports (#314), barrel/renamed re-exports (#629) *and* the pre-filter's `matches_any_import` escape, path aliases, Python module members, Rust `crate::` paths, C/C++ includes |
 | `StoreContext::re_exports()` | every renamed re-export (`export { signIn as login }`) |
 | `StoreContext::new`'s four singletons | `go.mod` (so *every* Go cross-package call), tsconfig aliases, workspace packages, C++ include dirs |
+| `synth::run_synthesis` | **all five dispatch channels.** The passes existed, their unit tests passed, and no pipeline anywhere called them |
 
 The loaders all existed. They were written, they were tested, and **they had never once
 been called in production.** Tasks 4–6 were three commits of dead code.
@@ -114,22 +111,28 @@ a prefix would make it pass on a route it never found.
 
 ## Coverage limits (what these gates do NOT prove)
 
-1. **Synthesis is entirely ungated** — plan Tasks 21–26 do not exist. There is no
-   `registered_synthesizers()`, no `synth-*` fixture, no `_control/` precision corpus.
-   `the_synthesizer_half_of_this_gate_is_not_built` is a tripwire that fails the moment
-   synthesis lands, so it cannot be quietly left ungated.
-2. **The core resolver is only gated where the framework fixtures happen to exercise it.**
+1. **The core resolver is only gated where the framework fixtures happen to exercise it.**
    The plan's `core-*` corpus (import resolution per ecosystem, a chained call, an
    ambiguous name that must **decline** rather than guess, and the negative control — a
    chained call on a type *lacking* the method ⇒ **no edge**) is not built. This is the
    largest remaining hole and it is **not blocked** by anything.
-3. **There is no `batch.rs`** (plan Task 27). Both gates drive the pipeline themselves,
+2. **There is no `batch.rs`** (plan Task 27). Both gates drive the pipeline themselves,
    running the four steps the product's driver must run — including the ordering contract
    (**build the resolution context AFTER `run_framework_extract`**, or `known_names`
    predates the route/config nodes and every framework reference is pre-filtered away).
    When `batch.rs` lands, that contract must move into it.
-4. **The corpus is small** (11 projects, 199 edges). It proves the mechanisms; it does not
+3. **The corpus is small** (18 projects, 303 edges). It proves the mechanisms; it does not
    prove behavior at repo scale.
+
+### The controls are half the proof
+
+Every positive assertion in either gate is satisfied by a synthesizer that bridges
+*everything in sight*. Only a **control** — ordinary code containing none of the dispatch
+shapes — catches one that guesses, and a channel that guesses is far worse than one that
+misses: a wrong dispatch edge is a confident lie about how the program runs. Both the
+dumper and the gate now enforce the control property from opposite ends (the dumper
+refuses to *write* a baseline in which a control carries a heuristic edge; the gate
+refuses to *accept* one).
 
 ## Deviations (machine-checked; a stale entry fails the gate)
 
