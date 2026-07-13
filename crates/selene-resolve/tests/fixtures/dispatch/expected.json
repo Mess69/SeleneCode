@@ -607,6 +607,233 @@
       "frameworks": [],
       "routes": 3
     },
+    "fastapi": {
+      "edges": [
+        {
+          "source": "file:@main.py",
+          "target": "function:index@main.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.py",
+          "target": "function:list_articles@services.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.py",
+          "target": "import:fastapi@main.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.py",
+          "target": "import:services@main.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.py",
+          "target": "variable:app@main.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@services.py",
+          "target": "function:list_articles@services.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:index@main.py",
+          "target": "function:list_articles@services.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /articles@main.py:8",
+          "target": "function:index@main.py",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 8,
+      "crossFileEdges": 2,
+      "frameworks": [],
+      "routes": 1
+    },
+    "flask": {
+      "edges": [
+        {
+          "source": "file:@app.py",
+          "target": "function:create@app.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app.py",
+          "target": "function:create_article@services.py",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app.py",
+          "target": "import:flask@app.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app.py",
+          "target": "import:services@app.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@app.py",
+          "target": "variable:app@app.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@services.py",
+          "target": "function:create_article@services.py",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:create@app.py",
+          "target": "function:create_article@services.py",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:POST /articles@app.py:8",
+          "target": "function:create@app.py",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 8,
+      "crossFileEdges": 2,
+      "frameworks": [],
+      "routes": 1
+    },
+    "gin": {
+      "edges": [
+        {
+          "source": "file:@handlers/article.go",
+          "target": "function:CreateArticle@handlers/article.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@handlers/article.go",
+          "target": "import:example.com/blog/service@handlers/article.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@handlers/article.go",
+          "target": "import:example.com/blog/service@handlers/article.go",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@handlers/article.go",
+          "target": "import:github.com/gin-gonic/gin@handlers/article.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@handlers/article.go",
+          "target": "import:github.com/gin-gonic/gin@handlers/article.go",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.go",
+          "target": "function:main@main.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.go",
+          "target": "import:example.com/blog/handlers@main.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.go",
+          "target": "import:example.com/blog/handlers@main.go",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.go",
+          "target": "import:github.com/gin-gonic/gin@main.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@main.go",
+          "target": "import:github.com/gin-gonic/gin@main.go",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@service/article.go",
+          "target": "function:Create@service/article.go",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "function:CreateArticle@handlers/article.go",
+          "target": "function:Create@service/article.go",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:POST /articles@main.go:11",
+          "target": "function:CreateArticle@handlers/article.go",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 11,
+      "crossFileEdges": 2,
+      "frameworks": [],
+      "routes": 1
+    },
     "laravel": {
       "edges": [
         {
@@ -1148,6 +1375,112 @@
       "crossFileEdges": 13,
       "frameworks": [],
       "routes": 6
+    },
+    "spring": {
+      "edges": [
+        {
+          "source": "class:ArticleController@src/main/java/com/example/controller/ArticleController.java",
+          "target": "field:articleService@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleController@src/main/java/com/example/controller/ArticleController.java",
+          "target": "field:greeting@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleController@src/main/java/com/example/controller/ArticleController.java",
+          "target": "method:getAll@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "class:ArticleService@src/main/java/com/example/service/ArticleService.java",
+          "target": "method:listArticles@src/main/java/com/example/service/ArticleService.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "constant:app.greeting@src/main/java/com/example/controller/ArticleController.java",
+          "target": "constant:greeting@src/main/resources/application.yml",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "field:articleService@src/main/java/com/example/controller/ArticleController.java",
+          "target": "class:ArticleService@src/main/java/com/example/service/ArticleService.java",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/main/java/com/example/controller/ArticleController.java",
+          "target": "namespace:com.example.controller@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "file:@src/main/java/com/example/service/ArticleService.java",
+          "target": "namespace:com.example.service@src/main/java/com/example/service/ArticleService.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "method:getAll@src/main/java/com/example/controller/ArticleController.java",
+          "target": "method:listArticles@src/main/java/com/example/service/ArticleService.java",
+          "kind": "calls",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:com.example.controller@src/main/java/com/example/controller/ArticleController.java",
+          "target": "class:ArticleController@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:com.example.controller@src/main/java/com/example/controller/ArticleController.java",
+          "target": "class:ArticleService@src/main/java/com/example/service/ArticleService.java",
+          "kind": "imports",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:com.example.controller@src/main/java/com/example/controller/ArticleController.java",
+          "target": "import:com.example.service.ArticleService@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "namespace:com.example.service@src/main/java/com/example/service/ArticleService.java",
+          "target": "class:ArticleService@src/main/java/com/example/service/ArticleService.java",
+          "kind": "contains",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        },
+        {
+          "source": "route:GET /articles@src/main/java/com/example/controller/ArticleController.java:14",
+          "target": "method:getAll@src/main/java/com/example/controller/ArticleController.java",
+          "kind": "references",
+          "provenance": "tree-sitter",
+          "synthesizedBy": null
+        }
+      ],
+      "nodes": 16,
+      "crossFileEdges": 4,
+      "frameworks": [],
+      "routes": 1
     }
   }
 }

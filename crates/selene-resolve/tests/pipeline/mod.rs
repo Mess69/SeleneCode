@@ -166,6 +166,33 @@ impl Pipeline {
         hits.remove(0)
     }
 
+    /// Every node of a kind — for asserting a *node* exists at all (the yaml config
+    /// keys, whose absence makes every `@Value` dangle).
+    pub async fn nodes_of_kind(&self, kind: NodeKind) -> Vec<Node> {
+        let mut ns = self.store().get_nodes_by_kind(kind).await.expect("by kind");
+        ns.sort_by(|a, b| a.id.cmp(&b.id));
+        ns
+    }
+
+    /// The nodes pointing AT this one — the direction that proves a bridge closed
+    /// from the far side (does anything actually reach this config key?).
+    pub async fn sources_of(&self, id: &str) -> Vec<Node> {
+        let map = self
+            .store()
+            .incoming_batch(&[id.to_string()], FLOW_KINDS)
+            .await
+            .expect("incoming");
+        let mut nodes: Vec<Node> = map
+            .get(id)
+            .cloned()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|e| e.node)
+            .collect();
+        nodes.sort_by(|a, b| a.id.cmp(&b.id));
+        nodes
+    }
+
     /// The nodes this node points at along [`FLOW_KINDS`].
     ///
     /// For the frameworks whose reference is a **precise claim**
@@ -207,6 +234,31 @@ impl Pipeline {
     pub async fn route_names(&self) -> Vec<String> {
         self.routes().await.into_iter().map(|n| n.name).collect()
     }
+}
+
+/// [`index_and_resolve`] with the frameworks **detected** rather than injected.
+///
+/// The coverage gate uses this: injecting the resolver list would test the framework
+/// while bypassing its `detect()`, and a framework that cannot detect itself in its own
+/// fixture is a framework that emits nothing in production.
+pub async fn index_and_resolve_detected(dir: &Path) -> Pipeline {
+    let store = SurrealStore::in_memory().await.expect("in-memory store");
+    store.apply_schema().await.expect("schema");
+    let indexer = Indexer::new(dir.to_path_buf(), store);
+    indexer.index_all(None).await;
+    let ctx = StoreContext::new(indexer.into_store(), dir.to_path_buf())
+        .await
+        .expect("store context");
+    let detected: Vec<&'static dyn FrameworkResolver> =
+        selene_resolve::frameworks::detect_frameworks(&ctx);
+    assert!(
+        !detected.is_empty(),
+        "{dir:?}: NO framework detected in its own fixture — detect() is the first hop \
+         of every flow, and it emits nothing"
+    );
+    let store = ctx.into_store();
+    drop(store);
+    index_and_resolve(dir, &detected).await
 }
 
 /// Index `dir`, emit framework nodes, resolve every reference, persist the edges.

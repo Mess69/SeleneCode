@@ -45,3 +45,28 @@ reason = """
 The `pages/` flavor of the same improvement — see the entry above. Both route \
 flavors (pages/ and app/) are covered so a regression in either shows up here.
 """
+
+[[deviation]]
+project = "flask"
+side = "rust"
+edge = "file:@app.py -[imports|tree-sitter]-> file:@services.py"
+reason = """
+`from services import create_article`: both engines bind `create_article` to the \
+function (that edge matches). We ALSO resolve the module-source reference \
+(`services`) to the module's FILE, giving a file→file dependency edge; TS emits that \
+edge only when the imported NAME is itself a module (`from . import views`), not when \
+it is a symbol. Ours is a true edge — app.py genuinely depends on services.py, and \
+file→file dependency edges are what impact analysis walks — so this is a superset, \
+not a wrong answer. Recorded rather than suppressed. If parity with TS's narrower \
+model is preferred, the fix is to gate `resolve_python_absolute_module` on the ref \
+being the imported name rather than the source module; say the word.
+"""
+
+[[deviation]]
+project = "fastapi"
+side = "rust"
+edge = "file:@main.py -[imports|tree-sitter]-> file:@services.py"
+reason = """
+The same finding as the `flask` entry above, in the fastapi project — kept as its own \
+entry so that a fix in one project cannot silently mask the other.
+"""

@@ -46,7 +46,11 @@ use selene_db::GraphStore;
 
 use crate::cache::{SyncLru, cache_limit, content_cache_limit};
 use crate::error::{ResolveError, Result};
+use crate::imports::aliases::load_project_aliases;
+use crate::imports::cpp_includes::load_cpp_include_dirs;
+use crate::imports::go_module::load_go_module;
 use crate::imports::mappings::{extract_import_mappings, extract_re_exports};
+use crate::imports::workspace::load_workspace_packages;
 use crate::types::{AliasMap, GoModule, ImportMapping, ReExport, WorkspacePackages};
 
 // =============================================================================
@@ -321,6 +325,11 @@ impl<S: GraphStore> StoreContext<S> {
         let limit = cache_limit();
         let content_limit = content_cache_limit(limit);
 
+        let aliases = load_project_aliases(&root);
+        let go_module = load_go_module(&root);
+        let workspace_packages = load_workspace_packages(&root);
+        let cpp_include_dirs = load_cpp_include_dirs(&root);
+
         Ok(Self {
             store,
             root,
@@ -346,10 +355,20 @@ impl<S: GraphStore> StoreContext<S> {
             re_export_cache: SyncLru::new(limit),
             kind_cache: std::sync::Mutex::new(HashMap::new()),
             store_read_errors: AtomicU64::new(0),
-            aliases: None,
-            go_module: None,
-            workspace_packages: None,
-            cpp_include_dirs: Vec::new(),
+            // ⚠ These four were `None` / empty — the loaders existed, were tested, and
+            // were never called. Same bug as `import_mappings`, same blast radius: a
+            // missing `go.mod` makes `resolve_go_cross_package` (#388) return None for
+            // EVERY Go cross-package call; a missing alias map makes every `@/lib/x`
+            // import unresolvable; and none of it fails, it just quietly resolves
+            // nothing. The resolution parity gate is what found them (TS resolved
+            // gin's `service.Create()`, we did not).
+            //
+            // Loaded once, here, at construction — they are project singletons and a
+            // per-reference read would be quadratic.
+            aliases,
+            go_module,
+            workspace_packages,
+            cpp_include_dirs,
         })
     }
 
