@@ -45,7 +45,31 @@
 //! - **Index lines once per file** ([`LineIndex`]), never `slice().split()` per
 //!   match.
 //! - **Chunk the inserts** ([`INSERT_CHUNK`]).
+//!
+//! # The sync/async seam — every pass must respect it
+//!
+//! A pass is `async` (it reads the store), but [`ResolutionContext`] is a **sync**
+//! seam that drives the async store through `block_on` internally. Calling a
+//! context method straight from a pass's async body therefore **panics** —
+//! *"cannot start a runtime from within a runtime"* — because the thread is
+//! currently driving tasks.
+//!
+//! So every ctx-touching section of every pass is wrapped in
+//! `tokio::task::block_in_place(|| …)`, which hands the worker's other tasks off
+//! and makes the context's internal `block_on` legal. The shape is:
+//!
+//! ```text
+//! async  : read the store (stream nodes, fetch edges)
+//! sync   : block_in_place — classify / correlate / resolve names, over ctx
+//! async  : read the store again if the sync phase asked a new question
+//! sync   : block_in_place — build the edges
+//! ```
+//!
+//! This is why the passes read as "gather, then decide" rather than interleaving:
+//! the seam forces the phases apart, and that is a feature — it is also what keeps
+//! the store round-trips batched instead of one-per-candidate.
 
+pub mod callback;
 pub mod lineindex;
 
 use std::collections::BTreeSet;
@@ -108,18 +132,21 @@ pub struct SynthPassDef<S: GraphStore> {
 /// **Phase 8 slot:** Go's `contains` + `implements` pre-passes must be inserted
 /// **first**, ahead of everything here — the interface-dispatch passes read the
 /// edges they create.
-pub const SYNTH_PASS_ORDER: &[&str] = &[];
+pub const SYNTH_PASS_ORDER: &[&str] = &["callback"];
 
 /// The pass table, monomorphized for `S`. Must match [`SYNTH_PASS_ORDER`] exactly
 /// — `registry_agrees_with_the_declared_order` fails the moment they drift.
 pub fn synth_passes<S: GraphStore>() -> Vec<SynthPassDef<S>> {
-    vec![]
+    vec![SynthPassDef {
+        name: "callback",
+        languages: JS_FAMILY,
+        run: |s, c| Box::pin(callback::run(s, c)),
+    }]
 }
 
 /// The language gate every v0 pass shares. The observer/emitter/JSX shapes are
 /// all `this.`- and JSX-based; a broader gate (Java/C# `this.` works too) was
 /// never validated and is a Phase 8 question.
-#[allow(dead_code)]
 pub(crate) const JS_FAMILY: &[Language] = &[
     Language::Typescript,
     Language::Tsx,
@@ -219,7 +246,6 @@ pub async fn run_synthesis_with<S: GraphStore>(
 ///
 /// `None` when the file is unreadable or the range is nonsense; a pass then
 /// simply skips that node (errors collected, never thrown).
-#[allow(dead_code)] // consumed by Tasks 22–25
 pub(crate) fn node_body(ctx: &dyn ResolutionContext, node: &Node) -> Option<String> {
     let lines = ctx.file_lines(&node.file_path)?;
     let start = node.start_line.saturating_sub(1) as usize;
@@ -250,7 +276,6 @@ pub(crate) fn enclosing_fn(nodes: &[Node], file: &str, line: u32) -> Option<Node
 }
 
 /// Build a synthesized edge. Always `Heuristic`; `synthesizedBy` is the pass name.
-#[allow(dead_code)] // consumed by Tasks 22–25
 pub(crate) fn synth_edge(
     source: &str,
     target: &str,
