@@ -1221,6 +1221,21 @@ fn inheritance_targets<'t>(clause: Node<'t>, single: bool) -> Vec<Node<'t>> {
 /// `Inherits`/`Implements` statements, Objective-C `class_interface`, Swift
 /// `inheritance_specifier`, CFML `component_attribute`) are not ported — those
 /// languages are not in v0.
+///
+/// # Gating
+///
+/// Most arms match on the child's node kind alone and are **ungated by design**
+/// (TS-faithful): no v0 grammar reuses `extends_clause` / `superclass` /
+/// `base_clause` / `extends_interfaces` / `constraint_elem` / `type_elem` with
+/// different semantics — collision-checked across the wave. Exactly two arms
+/// need a guard and have one: Python's `argument_list` is gated on the OWNER
+/// kind (`class_definition`, so a *call*'s arguments can never be read as base
+/// classes), and Go's `field_declaration` is gated on the language — ungated it
+/// reproduces TS's own phantom-base bug, because C++ spells member declarations
+/// `field_declaration` too and nests the member name inside its declarator, so
+/// TS reads the member's TYPE as an embedded base (see
+/// `tests/fixtures/parity/deviations.toml`). **A wave-2 language must re-check
+/// this collision set before reusing any of the ungated kinds.**
 fn extract_inheritance(s: &mut Session<'_>, node: Node<'_>, class_id: &str) {
     let node_kind = node.kind();
     let mut cursor = node.walk();

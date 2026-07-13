@@ -5,8 +5,13 @@
 //! later language tasks only *fill in*, never reshape.
 //!
 //! Registry: [`rules_for`] — v0 wires Python (Task 5), TS/JS (Tasks 7/8),
-//! Go/Rust (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14) — the
-//! full v0 thirteen.
+//! Go/Rust (Task 9), Java (10), Kotlin (11), C/C++ (13), C#/PHP/Ruby (14).
+//!
+//! **Counting rule** (the two numbers in the docs are the same wave): **12
+//! languages**, **13 grammars**. `tsx` is its own tree-sitter grammar but not
+//! its own language — it shares TypeScript's rules. Language count is what
+//! [`rules_for`] arms and [`selene_core`] wire strings track; grammar count is
+//! what the pinned `tree-sitter-*` crates track.
 
 pub(crate) mod c;
 pub(crate) mod cpp;
