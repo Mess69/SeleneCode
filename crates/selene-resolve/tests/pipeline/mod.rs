@@ -42,6 +42,26 @@ use selene_resolve::{FrameworkResolver, ReferenceResolver, StoreContext, run_fra
 /// missing. That is the exact false-green this harness exists to prevent.
 pub const FLOW_KINDS: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::References, EdgeKind::Imports];
 
+/// [`FLOW_KINDS`] **plus `Contains`** — for class-based dispatch only.
+///
+/// A Django CBV route (`path('x/', ArticleDetail.as_view())`) references the
+/// **class**, and the code that answers the request lives in a *method* of that
+/// class. The hop from the class to its handler method genuinely IS containment:
+/// that is how a CBV dispatches, and an agent tracing the flow makes exactly the
+/// same move.
+///
+/// Kept separate from [`FLOW_KINDS`] and used only where it is genuinely
+/// warranted, because `Contains` is otherwise a false-green machine — with it, a
+/// path can descend from a file node into any symbol in that file. Function-based
+/// views (`path('legacy/', views.article_detail)`) are asserted with the STRICT
+/// kinds, so both shapes are proven.
+pub const CBV_FLOW_KINDS: &[EdgeKind] = &[
+    EdgeKind::Calls,
+    EdgeKind::References,
+    EdgeKind::Imports,
+    EdgeKind::Contains,
+];
+
 /// A fixture indexed, framework-extracted, and fully resolved.
 pub struct Pipeline {
     resolver: ReferenceResolver<StoreContext<SurrealStore>>,
@@ -61,10 +81,24 @@ impl Pipeline {
     /// A missing `via` symbol means the flow was bridged *around* a hop instead
     /// of *through* it — a silently wrong map, which fails here.
     pub async fn assert_flow(&self, from_id: &str, to_name: &str, via: &[&str], what: &str) {
+        self.assert_flow_kinds(from_id, to_name, via, FLOW_KINDS, what)
+            .await;
+    }
+
+    /// [`Pipeline::assert_flow`] over an explicit edge-kind set — see
+    /// [`CBV_FLOW_KINDS`].
+    pub async fn assert_flow_kinds(
+        &self,
+        from_id: &str,
+        to_name: &str,
+        via: &[&str],
+        kinds: &[EdgeKind],
+        what: &str,
+    ) {
         let to = self.node_named(to_name).await;
         let path = self
             .store()
-            .find_path(from_id, &to.id, FLOW_KINDS)
+            .find_path(from_id, &to.id, kinds)
             .await
             .expect("find_path")
             .unwrap_or_else(|| {

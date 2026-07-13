@@ -39,6 +39,7 @@
 //! blast radius of a bad regex is one framework, not the whole graph.
 
 pub mod express;
+pub mod python;
 pub mod react;
 pub mod routes;
 
