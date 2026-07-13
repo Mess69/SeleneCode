@@ -23,7 +23,19 @@ use crate::NodeKind;
 /// emission, id inputs, docstring cleanup, qualified-name spelling — bumps
 /// this. A stored version older than the engine's yields "re-index
 /// recommended" guidance, **never** a hard error.
-pub const EXTRACTION_VERSION: u32 = 1;
+///
+/// # History
+///
+/// - **1** — Phase 2 (`selene-extract`): the initial Rust engine output shape.
+/// - **2** — Phase 3, Task 11: [`crate::Node`] gained the three route fields
+///   (`route_method`, `route_path`, `framework`), and the framework registry
+///   emits `NodeKind::Route` nodes. An output-shape change by the rule above,
+///   even though every field `skip_serializing_if`s to nothing on an ordinary
+///   node (so Phase 2's snapshots and parity baseline are byte-unchanged — a
+///   store written by v1 is *readable*, but it holds no route nodes, hence
+///   "re-index recommended"). **This is Phase 3's ONLY bump**: no other task in
+///   the phase changes extraction output shape.
+pub const EXTRACTION_VERSION: u32 = 2;
 
 /// The id of a code-symbol node:
 /// `"<kind>:" + hex(sha256("{file_path}:{kind}:{name}:{line}"))[..32]`,
@@ -125,8 +137,21 @@ mod tests {
         );
     }
 
+    /// The version is pinned so that bumping it is a **deliberate act** — you
+    /// cannot change extraction's output shape without this test failing and
+    /// making you say why. Bumping it therefore means updating this line and the
+    /// `# History` block on the const.
+    ///
+    /// Currently **2**: Phase 3 Task 11 added the route fields to `Node` and the
+    /// framework registry that emits `NodeKind::Route` nodes. (Phase 2 shipped 1;
+    /// the TS lineage's 24 versioned a store no Rust binary reads.)
     #[test]
-    fn extraction_version_is_one() {
-        assert_eq!(EXTRACTION_VERSION, 1, "Rust engine restarts the counter");
+    fn extraction_version_is_pinned() {
+        assert_eq!(
+            EXTRACTION_VERSION, 2,
+            "output-shape version: bump ONLY with a documented reason in the const's \
+             `# History` block — a stored version below this yields 're-index \
+             recommended' guidance, never an error"
+        );
     }
 }

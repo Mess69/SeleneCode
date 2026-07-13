@@ -254,6 +254,9 @@ impl SyntheticGraph {
                 decorators: Vec::new(),
                 type_parameters: Vec::new(),
                 return_type: None,
+                route_method: None,
+                route_path: None,
+                framework: None,
                 updated_at: EPOCH_MILLIS,
             });
             ids.push(id);
@@ -320,6 +323,9 @@ impl SyntheticGraph {
                 decorators: Vec::new(),
                 type_parameters: Vec::new(),
                 return_type: None,
+                route_method: None,
+                route_path: None,
+                framework: None,
                 updated_at: EPOCH_MILLIS,
             });
             ids.push(id);

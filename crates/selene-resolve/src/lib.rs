@@ -55,24 +55,61 @@
 //! - **`import-resolver.ts`'s module-level `importMappingCache`** — declared,
 //!   cleared, never written. The real cache is the resolver's LRU.
 //!
+//! # The framework registry (Part B, Task 11)
+//!
+//! [`frameworks`] is the seam every framework resolver plugs into. Three things
+//! in it are contracts, not implementation details:
+//!
+//! - **Route ids are opaque; route semantics are indexed fields.** A route node's
+//!   id is the ordinary hashed `node_id` — it does **not** encode the method or
+//!   path (CodeGraph TS's did, and downstream code key-matched on the string).
+//!   The semantics live in `Node::route_method` / `route_path` / `framework`, and
+//!   the only supported lookup is the indexed [`find_route`] /
+//!   `GraphStore::find_route`. **Never parse or string-build a route id.**
+//! - **The route `name` spelling (`"{METHOD} {path}"`) is load-bearing.** The id
+//!   hash is over `(file, kind, name, line)`, and several frameworks emit
+//!   multiple routes from ONE line (axum chained verbs, rails `resources`), so
+//!   `name` is the only thing keeping their ids distinct.
+//! - **Emission runs HERE, not in `selene-extract` (decision D2).** The pipeline
+//!   is extract → resolve; a framework hook inside the extractor would invert the
+//!   layering (and cycle the dependency). [`run_framework_extract`] is a pass over
+//!   the already-indexed files, and it runs **before** resolution — a reference
+//!   cannot bind to a route node that does not exist yet.
+//!
+//! `EXTRACTION_VERSION` was bumped **1 → 2** for the route fields. That is
+//! Phase 3's **only** bump: no other task in the phase changes output shape.
+//!
+//! # Deferred to Phase 8 (explicitly not v0)
+//!
+//! Frameworks: NestJS, SvelteKit, Vue/Nuxt, Vapor, Astro, Play, GoFrame, Drupal,
+//! Terraform, CICS, Swift↔ObjC, React Native, Expo, Fabric. The v0 eleven are in
+//! [`REGISTRY_ORDER`].
+//!
+//! Synthesizers: the ~31 passes beyond the five v0 channels (callback/observer,
+//! EventEmitter, React re-render, JSX child, Django ORM) — closure-collection,
+//! gin-middleware-chain, mybatis-java-xml, rn-event-channel, the rest.
+//!
 //! # Build status (Phase 3)
 //!
 //! Landed: the spike (Task 1, `tests/spike_seam.rs`), the skeleton (Task 2),
-//! and the [`ReferenceResolver`] ladder (Task 3 — built-in filters, the fast
-//! pre-filter, the language gates, `create_edges`). The ladder's strategy steps
-//! are laid down as named stubs, in order, for the tasks that fill them:
-//! imports (4–6), the name matcher (7–8), chains (9), function refs (10), the
-//! framework registry (Part B), the batch driver (Part C).
+//! the [`ReferenceResolver`] ladder (Task 3 — built-in filters, the fast
+//! pre-filter, the language gates, `create_edges`), imports (4–6), and the
+//! framework registry + route contract + strip-comments (Task 11). Still stubs,
+//! in ladder order: the name matcher (7–8), chains (9), function refs (10), the
+//! eleven framework resolvers (12–20), the synthesizers and the batch driver
+//! (Part C).
 
 mod builtins;
 mod cache;
 mod context;
 mod error;
 mod families;
+pub mod frameworks;
 mod imports;
 mod matcher;
 mod passes;
 mod resolver;
+mod strip_comments;
 mod types;
 
 pub use builtins::is_built_in_or_external;
@@ -80,6 +117,12 @@ pub use cache::{CACHE_SIZE_ENV, DEFAULT_CACHE_LIMIT, SyncLru, cache_limit, conte
 pub use context::{ResolutionContext, StoreContext};
 pub use error::{ResolveError, Result};
 pub use families::{crosses_known_family, is_known_language_family, same_language_family};
+pub use frameworks::{
+    FrameworkExtractStats, FrameworkExtraction, FrameworkResolver, REGISTRY_ORDER, RouteSpec,
+    all_framework_resolvers, applicable_frameworks, detect_frameworks, detect_frameworks_among,
+    find_route, framework_resolver, route_node, route_node_in, run_framework_extract,
+    run_framework_extract_for_files, run_post_extract,
+};
 pub use imports::aliases::{apply_aliases, load_project_aliases};
 pub use imports::cpp_includes::load_cpp_include_dirs;
 pub use imports::go_module::load_go_module;
@@ -109,6 +152,7 @@ pub use matcher::scoring::{
 pub use resolver::{
     ReferenceResolver, has_any_possible_match, is_php_include_path_ref, matches_any_import,
 };
+pub use strip_comments::strip_comments_for_regex;
 pub use types::{
     AliasMap, AliasPattern, GoModule, ImportMapping, ReExport, ResolutionResult, ResolutionStats,
     ResolvedBy, ResolvedRef, WorkspacePackages,

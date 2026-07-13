@@ -297,6 +297,45 @@ pub struct Node {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub return_type: Option<String>,
 
+    // -------------------------------------------------------------------
+    // Route fields ([`NodeKind::Route`] only — `None` on every other node)
+    // -------------------------------------------------------------------
+    //
+    // A route's SEMANTICS live here, in first-class indexed fields — **not**
+    // encoded into its id. The id is the ordinary hashed [`node_id`] like every
+    // other node (the only id exception in the system remains the literal
+    // `file:<path>`), so downstream code matches a route with an indexed query
+    // (`WHERE kind = 'route' AND routeMethod = $m AND routePath = $p`, i.e.
+    // `GraphStore::find_route`) and NEVER by parsing an id string. The
+    // CodeGraph TS build did the opposite (`route:{file}:{line}:{METHOD}:{path}`
+    // as the id); this is a deliberate divergence (maintainer decision,
+    // 2026-07-13) — ids stay opaque, semantics become queryable.
+    //
+    // All three are `Option` + `skip_serializing_if`, so an ordinary node's
+    // serialized JSON is **byte-identical** to what it was before these fields
+    // existed. That is load-bearing: Phase 2's insta snapshots and its
+    // count-parity baseline compare serialized nodes, and a field that
+    // serialized as `null` everywhere would move all of them.
+    //
+    // NOTE the id-uniqueness consequence: the hash input is
+    // `(file, kind, name, start_line)` — it does NOT include these fields. Some
+    // frameworks emit several routes from ONE line (axum `.route("/x",
+    // get(h).post(h2))`, rails `resources :articles`), and those are separated
+    // ONLY by `name`. Hence the `"{METHOD} {path}"` name spelling is not
+    // cosmetic; it is what keeps route ids distinct.
+    /// The route's HTTP verb, **uppercased** (`"GET"`, `"POST"`, …), or `"ANY"`
+    /// for a verb-less registration. `None` for a path-only router (django
+    /// `path()`, React Router) and for every non-route node.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_method: Option<String>,
+    /// The route's path/prefix, exactly as written in the source.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_path: Option<String>,
+    /// The framework resolver that emitted this node (its `name()`, e.g.
+    /// `"express"`). `None` for every node the language extractors produce.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub framework: Option<String>,
+
     /// When the node was last updated (unix millis).
     pub updated_at: i64,
 }
