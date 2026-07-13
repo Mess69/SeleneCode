@@ -73,17 +73,17 @@
 //! across 300 files would **not** decline and the ubiquitous-name guard would
 //! silently never fire. The TS ceiling (#999) compares the **candidate-node** count.
 //!
-//! **Maintainer decision needed (do NOT quietly redesign) — one of:**
-//!
-//! 1. fix/rename the `selene-db` primitive to a true node count
-//!    (`SELECT count() FROM node WHERE name = $name GROUP ALL` — cheap, and it keeps
-//!    the ceiling's "decline WITHOUT materializing 10k nodes" property, which is the
-//!    entire point of having a counter); or
-//! 2. have Task 7 fall back to `get_nodes_by_name(name).len()` — correct, but it
-//!    materializes exactly the population the ceiling exists to avoid.
-//!
-//! Recommendation: (1). Recorded as Open Coordination Point 1b. Task 7 is BLOCKED on
-//! it — it can be written either way, but not both.
+//! **RESOLVED 2026-07-13 (`p3-dbfix`) — option (1) was taken.** `GraphStore` gained
+//! `count_nodes_named(name) -> u64` (`SELECT count() FROM node WHERE name = $name
+//! GROUP ALL`, over the existing `node_name` index): a real NODE count that keeps the
+//! ceiling's "decline WITHOUT materializing 10k nodes" property. Observed red before
+//! the fix: 3 nodes named `helper` over 2 files → the old primitive answered **2**.
+//! `count_nodes_matching_name_in_files` survives unchanged with its honest FILE-count
+//! semantics, its own callers, and a corrected doc comment — the two are different
+//! questions. **Task 7 is UNBLOCKED: wire `AMBIGUOUS_NAME_CEILING` to
+//! `count_nodes_named`.** (`ResolutionContext::count_files_with_name` is still the
+//! file count; Task 7 adds a `count_nodes_named` context method over the new
+//! primitive — deliberately left to Task 7, whose file `context.rs` is.)
 //!
 //! **F3 — `supertypes` is buildable node-anchored from the trait, as specified.**
 //! `outgoing(node_id, &[Implements, Extends], None)` → supertype nodes →
@@ -364,24 +364,33 @@ async fn f2_method_matches_shape_and_hot_name_cost() {
         "F2: the name fetch is exact and unbounded"
     );
 
-    // THE FINDING: the primitive the plan told Task 7 to gate the #999 ceiling on
-    // counts DISTINCT FILES, not nodes (selene-db/src/nodes.rs:294 —
-    // `SELECT filePath ... GROUP BY filePath`), despite its GraphStore doc saying
-    // "Count of nodes named exactly `name`".
-    // TYPES decoy files + the one `src/repo.ts` holding the true target.
+    // The two primitives answer DIFFERENT questions, and the spike's finding was
+    // that the ceiling had been wired to the wrong one.
+    // `count_nodes_matching_name_in_files` = distinct FILES (TYPES decoy files +
+    // the one `src/repo.ts` holding the true target).
     assert_eq!(
         file_count as usize,
         TYPES + 1,
-        "F2: count_nodes_matching_name_in_files returns the FILE count, not the \
-         node count ({total}) — its GraphStore doc comment says otherwise"
+        "F2: count_nodes_matching_name_in_files is the FILE count — that IS its \
+         honest contract (and its doc now says so)"
+    );
+
+    // FIXED (2026-07-13, branch `p3-dbfix`): `count_nodes_named` is the real node
+    // count the #999 AMBIGUOUS_NAME_CEILING is defined against. Task 7 wires the
+    // ceiling to THIS one.
+    let node_count = store.count_nodes_named("get").await.unwrap();
+    assert_eq!(
+        node_count as usize, total,
+        "F2: count_nodes_named answers the NODE count ({total}), counted in the DB \
+         over the name index — so the ceiling declines a ubiquitous name WITHOUT \
+         materializing its candidates, which is the whole point of a counter"
     );
     assert!(
-        (file_count as usize) < 500 && total > 500,
-        "F2: and this is exactly the hole — {total} nodes named `get` is far above \
-         AMBIGUOUS_NAME_CEILING (500), yet the primitive answers {file_count}, which \
-         is BELOW it. Wired as the plan's Task 7 says, the ubiquitous-name guard \
-         would silently never fire. Maintainer decision required (Open Coordination \
-         Point 1b) — see the F2 finding at the top of this file."
+        node_count > 500 && (file_count as usize) < 500,
+        "F2: and this is what the fix buys — {node_count} nodes named `get` is above \
+         AMBIGUOUS_NAME_CEILING (500) and correctly trips the guard, while the FILE \
+         count ({file_count}) is below it and would have silently never fired. \
+         Wiring the ceiling to the file count is the bug this pins."
     );
 
     // The in-resolver filter `resolve_method_on_type` will run (Task 8):

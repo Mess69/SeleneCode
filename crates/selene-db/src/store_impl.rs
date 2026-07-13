@@ -76,6 +76,10 @@ impl GraphStore for SurrealStore {
         SurrealStore::count_nodes_matching_name_in_files(self, name).await
     }
 
+    async fn count_nodes_named(&self, name: &str) -> Result<u64> {
+        SurrealStore::count_nodes_named(self, name).await
+    }
+
     // -------------------------------------------------------------------
     // Edges (src/edges.rs)
     // -------------------------------------------------------------------

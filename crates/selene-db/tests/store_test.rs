@@ -2194,3 +2194,50 @@ async fn mark_failed_and_retryable_failed_key_by_kind_so_both_twins_are_reachabl
     kinds.sort_unstable();
     assert_eq!(kinds, vec!["calls", "function_ref"]);
 }
+// =============================================================================
+// F2 regression — a real NODE count for the ambiguity ceiling
+// =============================================================================
+
+/// `count_nodes_matching_name_in_files` counts distinct FILES (honest name,
+/// pinned by its own test above). The `AMBIGUOUS_NAME_CEILING` (#999) guard
+/// compares against a **candidate-node** count, so it needs a different
+/// primitive — wired to the file count, the guard could never fire (the spike
+/// measured 2 001 nodes named `get` over 201 files answering 201, i.e. below
+/// the 500 ceiling).
+///
+/// The two primitives answer **different questions**; this pins both, on a
+/// fixture where they differ.
+#[cfg(feature = "kv-mem")]
+#[tokio::test(flavor = "multi_thread")]
+async fn count_nodes_named_counts_nodes_while_the_file_primitive_counts_files() {
+    let store = fresh_store().await;
+
+    // 3 nodes named `helper`, spread over only 2 files.
+    let a1 = node("helper", "src/a.rs");
+    let mut a2 = node("helper", "src/a.rs");
+    a2.id = "function:helper2".to_string();
+    let mut b1 = node("helper", "src/b.rs");
+    b1.id = "function:helper3".to_string();
+    store.insert_nodes(&[a1, a2, b1]).await.unwrap();
+
+    assert_eq!(
+        store.count_nodes_named("helper").await.unwrap(),
+        3,
+        "count_nodes_named answers the NODE count — the population the #999 \
+         ambiguity ceiling is defined against"
+    );
+    assert_eq!(
+        store
+            .count_nodes_matching_name_in_files("helper")
+            .await
+            .unwrap(),
+        2,
+        "the file-count primitive keeps its own honest semantics (2 files) — the \
+         two questions are different and both have callers"
+    );
+    assert_eq!(
+        store.count_nodes_named("nonexistent").await.unwrap(),
+        0,
+        "an absent name counts 0, it does not error"
+    );
+}

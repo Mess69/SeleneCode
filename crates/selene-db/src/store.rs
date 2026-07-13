@@ -313,12 +313,27 @@ pub trait GraphStore: Send + Sync {
         qn: &str,
     ) -> impl Future<Output = Result<Vec<Node>>> + Send;
 
-    /// Count of nodes named exactly `name`, across every file. Used upstream
-    /// to decide whether a name is "distinctive" enough to boost in search.
+    /// How many distinct **FILES** contain a node named exactly `name`.
+    ///
+    /// ⚠ This is a **file** count, not a node count (`SELECT filePath … GROUP BY
+    /// filePath`) — three `helper`s in two files answer **2**. It is the
+    /// "how spread out is this name" question, used to decide whether a name is
+    /// distinctive enough to boost in search. For the "how many candidates does
+    /// this name have" question — the population an ambiguity ceiling is defined
+    /// against — use [`GraphStore::count_nodes_named`].
     fn count_nodes_matching_name_in_files(
         &self,
         name: &str,
     ) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Count of **nodes** named exactly `name`, across every file.
+    ///
+    /// The counterpart to [`GraphStore::count_nodes_matching_name_in_files`]:
+    /// three `helper`s in two files answer **3**. This is the population an
+    /// ambiguity ceiling (`#999`) compares against, and counting it in the
+    /// store preserves the ceiling's whole purpose — decline a ubiquitous name
+    /// *without* materializing its 10k candidate nodes.
+    fn count_nodes_named(&self, name: &str) -> impl Future<Output = Result<u64>> + Send;
 
     // -------------------------------------------------------------------
     // Edges
