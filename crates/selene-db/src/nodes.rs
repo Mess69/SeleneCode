@@ -301,6 +301,25 @@ impl SurrealStore {
         Ok(rows.len() as u64)
     }
 
+    /// Count of **nodes** named exactly `name` — the counterpart to
+    /// [`Self::count_nodes_matching_name_in_files`]'s *file* count (three
+    /// `helper`s in two files: this answers 3, that answers 2).
+    ///
+    /// `count()` + `GROUP ALL` aggregates in the database over the existing
+    /// `node_name` index, so a ubiquitous name is counted **without
+    /// materializing its rows** — which is the entire reason an ambiguity
+    /// ceiling (`#999`) uses a counter instead of `get_nodes_by_name(..).len()`.
+    pub async fn count_nodes_named(&self, name: &str) -> Result<u64> {
+        let mut resp = self
+            .db()
+            .query("SELECT count() FROM node WHERE name = $name GROUP ALL")
+            .bind(("name", name.to_string()))
+            .await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        // No rows at all == no node carries that name.
+        Ok(rows.first().and_then(|r| r["count"].as_u64()).unwrap_or(0))
+    }
+
     /// Shared helper for the single-predicate `WHERE field = $v` lookups
     /// above.
     async fn select_nodes_where(

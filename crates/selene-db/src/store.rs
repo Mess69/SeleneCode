@@ -252,6 +252,20 @@ pub struct TraversalOptions {
 /// the store implements candidate *fetch* only, so the full CodeGraph scoring
 /// pipeline lives in one place upstream (`selene-graph`/`selene-context`)
 /// instead of being smeared across the storage layer.
+/// The natural key of an `unresolved_ref` row:
+/// `(from_node_id, reference_name, reference_kind)`.
+///
+/// **`reference_kind` is not decoration.** Extraction legitimately emits more
+/// than one row per `(from_node_id, reference_name)` pair — a name both *called*
+/// and *passed as a value* in one body (`register(handler); handler();`) yields
+/// a `calls` row and a `function_ref` row. An earlier 2-part key meant resolving
+/// either row deleted both, and `retryable_failed` deduped the survivors down to
+/// one, so the second kind was unreachable through every door in the store.
+///
+/// The key is deliberately **not unique**: the same triple recurs across call
+/// sites on different lines, and resolving the name resolves all of them.
+pub type UnresolvedKey = (String, String, String);
+
 pub trait GraphStore: Send + Sync {
     // -------------------------------------------------------------------
     // Nodes
@@ -299,12 +313,27 @@ pub trait GraphStore: Send + Sync {
         qn: &str,
     ) -> impl Future<Output = Result<Vec<Node>>> + Send;
 
-    /// Count of nodes named exactly `name`, across every file. Used upstream
-    /// to decide whether a name is "distinctive" enough to boost in search.
+    /// How many distinct **FILES** contain a node named exactly `name`.
+    ///
+    /// ⚠ This is a **file** count, not a node count (`SELECT filePath … GROUP BY
+    /// filePath`) — three `helper`s in two files answer **2**. It is the
+    /// "how spread out is this name" question, used to decide whether a name is
+    /// distinctive enough to boost in search. For the "how many candidates does
+    /// this name have" question — the population an ambiguity ceiling is defined
+    /// against — use [`GraphStore::count_nodes_named`].
     fn count_nodes_matching_name_in_files(
         &self,
         name: &str,
     ) -> impl Future<Output = Result<u64>> + Send;
+
+    /// Count of **nodes** named exactly `name`, across every file.
+    ///
+    /// The counterpart to [`GraphStore::count_nodes_matching_name_in_files`]:
+    /// three `helper`s in two files answer **3**. This is the population an
+    /// ambiguity ceiling (`#999`) compares against, and counting it in the
+    /// store preserves the ceiling's whole purpose — decline a ubiquitous name
+    /// *without* materializing its 10k candidate nodes.
+    fn count_nodes_named(&self, name: &str) -> impl Future<Output = Result<u64>> + Send;
 
     // -------------------------------------------------------------------
     // Edges
@@ -472,18 +501,25 @@ pub trait GraphStore: Send + Sync {
         paths: &[String],
     ) -> impl Future<Output = Result<Vec<UnresolvedRef>>> + Send;
 
-    /// Delete refs matching `(from_node_id, reference_name)` keys — call once
-    /// a reference has been resolved into a real edge.
-    fn delete_resolved(&self, keys: &[(String, String)])
-    -> impl Future<Output = Result<()>> + Send;
+    /// Delete refs matching [`UnresolvedKey`] keys — call once a reference has
+    /// been resolved into a real edge.
+    ///
+    /// The key carries `reference_kind`: one `(from_node_id, reference_name)`
+    /// pair legitimately holds rows of several kinds (extraction emits a
+    /// `calls` row **and** a `function_ref` row for `register(h); h();`), and
+    /// keying on the pair alone made resolving one silently delete the others.
+    fn delete_resolved(&self, keys: &[UnresolvedKey]) -> impl Future<Output = Result<()>> + Send;
 
-    /// Flip refs matching `(from_node_id, reference_name)` keys to `Failed`
-    /// (kept for the bounded retry pipeline rather than deleted; `#1240`).
-    fn mark_failed(&self, keys: &[(String, String)]) -> impl Future<Output = Result<()>> + Send;
+    /// Flip refs matching [`UnresolvedKey`] keys to `Failed` (kept for the
+    /// bounded retry pipeline rather than deleted; `#1240`). Kind-scoped for
+    /// the same reason as [`GraphStore::delete_resolved`].
+    fn mark_failed(&self, keys: &[UnresolvedKey]) -> impl Future<Output = Result<()>> + Send;
 
     /// `Failed` refs whose `reference_name` is in `names`, capped at
     /// `per_name_ceiling` entries per distinct name — the bounded retry
-    /// pipeline's candidate fetch.
+    /// pipeline's candidate fetch. Rows matching more than one queried name are
+    /// deduped by [`UnresolvedKey`] (kind included, so a name's `calls` and
+    /// `function_ref` rows are both returned, not collapsed to one).
     fn retryable_failed(
         &self,
         names: &[String],
