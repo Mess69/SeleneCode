@@ -357,6 +357,19 @@ impl<S: GraphStore> StoreContext<S> {
         &self.store
     }
 
+    /// Take the store back, discarding the context.
+    ///
+    /// The context's caches (`known_names`, nodes-by-name, file lists) are
+    /// **warmed once, at construction**. Any pass that WRITES nodes — the
+    /// framework extract pass emits route nodes — therefore invalidates them:
+    /// a context built before emission does not know the routes exist, and would
+    /// pre-filter away every reference the frameworks just emitted ("that name
+    /// matches no symbol"). The fix is to rebuild the context after such a pass,
+    /// which means getting the store back out. Hence this.
+    pub fn into_store(self) -> S {
+        self.store
+    }
+
     /// Drive one async store read from the sync strategy layer.
     ///
     /// A store malfunction **degrades to an empty result** rather than unwinding

@@ -26,6 +26,7 @@ use serde_json::{Map, Value, json};
 use crate::builtins::{capitalize_ascii, is_built_in_or_external};
 use crate::context::ResolutionContext;
 use crate::families::{crosses_known_family, same_language_family};
+use crate::frameworks::{FrameworkResolver, detect_frameworks};
 use crate::imports::{resolve_jvm_import, resolve_via_import};
 use crate::matcher::chains::is_deferrable_chain;
 use crate::matcher::fnref::{match_function_ref, resolve_this_member_fn_ref};
@@ -47,20 +48,33 @@ pub struct ReferenceResolver<C: ResolutionContext> {
     /// `this.<member>` function refs whose member is inherited — drained by the
     /// supertype pass (Task 10).
     pub(crate) deferred_this_member_refs: Vec<UnresolvedRef>,
-    // Part B (Task 11) adds:
-    //     frameworks: Vec<&'static dyn FrameworkResolver>
-    // It cannot be declared before the trait it holds exists. Ladder steps 3
-    // (the `claims_reference` arm of the pre-filter) and 7 (the frameworks
-    // loop) are stubbed for it below, in place and in order.
+    /// The frameworks present in this project, in **registry order** — which is
+    /// resolve precedence (ladder step 7, first hit ≥ 0.9 wins outright).
+    /// Detected **once**, here, never per reference.
+    pub(crate) frameworks: Vec<&'static dyn FrameworkResolver>,
 }
 
 impl<C: ResolutionContext> ReferenceResolver<C> {
-    /// A resolver over `ctx`.
+    /// A resolver over `ctx`, with the project's frameworks detected.
     pub fn new(ctx: C) -> Self {
+        let frameworks = detect_frameworks(&ctx);
         Self {
             ctx,
             deferred_chain_refs: Vec::new(),
             deferred_this_member_refs: Vec::new(),
+            frameworks,
+        }
+    }
+
+    /// A resolver over `ctx` with an explicit framework list — the seam the
+    /// framework tests inject through, and the way Part C's driver passes the
+    /// frameworks it already detected instead of detecting them twice.
+    pub fn with_frameworks(ctx: C, frameworks: Vec<&'static dyn FrameworkResolver>) -> Self {
+        Self {
+            ctx,
+            deferred_chain_refs: Vec::new(),
+            deferred_this_member_refs: Vec::new(),
+            frameworks,
         }
     }
 
@@ -69,13 +83,16 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         &self.ctx
     }
 
-    /// The names of the frameworks detected in this project.
+    /// The names of the frameworks detected in this project, in registry order.
     ///
-    /// Empty until Part B (Task 11) lands the registry. **This spelling is the
-    /// contract** — Part C's `detected_frameworks_agree` gate calls exactly
-    /// this, three ways (TS baseline == Rust == the fixture manifest).
+    /// **This spelling is the contract** — Part C's `detected_frameworks_agree`
+    /// gate calls exactly this, three ways (TS baseline == Rust == the fixture
+    /// manifest).
     pub fn detected_frameworks(&self) -> Vec<String> {
-        Vec::new()
+        self.frameworks
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect()
     }
 
     /// Refs queued for the chained-call conformance pass (Task 9 drains them).
@@ -119,12 +136,19 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // `export { signIn as login }`) deliberately names a symbol that is
         // declared NOWHERE — only the renamed upstream symbol exists. Without the
         // escape, every renamed re-export silently loses its edge.
+        // The `claims_reference` arm is not an optimization escape either: a
+        // framework reference like django's `_iterable_class`, rails'
+        // `articles#index` or laravel's `UserController@index` names **no
+        // declared symbol anywhere**, so without the claim it is dropped HERE,
+        // before `resolve()` is ever called, and the bridge is silently inert.
+        // The TS build shipped that bug twice.
         let existence_name = r.reference_name.as_str();
-        if !has_any_possible_match(existence_name, &self.ctx) && !matches_any_import(r, &self.ctx)
-        // Part B (Task 11): `|| self.frameworks.iter().any(|f| f.claims_reference(name))`
-        // — Rails/Laravel/Django-ORM refs name no declared symbol
-        // (`_iterable_class`, `Controller@method`) and are INERT without this
-        // arm. Three framework bridges depend on it.
+        if !has_any_possible_match(existence_name, &self.ctx)
+            && !matches_any_import(r, &self.ctx)
+            && !self
+                .frameworks
+                .iter()
+                .any(|f| f.claims_reference(existence_name))
         {
             return None;
         }
@@ -179,9 +203,20 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // Wave 2 (Phase 8): `razor` has no extractor yet.
 
         // --- step 7: the frameworks loop -------------------------------------
-        // TODO(Part B, Task 11): for each detected framework, in REGISTRY ORDER:
-        //     let res = self.gate_framework_language(framework.resolve(r, &self.ctx), r);
-        //     if res.confidence >= 0.9 { return res }  else { candidates.push(res) }
+        // Registry order IS precedence: the first framework to answer with
+        // confidence ≥ 0.9 wins outright (laravel's `Controller@method` at 0.9,
+        // rails' `c#a` at 0.85 competes instead). Anything weaker becomes a
+        // candidate and competes on max-confidence with imports and the name
+        // matcher — which is why the per-framework confidence constants are
+        // load-bearing and must not be rounded.
+        for framework in &self.frameworks {
+            if let Some(hit) = self.gate_framework_language(framework.resolve(r, &self.ctx), r) {
+                if hit.confidence >= 0.9 {
+                    return Some(hit);
+                }
+                candidates.push(hit);
+            }
+        }
 
         // --- step 8: import-based resolution ---------------------------------
         // ≥ 0.9 returns immediately; anything weaker competes as a candidate.

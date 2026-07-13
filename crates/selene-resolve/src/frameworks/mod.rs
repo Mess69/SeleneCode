@@ -38,6 +38,7 @@
 //! warning, and is skipped. One broken resolver must never fail an index — the
 //! blast radius of a bad regex is one framework, not the whole graph.
 
+pub mod express;
 pub mod routes;
 
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -145,7 +146,7 @@ pub const REGISTRY_ORDER: &[&str] = &[
 /// Empty until Tasks 12–20 land — Task 11 builds the seam, not the frameworks.
 /// Each of those tasks appends its resolver here, in the order above.
 fn builtin_resolvers() -> Vec<&'static dyn FrameworkResolver> {
-    Vec::new()
+    vec![&express::ExpressResolver]
 }
 
 static REGISTRY: LazyLock<Vec<&'static dyn FrameworkResolver>> = LazyLock::new(builtin_resolvers);
@@ -350,3 +351,111 @@ pub async fn run_post_extract<S: GraphStore>(
 
 /// Batch size for the emission pass's inserts (mirrors selene-db's own).
 const CHUNK: usize = 1000;
+
+// =============================================================================
+// Shared scanning primitives (Tasks 12/13/18)
+// =============================================================================
+
+/// The byte range **inside** the parens opened at `open` (exclusive of both
+/// parens), string-aware.
+///
+/// This exists because the obvious regex does not work. Express's handler is the
+/// last argument of `router.post('/x', async (req, res) => { … })`, and a regex
+/// `\(([^)]+)\)` stops dead at the arrow's **own** closing paren — so the TS
+/// build captured `'/x', async (req, res` and the handler vanished. Inline arrow
+/// handlers are the dominant modern shape, so that one regex silently cost the
+/// framework its entire flow (playbook §7).
+///
+/// Tracks `'`, `"`, `` ` `` and backslash escapes, so a paren inside a string
+/// (`app.get('/a)b', h)`) does not close the span.
+pub(crate) fn match_delim(src: &str, open: usize) -> Option<std::ops::Range<usize>> {
+    let b = src.as_bytes();
+    if b.get(open)? != &b'(' {
+        return None;
+    }
+    let mut depth = 0i32;
+    let mut i = open;
+    let mut quote: Option<u8> = None;
+
+    while i < b.len() {
+        let c = b[i];
+        match quote {
+            Some(q) => {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                b'\'' | b'"' | b'`' => quote = Some(c),
+                b'(' => depth += 1,
+                b')' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(open + 1..i);
+                    }
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    None // unterminated — best-effort, never a panic
+}
+
+/// Split a top-level argument list on commas — ignoring commas nested inside
+/// parens, brackets, braces or strings. `(a, f(b, c), [d, e])` → three args.
+pub(crate) fn split_args(args: &str) -> Vec<&str> {
+    let b = args.as_bytes();
+    let mut out = Vec::new();
+    let mut depth = 0i32;
+    let mut quote: Option<u8> = None;
+    let mut start = 0usize;
+
+    let mut i = 0usize;
+    while i < b.len() {
+        let c = b[i];
+        match quote {
+            Some(q) => {
+                if c == b'\\' {
+                    i += 2;
+                    continue;
+                }
+                if c == q {
+                    quote = None;
+                }
+            }
+            None => match c {
+                b'\'' | b'"' | b'`' => quote = Some(c),
+                b'(' | b'[' | b'{' => depth += 1,
+                b')' | b']' | b'}' => depth -= 1,
+                b',' if depth == 0 => {
+                    out.push(args[start..i].trim());
+                    start = i + 1;
+                }
+                _ => {}
+            },
+        }
+        i += 1;
+    }
+    if start <= args.len() {
+        let tail = args[start..].trim();
+        if !tail.is_empty() {
+            out.push(tail);
+        }
+    }
+    out
+}
+
+/// 1-based line of a byte offset. One newline scan per call — fine for the
+/// handful of matches a framework extractor makes per file. (Task 21's
+/// `LineIndex` replaces this if a hot path ever needs it.)
+pub(crate) fn line_at(src: &str, offset: usize) -> u32 {
+    1 + src.as_bytes()[..offset.min(src.len())]
+        .iter()
+        .filter(|&&b| b == b'\n')
+        .count() as u32
+}
