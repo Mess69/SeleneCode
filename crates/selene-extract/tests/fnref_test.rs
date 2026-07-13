@@ -1137,7 +1137,6 @@ end
 }
 
 #[test]
-#[ignore = "BLOCKED on a walker import-branch parity bug (see task-15b-report.md, Blocker section): Ruby's import_types is [call] (require/require_relative) and the Rust ladder's import branch skips children, so every class-scope Ruby call is consumed and its argument_list is never walked (it loses its calls refs too). TS (tree-sitter.ts:1173-1175) does NOT set skipChildren there. The fix is one line in walker/mod.rs, which Task 15b is scoped out of."]
 fn ruby_captures_hook_dsl_symbol() {
     // `before_action :authenticate` — the symbol names a method of the
     // ENCLOSING class, so it routes through the class-scoped `this.` resolver
@@ -1156,7 +1155,6 @@ end
 }
 
 #[test]
-#[ignore = "BLOCKED on a walker import-branch parity bug (see task-15b-report.md, Blocker section): Ruby's import_types is [call] (require/require_relative) and the Rust ladder's import branch skips children, so every class-scope Ruby call is consumed and its argument_list is never walked (it loses its calls refs too). TS (tree-sitter.ts:1173-1175) does NOT set skipChildren there. The fix is one line in walker/mod.rs, which Task 15b is scoped out of."]
 fn ruby_captures_rescue_from_with_pair() {
     let code = r#"
 class M
@@ -1172,7 +1170,6 @@ end
 }
 
 #[test]
-#[ignore = "BLOCKED on a walker import-branch parity bug (see task-15b-report.md, Blocker section): Ruby's import_types is [call] (require/require_relative) and the Rust ladder's import branch skips children, so every class-scope Ruby call is consumed and its argument_list is never walked (it loses its calls refs too). TS (tree-sitter.ts:1173-1175) does NOT set skipChildren there. The fix is one line in walker/mod.rs, which Task 15b is scoped out of."]
 fn ruby_validates_symbols_are_attributes_not_methods() {
     // `validates` (PLURAL) is EXCLUDED — its symbols name ATTRIBUTES, not
     // methods (function-ref.ts:279-283). Singular `validate` IS a hook.
@@ -1282,4 +1279,20 @@ function reg() {
     let r = extract_from_source("m.php", code, Language::Php);
     let from = id_of(&r, NodeKind::Function, "reg");
     assert_one(&r, "Cls::m", &from, 3, 19);
+}
+
+#[test]
+fn kotlin_class_literal_is_not_a_function_value() {
+    // `Foo::class` is a CLASS LITERAL, not a member reference. It reaches the
+    // separator-keyed `navigation_expression` arm with a `::` separator and a
+    // capitalized receiver — the two conditions that mint a qualified
+    // candidate — so it must be rejected on the MEMBER side (`class` is a
+    // keyword, not an identifier), never emitted as `Foo::class`.
+    let code = r#"
+fun reg() {
+    register(Foo::class)
+}
+"#;
+    let r = extract_from_source("M.kt", code, Language::Kotlin);
+    assert!(fn_refs(&r).is_empty(), "got {:?}", fn_ref_names(&r));
 }
