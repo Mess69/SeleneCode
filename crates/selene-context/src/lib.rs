@@ -24,10 +24,15 @@
 //! ranking/flow/budget/render decision lives here as a pure function over the graph API, and
 //! `selene-mcp` owns only schemas, dispatch, banners and error classification.
 
+mod budgets;
 mod error;
 mod relevance;
 mod stopwords;
 
+pub use budgets::{
+    ExploreBudget, FILE_SECTION_PREFIX, HARD_CEILING, MAX_OUTPUT_LENGTH, TRUNCATION_NOTE,
+    budget_for, explore_budget, truncate_output, truncate_to_ceiling,
+};
 pub use error::{ContextError, Result};
 pub use relevance::{
     DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, ScoredNode, brevity, is_test_file,
