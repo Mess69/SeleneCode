@@ -27,6 +27,7 @@ use crate::builtins::{capitalize_ascii, is_built_in_or_external};
 use crate::context::ResolutionContext;
 use crate::families::{crosses_known_family, same_language_family};
 use crate::imports::{resolve_jvm_import, resolve_via_import};
+use crate::matcher::match_reference;
 use crate::types::ResolvedRef;
 
 /// The reference resolver: one instance per index/sync pass.
@@ -176,8 +177,11 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         }
 
         // --- step 10: name matching -------------------------------------------
-        // TODO(Task 7): `match_reference`, under `gate_language`. (Wave 2: the
-        // Nix same-file post-filter attaches here.)
+        // (Wave 2: the Nix same-file post-filter attaches here — a Nix callee
+        // binds lexically or through explicit import wiring, never by name.)
+        if let Some(hit) = self.gate_language(match_reference(r, &self.ctx), r) {
+            candidates.push(hit);
+        }
 
         // --- step 11: defer for the conformance passes ------------------------
         if candidates.is_empty() {

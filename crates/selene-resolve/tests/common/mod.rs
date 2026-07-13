@@ -158,6 +158,13 @@ impl FakeContext {
         }
     }
 
+    /// The RAW node count for a name — what the store's `count_nodes_named`
+    /// answers. Exposed for the test that proves the #999 ceiling is compared
+    /// against the FILTERED candidate count, not this.
+    pub fn count_nodes_named_for_test(&self, name: &str) -> u64 {
+        self.nodes.iter().filter(|n| n.name == name).count() as u64
+    }
+
     /// How many graph reads this context has served.
     pub fn read_count(&self) -> usize {
         self.reads.lock().map(|n| *n).unwrap_or(0)

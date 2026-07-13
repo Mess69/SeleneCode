@@ -70,6 +70,7 @@ mod context;
 mod error;
 mod families;
 mod imports;
+mod matcher;
 mod resolver;
 mod types;
 
@@ -86,6 +87,14 @@ pub use imports::workspace::{load_workspace_packages, resolve_workspace_import};
 pub use imports::{
     REEXPORT_MAX_DEPTH, is_external_import, resolve_import_path, resolve_jvm_import,
     resolve_via_import,
+};
+pub use matcher::match_reference;
+pub use matcher::names::{
+    match_by_exact_name, match_by_file_path, match_by_qualified_name, match_fuzzy,
+};
+pub use matcher::scoring::{
+    AMBIGUOUS_NAME_CEILING_ENV, DEFAULT_AMBIGUOUS_NAME_CEILING, ambiguous_name_ceiling,
+    find_best_match, path_proximity, pick_closest_file_node, prefer_call_site_file,
 };
 pub use resolver::{
     ReferenceResolver, has_any_possible_match, is_php_include_path_ref, matches_any_import,
