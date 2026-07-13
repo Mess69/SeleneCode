@@ -7,6 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# Task 1 (spike): the SDK the whole of Phase 5 rides on. Features pinned to what a
+# stdio server needs — `server` (ServerHandler), `macros` (#[tool_router]/#[tool]),
+# `transport-io` (stdio). NOT the http/sse transports: Phase 5 is stdio-only.
+rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+schemars = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tokio = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }
+# The `client` feature is TEST-ONLY: the spike (and Tasks 14-19) drive the server
+# through a real in-memory client, which needs `RoleClient`/`serve_client`. The shipped
+# binary is a server and must not carry the client half.
+rmcp = { workspace = true, features = ["client"] }
 
 [lints]
 workspace = true

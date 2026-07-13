@@ -109,7 +109,10 @@ tree-sitter-ruby       = "=0.23.1"
 surrealdb    = { version = "3.2", default-features = false }
 # Surfaces / infra
 clap         = { version = "4", features = ["derive"] }
-rmcp         = "2.2"          # official Rust MCP SDK
+rmcp         = { version = "2.2", default-features = false }  # official Rust MCP SDK
+# JSON-Schema derive for tool input schemas. rmcp 2.2 re-exports schemars and its
+# derives must match the version rmcp itself links (spike Task 1: schemars 1.x).
+schemars     = "1"
 notify       = "8"            # cross-platform file watching (FSEvents/inotify/RDCW)
 toml_edit    = "0.25"
 jsonc-parser = "0.33"

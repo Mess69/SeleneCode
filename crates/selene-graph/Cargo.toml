@@ -7,6 +7,21 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { path = "../selene-core" }
+selene-db = { path = "../selene-db" }
+thiserror = { workspace = true }
+tokio = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+# The fixture rig (Task 1) drives the REAL pipeline: extract + resolve. Tasks 13 and 20
+# are built on it, and a rig that indexes without resolving produces a graph where
+# explore finds symbols and NO flow — green tests, dead product.
+selene-extract = { path = "../selene-extract" }
+selene-resolve = { path = "../selene-resolve" }
+selene-db = { path = "../selene-db", features = ["kv-mem"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+tempfile = { workspace = true }
 
 [lints]
 workspace = true
