@@ -191,158 +191,64 @@ fichier qu'il doit ensuite ouvrir. La sonde teste maintenant les **sections de f
    `references`. Déclarés dans l'enum, jamais peuplés : exactement la forme du « seam inerte » que
    ce projet paie en boucle (§9). À trancher : les peupler, ou les consigner comme déviation.
 
-## 3. Perf — ⛔ **ON EST 8 À 11× PLUS LENTS QUE LE BUILD TS.** (mesuré le 2026-07-14)
+## 3. Perf — de 10,7× derrière TS à **2,0–2,9×** (2026-07-14)
 
-### Le benchmark a été fait. Le résultat est mauvais.
+| corpus | ce matin | **maintenant** | codegraph TS | écart |
+|---|---:|---:|---:|---|
+| codegraph/src (162 f.) | 18,4 s | **6,2 s** | 2,4 s | **TS 2,6×** |
+| SeleneCode (328 f.) | 22,8 s | **5,5 s** | 2,8 s | **TS 2,0×** |
+| django (931 f.) | 61,1 s | **16,4 s** | 5,7 s | **TS 2,9×** |
 
-| corpus | fichiers | **selene (Rust)** | **codegraph (TS)** | écart | nœuds S / TS | arêtes S / TS |
-|---|---:|---:|---:|---|---|---|
-| codegraph/src (TS) | 162 | 18,4 s | **2,4 s** | **TS 7,7×** | 3 803 / 3 803 | 14 081 / 14 078 |
-| SeleneCode/crates (Rust) | 328 | 22,8 s | **2,8 s** | **TS 8,2×** | 5 086 / 5 090 | 17 192 / 17 255 |
-| django (Python) | 931 | 61,1 s | **5,7 s** | **TS 10,7×** | 19 061 / 19 063 | 46 942 / 46 488 |
+Déterministe. Couverture intacte (+4 références que l'ancien code **jetait**). Tous les gates verts.
 
-**Le graphe produit est le MÊME** (nœuds à 4 près, arêtes à ~1 %). Donc « plus rapide » ne veut
-**pas** dire « en fait moins » : TS fait le même travail, en un dixième du temps. **Et l'écart se
-creuse avec la taille** (7,7× → 10,7×) : on ne part pas seulement derrière, on **scale moins bien**.
+### ⚠ LA LEÇON, en une phrase — lis-la avant d'optimiser quoi que ce soit
 
-### Où passent réellement les 61 s de django (MESURÉ, tout instrumenté)
+> **La base de données n'a JAMAIS été le problème.** Elle avale tout le graphe django en < 1,5 s, et
+> son propre benchmark la donne à **3,5× Redis** en CRUD. **Elle n'était pas lente. On était bruyants.**
 
-```
-    scan                              0,17 s
-    PARSE tree-sitter                 0,27 s   ← 0,4 %  (!!)
-    COMMIT (écriture, par fichier)   19,0  s   ← 31 %
-    rebuild FTS                       3,5  s
-    ladder (le vrai travail)          9,0  s   ← 15 %
-    persist (écriture, par clé)      30,2  s   ← 50 %
-```
+Les deux trouvailles qui ont tout fait sont **la même**, à un étage d'écart :
 
-| poste | temps | part |
-|---|---:|---|
-| **écritures DB** (commit + persist) | **49,2 s** | **81 %** |
-| ladder | 9,0 s | 15 % |
-| **parse + scan** *(le coupable présumé)* | **0,44 s** | **0,7 %** |
+1. **Le « ladder » n'était pas CPU-bound. C'était 32 524 lookups bloquants** (69 % de son temps) —
+   dont **14 674 `get_node`**, un *point lookup par clé primaire*. On reconstruisait, requête par
+   requête, une table de 19 061 lignes qui tient dans **8 Mo de RAM**.
+   ⚠ **Le cache LRU n'y pouvait rien, et sa taille n'était pas la solution** : le passer de 5 000 à
+   200 000 n'a retiré que **8 %** des lectures. Ce sont des **miss froids** — 12 279 noms distincts,
+   chacun cherché une fois. *Un cache paresseux paie un aller-retour par clé distincte, pour
+   toujours.* **Un seul scan (127 ms) les a tous remplacés.** Ladder : 6 839 → **1 889 ms**.
+2. **La file de références était un tampon de handoff qui transitait par le DISQUE** — 52 358 lignes
+   écrites, relues, effacées, **entre deux phases du même processus**. Passées en mémoire.
+   Persist : 7,3 → **3,4 s**. (Et ça supprime un **bug de déterminisme** : l'ordre de résolution
+   dépendait d'un **record-id généré par SurrealDB**.)
 
-⚠ **Le parse natif fait 270 ms pour 931 fichiers Python.** L'argument phare du port — supprimer la
-couche WASM, lier tree-sitter nativement — est **vrai, et vaut 0,4 % du run**. Toutes les hypothèses
-précédentes sur « où passe le temps » étaient fausses, **y compris la mienne, écrite une heure plus
-tôt dans ce même fichier**.
+**La résolution n'est pas un problème de graphe. C'est une table de symboles** — *« quels nœuds
+s'appellent `foo` ? »*. Le bon endroit pour un dictionnaire qu'on interroge 32 524 fois, c'est la
+**RAM**. Le moteur graphe sert à **stocker** le résultat et à le **traverser** (`explore`, callers,
+impact) — **jamais** à la phase de construction.
 
-⚠ **`selene-extract` n'avait AUCUNE dépendance `tracing`** — le crate était structurellement
-incapable de dire où il passait son temps. C'est *exactement* pourquoi ces 19 s n'avaient jamais été
-vues. C'est corrigé (`RUST_LOG=selene::index=info`).
+### ⛔ Mesuré et REJETÉ — ne les retente pas
 
-**Pourquoi le commit coûte 19 s pour écrire ce que la base avale en 0,4 s :** `run_pipeline` parse en
-parallèle (rayon) puis commite **strictement séquentiellement, un fichier à la fois** —
-`get_file().await` puis `commit().await`, ~20 ms par fichier, 931 fois. Et sur un index **neuf**
-(ce que `index_all` est toujours), `get_file` renvoie **toujours `None`** et
-`replace_file_extraction` n'a **rien à remplacer** : **931 allers-retours sont du pur gaspillage par
-construction.**
-
-L'ordre séquentiel est un vrai contrat (#1015 : l'ordre de commit EST le contrat de déterminisme) —
-mais **ordonner n'est pas « un aller-retour par fichier »** : on peut accumuler un batch dans l'ordre
-du scan et l'écrire en un seul appel.
-
-⛔ **Rien de tout ça ne plaide pour remplacer SurrealDB.** Elle avale tout le graphe django en moins
-de 1,5 s. **Chaque seconde perdue l'est dans la façon dont on lui parle.**
-
-### Projection honnête
-
-| correctif | django |
+| idée | verdict |
 |---|---|
-| aujourd'hui | 61 s |
-| + commit groupé (19,0 → ~1 s) | ~43 s |
-| + écritures par clé, variante C (30,2 → ~8 s) | **~21 s** |
-| CodeGraph TS | **5,7 s** |
+| `SURREAL_DATASTORE_SYNC` / fsync | **inerte** — le SDK n'appelle jamais `Builder::with_config()` : **toutes** les variables `SURREAL_*` sont mortes en embarqué. Valait 12 % de toute façon. |
+| `WHERE [a,b,c] IN [...]` (**recommandé par nos propres docs**) | **RÉGRESSION 64×** — une expression sur tableau ne peut pas utiliser l'index composite |
+| réglage de `CHUNK` (100/250/500/1000) | **aucun effet** — leurs chiffres mesurent des allers-retours **réseau** ; on est en process |
+| différer les index de `node` au bulk load | **nul** — le `DEFINE INDEX` en masse coûte **plus** que les 19 061 maintenances qu'il évite |
+| `lto = true` (fat) | **nul**, +10 min de compilation |
+| tokio pile 10 MiB, multi_thread explicite | **nul** |
+| ⛔ `panic = 'abort'` (**recommandé par SurrealDB**) | **JAMAIS** — `selene-resolve` enveloppe les détecteurs de framework et les synthétiseurs dans `catch_unwind` : un résolveur qui panique est une **erreur collectée**, pas un index mort |
+| feature `allocator` de SurrealDB (mimalloc) | ✅ **31,5 → 28,9 s** — pas activée par défaut, et un `default-features = false` ne l'a jamais |
 
-Les deux correctifs d'écriture nous font passer de **10,7× à ~3,7×** derrière. Restent ensuite le
-ladder (9,0 s, mono-cœur — **c'est LÀ que « parallélise-le » devient enfin le bon réflexe**, et non
-sur le ladder d'avant-mesure) et le rebuild FTS (3,5 s).
+### Ce qui reste sur les 16,4 s de django
 
-⚠ **Ça contredit la décision d'archi centrale du projet** (« SurrealQL-max », PRD §5.2/§5.4) : elle a
-été prise sur des arguments de **lecture** (traversée récursive dans le moteur) et n'a **jamais été
-chiffrée côté ÉCRITURE** — or c'est là que le produit passe son temps. Le gate DB Phase 1 qui a l'air
-d'avoir tranché comparait **SurrealKV à RocksDB**, *deux backends à nous*. Jamais SurrealDB à SQLite.
-Ça ne veut pas dire « arrache SurrealDB » : ça veut dire que la décision **repose désormais sur une
-mesure qui la contredit** et doit être ré-argumentée, pas héritée.
-
-**Détail complet, méthode et prochaines expériences :
-`docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`.**
-
-### Les deux régressions à NOUS, corrigées (contexte, ne pas refaire)
-
-`selene index` sur codegraph (162 fichiers) : **52,4 s → 20,6 s**. Sur SeleneCode : **8 m 52 s →
-1 m 29 s**. Sortie **identique** à chaque fois (aucune arête perdue), gates Phase 3 verts.
-
-**Ces chiffres sont Rust contre SON PROPRE PASSÉ** — on a corrigé deux bugs à nous. Ils ne disaient
-rien sur TS, et on le sait maintenant : *« on était mauvais, on l'est moins, et on reste 8× derrière »*.
-
-**L'argument qu'on se racontait** (et qui était faux) : le port supprime la couche WASM (pool de
-workers, resets de parser, retries OOM) et lie tree-sitter nativement, donc il doit être devant.
-C'est probablement **vrai pour l'extraction** — et **hors sujet**, parce que l'extraction n'est pas
-le goulot. On a remplacé un SQLite embarqué rapide par une base multi-modèle généraliste, et on le
-paie **à chaque écriture**.
-
-**Deux bugs, tous deux instructifs :**
-
-1. **Le binaire tournait sur le backend que son propre benchmark avait rejeté.** (`81c2437`)
-   La Phase 1 avait mesuré SurrealKV à **46 nœuds/s vs RocksDB 706** (« pathologically slow ») et
-   fait de RocksDB le défaut. Mais `selene-mcp/Cargo.toml` demandait `kv-surrealkv`, et **Cargo
-   unifie les features sur tout le graphe de dépendances** : cette ligne, à trois crates de
-   distance, écrasait le défaut pour tout le produit. `SurrealStore::open` préfère SurrealKV dès
-   qu'il est **compilé** (surreal.rs:93 vs :106) — **le compiler, c'est le choisir**.
-   *Personne ne l'avait vu parce que personne n'avait jamais EXÉCUTÉ le binaire.*
-
-2. **Persist = 82 % du temps d'indexation.** (`899aea6`)
-   Mesuré via les spans par phase (le ladder ne fait que **5 %**) :
-   ```
-   ladder     2 578 ms    ← le vrai travail de résolution :  5 %
-   persist   42 779 ms    ← l'écriture :                    82 %
-   synthesis    243 ms
-   ```
-   `delete_resolved`/`mark_failed` filtrent sur la clé en 3 parties
-   `(fromNodeId, referenceName, referenceKind)` — **aucun index ne la couvrait**
-   (`referenceKind` n'en avait aucun). Un `DEFINE INDEX` composite : **42,8 s → 11,0 s**.
-
-### ⛔ Le « levier restant » que ce fichier recommandait est une RÉGRESSION DE 64× (mesuré)
-
-Ce fichier disait : *« `run_keyed_statements` émet une requête DELETE par clé (22 462). **Une seule
-requête par chunk les effondrerait.** »* **C'est faux, et ça n'avait jamais été mesuré.**
-
-Une seule requête par chunk (`WHERE [f,n,k] IN [...]`) **défait l'index composite** — une expression
-sur tableau ne peut pas s'y adosser, donc chaque chunk dégénère en **scan complet de table**. Ce
-n'est pas « plus lent », c'est **quadratique**. Mesuré, 4 000 clés, schéma et index réels, projeté
-aux 52 358 refs de django :
-
-| forme | mesuré | projeté à 52 358 refs |
-|---|---|---|
-| **A** — la prod : 1 `DELETE ... WHERE f=.. AND n=.. AND k=..` par clé | 0,94 s | **12,3 s** |
-| **B** — le « levier » recommandé : `WHERE [f,n,k] IN [...]` par chunk | 59,80 s | **782,8 s** ⛔ |
-| **C** — le tuple **EST le record-id** : `DELETE unresolved_ref:['f','n','k'], …` | **0,27 s** | **3,5 s** ✅ |
-
-**C est la bonne réponse, et elle est sûre :** un record-id **tableau n'est pas un hash** — c'est le
-tuple lui-même. Le risque de collision de l'incident #760 (une clé *concaténée* à 2 champs qui
-matchait la mauvaise ligne) **ne s'applique pas**. Le DELETE devient un accès par clé primaire.
-`delete_resolved` ET `mark_failed` passent tous deux par `run_keyed_statements` : les deux en
-profitent.
-
-**Comptabilité honnête :** C fait passer persist de ~29,5 s à ~8 s, et django de ~61 s à ~40 s.
-**C'est toujours ~7× derrière TS (5,7 s). C est nécessaire et PAS suffisant.** Restent, jamais
-examinés : l'**extraction** (~18 s du run — or insérer les 19 k nœuds qu'elle produit ne coûte que
-0,4 s, donc le temps est dans le **parse**, exactement là où le port natif tree-sitter était censé
-GAGNER) et le ladder (8,4 s).
-
-⚠ **Et le fsync n'est pas le levier non plus** : ~12 % (bruit), **et le bouton est inaccessible** —
-le SDK `surrealdb` construit le datastore sans jamais appeler `.with_config(..)`, donc **toutes les
-variables `SURREAL_*` sont INERTES en embarqué**. `SURREAL_DATASTORE_SYNC=never` ne change
-strictement rien (vérifié : le log affiche toujours `every`).
+```
+écriture bulk  ~5,5 s (nœuds 3,4 · arêtes 1,6)   persist  3,4 s
+rebuild FTS     3,2 s                            synthèse 2,8 s
+ladder          1,9 s                            parse    0,3 s
+```
+**Plus aucun poste ne domine.** Descendre sous 5,7 s demande de réduire le **volume écrit**
+(la table `node` est `SCHEMAFULL`, ~25 champs, 9 index) ou de revoir FTS/synthèse — **pas du réglage.**
 
 Détail complet : `docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`.
-
-⚠ **Le ladder : la consigne s'INVERSE une fois les écritures réglées.** Tant que les écritures font
-81 % du temps, le paralléliser ne gagne rien (c'est ce que disait ce fichier, et c'était juste).
-**Une fois commit + persist corrigés, le ladder devient le premier poste** (9,0 s sur ~21 s) et il
-tourne sur **un seul cœur**. C'est alors, et seulement alors, qu'il faut le paralléliser — sans
-casser le déterminisme de l'ordre des arêtes (gate de parité, tolérance 0).
 
 ---
 
