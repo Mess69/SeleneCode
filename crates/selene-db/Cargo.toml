@@ -17,6 +17,9 @@ indexmap = { workspace = true }
 # (`Mem`, for the spike + fast tests) plus the on-disk RocksDB engine that
 # `SurrealStore::open` uses for `.selene/graph.db`.
 surrealdb = { workspace = true }
+# Concurrent chunk writes: the store is talked to ONE query at a time, and SurrealDB's own
+# benchmark reaches 300k ops/s with 128 clients x 48 concurrent queries. See `insert_nodes`.
+futures = { workspace = true }
 # Required (not optional) since the deferred-FTS bulk-load mode (Task 9d):
 # `bulk_load_finish`'s index-build poll sleeps between `INFO FOR INDEX` reads
 # on *every* engine, kv-mem included (the on-disk `open()` lock-retry backoff

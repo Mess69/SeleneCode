@@ -88,7 +88,10 @@ async fn index(path: PathBuf) -> Result<()> {
 
     eprintln!("indexing {} …", root.display());
     let indexer = Indexer::new(root.clone(), store);
-    let result = indexer.index_all(None).await;
+    // The FULLTEXT build is DEFERRED and runs alongside the resolve below. It takes 3.2 s on
+    // django (a `DEFINE INDEX … CONCURRENTLY` that returns at once, then a poll to completion), and
+    // nothing in the resolve phase reads it — `search_fts` has exactly one consumer, `explore`.
+    let result = indexer.index_all_deferring_fts(None).await;
     let store = indexer.into_store();
     eprintln!(
         "  {} files, {} nodes",
@@ -98,10 +101,17 @@ async fn index(path: PathBuf) -> Result<()> {
     eprintln!("resolving …");
     // The references come from `index_all` in memory. They are NOT round-tripped through the
     // store — see `resolve_and_persist_in_memory`.
-    let stats =
-        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
-            .await
-            .context("resolution failed")?;
+    // **Resolve and build the FULLTEXT indexes AT THE SAME TIME.** They do not touch the same
+    // work: the resolver reads nodes by name (ordinary indexes) and writes edges; the FULLTEXT
+    // build is a background scan of the node table, issued `CONCURRENTLY`. Serialised, its poll was
+    // 3.2 s of pure waiting on django, in front of a resolve that needs none of it — `search_fts`
+    // has exactly one consumer, and it is `explore`.
+    let (stats, fts) = tokio::join!(
+        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None),
+        store.bulk_load_finish(),
+    );
+    fts.context("the FULLTEXT index build failed")?;
+    let stats = stats.context("resolution failed")?;
 
     let (nodes, edges) = store.node_edge_count().await.unwrap_or((0, 0));
     eprintln!(

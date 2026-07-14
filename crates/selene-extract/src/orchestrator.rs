@@ -324,6 +324,31 @@ impl<S: GraphStore> Indexer<S> {
     /// commit, all inside deferred-FTS bulk mode. Never returns `Err`:
     /// problems are collected into `errors` and `success` reflects them.
     pub async fn index_all(&self, on_progress: Option<ProgressFn<'_>>) -> IndexResult {
+        self.index_all_inner(on_progress, true).await
+    }
+
+    /// [`Self::index_all`], but **without waiting for the FULLTEXT indexes to finish building**.
+    ///
+    /// `bulk_load_finish` issues `DEFINE INDEX … CONCURRENTLY` (which returns at once) and then
+    /// POLLS each build to completion — 3.2 s on django. Nothing in the resolve phase needs those
+    /// indexes: `search_fts` has exactly one consumer, `selene-context`'s relevance pass, i.e.
+    /// `explore`. The resolver looks symbols up by name through the ordinary indexes.
+    ///
+    /// So the caller can let the build run **while it resolves**, and pay for it once instead of
+    /// twice. It MUST still call `GraphStore::bulk_load_finish` before anything searches — see
+    /// `selene/src/main.rs`, which joins the two.
+    pub async fn index_all_deferring_fts(
+        &self,
+        on_progress: Option<ProgressFn<'_>>,
+    ) -> IndexResult {
+        self.index_all_inner(on_progress, false).await
+    }
+
+    async fn index_all_inner(
+        &self,
+        on_progress: Option<ProgressFn<'_>>,
+        finish_fts: bool,
+    ) -> IndexResult {
         let started = Instant::now();
         let mut result = IndexResult::default();
 
@@ -397,11 +422,13 @@ impl<S: GraphStore> Indexer<S> {
 
         // The deferred-FTS bracket closes here: the 4 FULLTEXT indexes are rebuilt and POLLED
         // (`wait_index_ready` sleeps between `INFO FOR INDEX` reads). Nothing had ever timed it.
-        let t_fin = Instant::now();
-        if let Err(e) = self.store.bulk_load_finish().await {
-            push_store_error(&mut result.errors, "bulk_load_finish", &e);
+        if finish_fts {
+            let t_fin = Instant::now();
+            if let Err(e) = self.store.bulk_load_finish().await {
+                push_store_error(&mut result.errors, "bulk_load_finish", &e);
+            }
+            tracing::info!(target: "selene::index", ms = t_fin.elapsed().as_millis(), "index/4: bulk_load_finish (rebuild + poll FTS)");
         }
-        tracing::info!(target: "selene::index", ms = t_fin.elapsed().as_millis(), "index/4: bulk_load_finish (rebuild + poll FTS)");
 
         result.success = result.files_indexed > 0
             || !result.errors.iter().any(|e| e.severity == Severity::Error);
@@ -662,7 +689,7 @@ impl<S: GraphStore> Indexer<S> {
         // vectors were filled in the order the commit loop visited the files, and that loop runs
         // in scan order.
         let t_bulk = Instant::now();
-        let (mut ms_n, mut ms_e, mut ms_u, mut ms_f) = (0u128, 0u128, 0u128, 0u128);
+        let (mut ms_n, mut ms_e, ms_u, mut ms_f) = (0u128, 0u128, 0u128, 0u128);
         if !pending_nodes.is_empty() || !pending_files.is_empty() {
             let t = Instant::now();
             if let Err(e) = self.store.insert_nodes(&pending_nodes).await {

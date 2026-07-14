@@ -18,3 +18,15 @@ pub(crate) const CHUNK: usize = 1000;
 pub(crate) fn clamp_i64(n: usize) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
+
+/// How many chunk writes may be in flight at once.
+///
+/// The store was talked to **one query at a time**: 39 sequential round trips to insert django's
+/// 19 061 nodes (3.4 s), 94 more for its edges. SurrealDB's own benchmark reaches 300 k ops/s with
+/// **128 clients issuing 48 concurrent queries each** — a single caller awaiting one query at a
+/// time sees none of that. The engine is concurrent; the caller was not.
+///
+/// 16 rather than "unbounded": SurrealDB's RocksDB layer sizes its inline-blocking permit pool from
+/// the tokio worker count (`surrealdb-core` `kvs/rocksdb/cnf.rs`), so past that width the futures
+/// just queue on a semaphore inside the engine and we pay the memory for nothing.
+pub(crate) const WRITE_CONCURRENCY: usize = 16;

@@ -63,7 +63,9 @@ use std::collections::HashMap;
 use selene_core::{Node, NodeKind};
 use surrealdb::types::{RecordId, SurrealValue, Value as SqlValue};
 
-use crate::util::{CHUNK, clamp_i64};
+use futures::stream::{StreamExt, TryStreamExt};
+
+use crate::util::{CHUNK, WRITE_CONCURRENCY, clamp_i64};
 use crate::{Error, Result, SurrealStore};
 
 /// Column list shared by every node read query, in `Node`'s declared field
@@ -190,14 +192,32 @@ impl SurrealStore {
             .join(", ");
         let sql =
             format!("INSERT INTO node $batch ON DUPLICATE KEY UPDATE {update_clause} RETURN NONE");
-        for chunk in nodes.chunks(CHUNK) {
-            let batch = chunk.iter().map(node_item).collect::<Result<Vec<_>>>()?;
-            self.db()
-                .query(sql.as_str())
-                .bind(("batch", batch))
-                .await?
-                .check()?;
-        }
+        // **The chunks go CONCURRENTLY.** They used to go one at a time — 39 sequential round trips
+        // for django's 19 061 nodes, 3.4 s. SurrealDB's own benchmark reaches 300 k ops/s **with
+        // 128 clients issuing 48 concurrent queries each**; a single caller awaiting one query at a
+        // time never sees any of that. The engine is concurrent. We were not.
+        //
+        // Safe to reorder: node ids are content-hashed and unique, so two chunks never touch the
+        // same record, and `ON DUPLICATE KEY UPDATE` writes the same content either way. Verified
+        // the only way that counts — the graph is diffed edge by edge against the sequential build.
+        // Serialize every chunk FIRST (that part is CPU and must not hold a borrow across an await),
+        // then let the round trips fly.
+        let batches: Vec<Vec<_>> = nodes
+            .chunks(CHUNK)
+            .map(|chunk| chunk.iter().map(node_item).collect::<Result<Vec<_>>>())
+            .collect::<Result<Vec<_>>>()?;
+
+        futures::stream::iter(batches.into_iter().map(|batch| {
+            let db = self.db().clone();
+            let sql = sql.clone();
+            async move {
+                db.query(sql).bind(("batch", batch)).await?.check()?;
+                Ok::<(), Error>(())
+            }
+        }))
+        .buffer_unordered(WRITE_CONCURRENCY)
+        .try_collect::<Vec<()>>()
+        .await?;
         Ok(())
     }
 
@@ -253,7 +273,7 @@ impl SurrealStore {
         let mut resp = self.db().query(sql).await?;
         let rows: Vec<serde_json::Value> = resp.take(0)?;
         rows.into_iter()
-            .map(|row| serde_json::from_value(row).map_err(crate::Error::from))
+            .map(|row| serde_json::from_value(row).map_err(Error::from))
             .collect()
     }
 

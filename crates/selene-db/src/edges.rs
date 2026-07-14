@@ -136,7 +136,7 @@ use surrealdb::types::{
     Array as SqlArray, Number as SqlNumber, RecordId, RecordIdKey, SurrealValue, Value as SqlValue,
 };
 
-use crate::util::CHUNK;
+use crate::util::{CHUNK, WRITE_CONCURRENCY};
 use crate::{Error, NeighborEntry, Result, SurrealStore};
 
 /// Shared projection for every edge read: bridges the reserved `in`/`out`
@@ -415,9 +415,17 @@ impl SurrealStore {
             .filter(|e| seen.insert(edge_identity_key(e)))
             .collect();
 
+        // **The chunks go CONCURRENTLY** (see `util::WRITE_CONCURRENCY`). Safe to reorder: the
+        // within-call dedup above already made every chunk's edge identities DISJOINT, so no two
+        // chunks race on the same record, and the total is a SUM — order-independent by
+        // construction. Sequentially this was 94 round trips for django's edges.
+        let chunks: Vec<&[&Edge]> = valid.chunks(CHUNK).collect();
         let mut inserted: u64 = 0;
-        for chunk in valid.chunks(CHUNK) {
-            inserted += self.insert_edge_chunk(chunk).await?;
+        for group in chunks.chunks(WRITE_CONCURRENCY) {
+            let futs = group.iter().map(|c| self.insert_edge_chunk(c));
+            for n in futures::future::try_join_all(futs).await? {
+                inserted += n;
+            }
         }
         Ok(inserted)
     }
