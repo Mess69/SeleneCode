@@ -205,20 +205,58 @@ fichier qu'il doit ensuite ouvrir. La sonde teste maintenant les **sections de f
 **pas** dire « en fait moins » : TS fait le même travail, en un dixième du temps. **Et l'écart se
 creuse avec la taille** (7,7× → 10,7×) : on ne part pas seulement derrière, on **scale moins bien**.
 
-**Ce n'est PAS Rust qui est lent — c'est LA BASE.** Sur django (61 s) :
+### Où passent réellement les 61 s de django (MESURÉ, tout instrumenté)
 
 ```
-    ladder (le VRAI travail de résolution)    8,4 s   ← 14 %
-    persist (l'écriture)                     29,5 s   ← ~48 % du TOTAL
-```
-```
-    log RocksDB : « Sync mode: every transaction commit »   ← fsync à CHAQUE commit
-                  inline-blocking granted = 2 464 643
+    scan                              0,17 s
+    PARSE tree-sitter                 0,27 s   ← 0,4 %  (!!)
+    COMMIT (écriture, par fichier)   19,0  s   ← 31 %
+    rebuild FTS                       3,5  s
+    ladder (le vrai travail)          9,0  s   ← 15 %
+    persist (écriture, par clé)      30,2  s   ← 50 %
 ```
 
-CodeGraph écrit dans **`node-sqlite` en mode WAL** (qui groupe et ne fsync pas par transaction).
-Nous, dans **SurrealDB/RocksDB qui fsync à chaque commit**. Le ladder que tout le monde croyait cher
-fait **14 %** du temps. La base possède les cinq sixièmes restants.
+| poste | temps | part |
+|---|---:|---|
+| **écritures DB** (commit + persist) | **49,2 s** | **81 %** |
+| ladder | 9,0 s | 15 % |
+| **parse + scan** *(le coupable présumé)* | **0,44 s** | **0,7 %** |
+
+⚠ **Le parse natif fait 270 ms pour 931 fichiers Python.** L'argument phare du port — supprimer la
+couche WASM, lier tree-sitter nativement — est **vrai, et vaut 0,4 % du run**. Toutes les hypothèses
+précédentes sur « où passe le temps » étaient fausses, **y compris la mienne, écrite une heure plus
+tôt dans ce même fichier**.
+
+⚠ **`selene-extract` n'avait AUCUNE dépendance `tracing`** — le crate était structurellement
+incapable de dire où il passait son temps. C'est *exactement* pourquoi ces 19 s n'avaient jamais été
+vues. C'est corrigé (`RUST_LOG=selene::index=info`).
+
+**Pourquoi le commit coûte 19 s pour écrire ce que la base avale en 0,4 s :** `run_pipeline` parse en
+parallèle (rayon) puis commite **strictement séquentiellement, un fichier à la fois** —
+`get_file().await` puis `commit().await`, ~20 ms par fichier, 931 fois. Et sur un index **neuf**
+(ce que `index_all` est toujours), `get_file` renvoie **toujours `None`** et
+`replace_file_extraction` n'a **rien à remplacer** : **931 allers-retours sont du pur gaspillage par
+construction.**
+
+L'ordre séquentiel est un vrai contrat (#1015 : l'ordre de commit EST le contrat de déterminisme) —
+mais **ordonner n'est pas « un aller-retour par fichier »** : on peut accumuler un batch dans l'ordre
+du scan et l'écrire en un seul appel.
+
+⛔ **Rien de tout ça ne plaide pour remplacer SurrealDB.** Elle avale tout le graphe django en moins
+de 1,5 s. **Chaque seconde perdue l'est dans la façon dont on lui parle.**
+
+### Projection honnête
+
+| correctif | django |
+|---|---|
+| aujourd'hui | 61 s |
+| + commit groupé (19,0 → ~1 s) | ~43 s |
+| + écritures par clé, variante C (30,2 → ~8 s) | **~21 s** |
+| CodeGraph TS | **5,7 s** |
+
+Les deux correctifs d'écriture nous font passer de **10,7× à ~3,7×** derrière. Restent ensuite le
+ladder (9,0 s, mono-cœur — **c'est LÀ que « parallélise-le » devient enfin le bon réflexe**, et non
+sur le ladder d'avant-mesure) et le rebuild FTS (3,5 s).
 
 ⚠ **Ça contredit la décision d'archi centrale du projet** (« SurrealQL-max », PRD §5.2/§5.4) : elle a
 été prise sur des arguments de **lecture** (traversée récursive dans le moteur) et n'a **jamais été
@@ -300,8 +338,11 @@ strictement rien (vérifié : le log affiche toujours `every`).
 
 Détail complet : `docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`.
 
-⛔ **Ne parallélise PAS le resolve ladder.** J'avais écrit ça dans un commit avant de mesurer :
-c'est **faux**, le ladder fait 2,6 s. Le paralléliser parfaitement ne gagnerait presque rien.
+⚠ **Le ladder : la consigne s'INVERSE une fois les écritures réglées.** Tant que les écritures font
+81 % du temps, le paralléliser ne gagne rien (c'est ce que disait ce fichier, et c'était juste).
+**Une fois commit + persist corrigés, le ladder devient le premier poste** (9,0 s sur ~21 s) et il
+tourne sur **un seul cœur**. C'est alors, et seulement alors, qu'il faut le paralléliser — sans
+casser le déterminisme de l'ordre des arêtes (gate de parité, tolérance 0).
 
 ---
 
