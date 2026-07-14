@@ -286,6 +286,10 @@ pub trait GraphStore: Send + Sync {
     ) -> impl Future<Output = Result<HashMap<String, Node>>> + Send;
 
     /// Every node whose `file_path` equals `path`.
+    /// Every node, in one scan — the resolver context's eager warm (replaces 32 524 lazy blocking
+    /// point lookups on django).
+    fn all_nodes(&self) -> impl Future<Output = Result<Vec<Node>>> + Send;
+
     fn get_nodes_by_file(&self, path: &str) -> impl Future<Output = Result<Vec<Node>>> + Send;
 
     /// Every node of exactly `kind`.

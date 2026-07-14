@@ -258,6 +258,20 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
             .insert("decided-count-mismatch".to_string(), 1);
     }
 
+    {
+        use std::sync::atomic::Ordering;
+        let calls = crate::context::BLOCKING_CALLS.load(Ordering::Relaxed);
+        let nanos = crate::context::BLOCKING_NANOS.load(Ordering::Relaxed);
+        tracing::info!(
+            target: "selene::index",
+            blocking_store_reads = calls,
+            ms_blocked = nanos / 1_000_000,
+            refs = total,
+            per_ref = if total > 0 { calls as f64 / total as f64 } else { 0.0 },
+            "ladder: blocking store reads (was 32 524 / 4 810 ms on the lazy path; the eager index makes it ~48)"
+        );
+    }
+
     tracing::info!(
         ms_fetch,
         ms_ladder,

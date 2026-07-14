@@ -116,7 +116,7 @@ impl SurrealStore {
             // one CREATE per row inside the engine; on django's 52 358 refs it measured 3.9 s. A
             // single INSERT hands the engine the whole chunk. Same rows, same order.
             self.db()
-                .query("INSERT INTO unresolved_ref $rows;")
+                .query("INSERT INTO unresolved_ref $rows RETURN NONE;")
                 .bind(("rows", rows))
                 .await?
                 .check()?;

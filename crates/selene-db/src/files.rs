@@ -93,7 +93,7 @@ impl SurrealStore {
     /// `UPSERT ... CONTENT`; see the module docs).
     pub async fn upsert_file(&self, f: &FileRecord) -> Result<()> {
         self.db()
-            .query("UPSERT type::record('file', $path) CONTENT $content")
+            .query("UPSERT type::record('file', $path) CONTENT $content RETURN NONE")
             .bind(("path", f.path.clone()))
             .bind(("content", file_content(f)?))
             .await?

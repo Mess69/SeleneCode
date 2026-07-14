@@ -48,6 +48,10 @@ impl GraphStore for SurrealStore {
         SurrealStore::get_nodes(self, ids).await
     }
 
+    async fn all_nodes(&self) -> Result<Vec<Node>> {
+        SurrealStore::all_nodes(self).await
+    }
+
     async fn get_nodes_by_file(&self, path: &str) -> Result<Vec<Node>> {
         SurrealStore::get_nodes_by_file(self, path).await
     }

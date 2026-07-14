@@ -242,6 +242,21 @@ impl SurrealStore {
     }
 
     /// Every node whose `file_path` equals `path`.
+    /// **Every node, in one scan.** The resolver's context looks nodes up lazily — by name, by id,
+    /// by qualified name — and every miss is a BLOCKING round trip on one thread. Measured on
+    /// django: **32 524 blocking reads, 4.8 s**, to interrogate a table of 19 061 rows that fits in
+    /// ~8 MB of RAM. `get_node` alone (a point lookup by primary key) fired **14 674** times.
+    ///
+    /// This is the query that replaces all of them.
+    pub async fn all_nodes(&self) -> Result<Vec<Node>> {
+        let sql = format!("SELECT {NODE_FIELDS} FROM node");
+        let mut resp = self.db().query(sql).await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        rows.into_iter()
+            .map(|row| serde_json::from_value(row).map_err(crate::Error::from))
+            .collect()
+    }
+
     pub async fn get_nodes_by_file(&self, path: &str) -> Result<Vec<Node>> {
         self.select_nodes_where("filePath = $v", "v", path.to_string())
             .await

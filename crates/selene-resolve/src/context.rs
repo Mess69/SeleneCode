@@ -36,6 +36,15 @@
 //! is **dropped**, not ported.
 
 use std::collections::{BTreeSet, HashMap, HashSet};
+
+/// How many blocking store reads the ladder made, and how long it sat in them.
+///
+/// This exists because the module docs *claimed* resolution was "CPU-bound over a warm cache, not
+/// I/O-bound" and it was not: on django the lazy path made **32 524 blocking reads and spent
+/// 4 810 ms — 69% of the ladder — waiting on them**. With the eager index it makes **48**. Keep the
+/// counter: it is the difference between an assertion and a measurement, and it costs two atomics.
+pub static BLOCKING_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static BLOCKING_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -264,6 +273,21 @@ pub struct StoreContext<S: GraphStore> {
     qualified_name_cache: SyncLru<String, Vec<Node>>,
     method_match_cache: SyncLru<String, Vec<Node>>, // "{lang} {ty}::{method}"
     node_by_id_cache: SyncLru<String, Option<Node>>,
+
+    /// **Every node, indexed in memory.** `None` on a repo too large to hold (see `EAGER_MAX`),
+    /// where the lazy LRU path below stays in charge.
+    ///
+    /// The lazy path is what the module docs describe as "CPU-bound over a warm cache, not
+    /// I/O-bound". It is not. Measured on django: the ladder made **32 524 blocking store reads
+    /// and spent 4 810 ms — 69% of its 6 839 ms — waiting on them**, on one thread, to interrogate
+    /// a table of 19 061 rows. `get_node`, a point lookup by primary key, fired **14 674 times**.
+    ///
+    /// The LRU cannot fix this and its size is not the problem: raising the limit from 5 000 to
+    /// 200 000 removed only 8% of the reads. They are **cold misses** — 12 279 distinct names, each
+    /// fetched exactly once. A lazy cache pays one round trip per distinct key, forever.
+    ///
+    /// One scan replaces all of them.
+    eager: Option<EagerIndex>,
     count_cache: SyncLru<String, u64>,
     node_count_cache: SyncLru<String, u64>,
     supertype_cache: SyncLru<String, Vec<Node>>,
@@ -287,6 +311,60 @@ pub struct StoreContext<S: GraphStore> {
     cpp_include_dirs: Vec<String>,
 }
 
+/// A repo above this many nodes keeps the lazy LRU path (VS Code is ~500 k; at roughly 400 B a node
+/// the eager index is then ~200 MB, which is a trade we make deliberately rather than by accident).
+const EAGER_MAX: usize = 2_000_000;
+
+/// Every node, grouped the four ways the ladder asks for them.
+///
+/// ⚠ **Insertion order inside each group is the scan order, and it is LOAD-BEARING.**
+/// `select_nodes_where` has no `ORDER BY`, so the store returns whatever its index scan yields, and
+/// `best_candidate` breaks ties by taking the earlier candidate (there is a test named
+/// `best_candidate_keeps_the_earlier_on_a_tie`). Rebuilding these groups from a full scan must
+/// therefore reproduce the same order — which is exactly what the graph diff at the end of this
+/// change verifies, rather than assumes.
+struct EagerIndex {
+    by_id: HashMap<String, Node>,
+    by_name: HashMap<String, Vec<Node>>,
+    by_lower: HashMap<String, Vec<Node>>,
+    by_qname: HashMap<String, Vec<Node>>,
+    by_file: HashMap<String, Vec<Node>>,
+}
+
+impl EagerIndex {
+    fn build(nodes: Vec<Node>) -> Self {
+        let mut ix = EagerIndex {
+            by_id: HashMap::with_capacity(nodes.len()),
+            by_name: HashMap::new(),
+            by_lower: HashMap::new(),
+            by_qname: HashMap::new(),
+            by_file: HashMap::new(),
+        };
+        for n in nodes {
+            ix.by_name
+                .entry(n.name.clone())
+                .or_default()
+                .push(n.clone());
+            ix.by_lower
+                .entry(n.name.to_lowercase())
+                .or_default()
+                .push(n.clone());
+            if !n.qualified_name.is_empty() {
+                ix.by_qname
+                    .entry(n.qualified_name.clone())
+                    .or_default()
+                    .push(n.clone());
+            }
+            ix.by_file
+                .entry(n.file_path.clone())
+                .or_default()
+                .push(n.clone());
+            ix.by_id.insert(n.id.clone(), n);
+        }
+        ix
+    }
+}
+
 impl<S: GraphStore> StoreContext<S> {
     /// Build a context over `store`, warming the caches every reference hits.
     ///
@@ -301,6 +379,31 @@ impl<S: GraphStore> StoreContext<S> {
     pub async fn new(store: S, root: PathBuf) -> Result<Self> {
         let handle = tokio::runtime::Handle::try_current()
             .map_err(|e| ResolveError::NoRuntime(e.to_string()))?;
+
+        // --- the eager node index: ONE scan, replacing 32 524 lazy point lookups ----
+        let stats = store.stats().await?;
+        let eager = if (stats.nodes as usize) <= EAGER_MAX {
+            let t = std::time::Instant::now();
+            let nodes = store.all_nodes().await?;
+            let n = nodes.len();
+            let ix = EagerIndex::build(nodes);
+            tracing::info!(
+                target: "selene::index",
+                nodes = n,
+                ms = t.elapsed().as_millis(),
+                "resolve/0: eager node index (one scan, replaces the ladder's blocking point lookups)"
+            );
+            Some(ix)
+        } else {
+            tracing::warn!(
+                target: "selene::index",
+                nodes = stats.nodes,
+                cap = EAGER_MAX,
+                "repo too large for the eager node index — falling back to the lazy LRU path, \
+                 which pays one BLOCKING store read per distinct key"
+            );
+            None
+        };
 
         // --- the warm caches: one query each -------------------------------
         let files = store.all_files().await?;
@@ -345,6 +448,7 @@ impl<S: GraphStore> StoreContext<S> {
             qualified_name_cache: SyncLru::new(limit),
             method_match_cache: SyncLru::new(limit),
             node_by_id_cache: SyncLru::new(limit),
+            eager,
             count_cache: SyncLru::new(limit),
             node_count_cache: SyncLru::new(limit),
             supertype_cache: SyncLru::new(limit),
@@ -410,11 +514,16 @@ impl<S: GraphStore> StoreContext<S> {
     /// nothing to resolve — the vacuous-resolution failure mode, arriving through
     /// the back door. [`Self::store_read_errors`] is what the batch driver's stats
     /// and the gate's non-vacuity assertion read.
-    fn blocking<T, F>(&self, fut: F) -> Option<T>
+    fn blocking<T, F>(&self, _label: &'static str, fut: F) -> Option<T>
     where
         F: Future<Output = std::result::Result<T, selene_db::Error>>,
     {
-        match self.handle.block_on(fut) {
+        // TEMP INSTRUMENTATION: how often does the "warm cache" actually miss?
+        let __t = std::time::Instant::now();
+        let __r = self.handle.block_on(fut);
+        BLOCKING_CALLS.fetch_add(1, Ordering::Relaxed);
+        BLOCKING_NANOS.fetch_add(__t.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        match __r {
             Ok(value) => Some(value),
             Err(e) => {
                 let count = self.store_read_errors.fetch_add(1, Ordering::Relaxed) + 1;
@@ -460,32 +569,50 @@ impl<S: GraphStore> StoreContext<S> {
 
 impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     fn nodes_in_file(&self, path: &str) -> Vec<Node> {
+        if let Some(ix) = &self.eager {
+            return ix.by_file.get(path).cloned().unwrap_or_default();
+        }
         self.node_cache.get_or_insert_with(path.to_string(), || {
-            self.blocking(self.store.get_nodes_by_file(path))
+            self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path))
                 .unwrap_or_default()
         })
     }
 
     fn nodes_by_name(&self, name: &str) -> Vec<Node> {
+        if let Some(ix) = &self.eager {
+            return ix.by_name.get(name).cloned().unwrap_or_default();
+        }
         self.name_cache.get_or_insert_with(name.to_string(), || {
-            self.blocking(self.store.get_nodes_by_name(name))
+            self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name))
                 .unwrap_or_default()
         })
     }
 
     fn nodes_by_lower_name(&self, lower: &str) -> Vec<Node> {
+        if let Some(ix) = &self.eager {
+            return ix.by_lower.get(lower).cloned().unwrap_or_default();
+        }
         self.lower_name_cache
             .get_or_insert_with(lower.to_string(), || {
-                self.blocking(self.store.get_nodes_by_name_ci(lower))
-                    .unwrap_or_default()
+                self.blocking(
+                    "get_nodes_by_name_ci",
+                    self.store.get_nodes_by_name_ci(lower),
+                )
+                .unwrap_or_default()
             })
     }
 
     fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Node> {
+        if let Some(ix) = &self.eager {
+            return ix.by_qname.get(qn).cloned().unwrap_or_default();
+        }
         self.qualified_name_cache
             .get_or_insert_with(qn.to_string(), || {
-                self.blocking(self.store.get_nodes_by_qualified_name(qn))
-                    .unwrap_or_default()
+                self.blocking(
+                    "get_nodes_by_qualified_name",
+                    self.store.get_nodes_by_qualified_name(qn),
+                )
+                .unwrap_or_default()
             })
     }
 
@@ -496,7 +623,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
             return hit.clone();
         }
         let fetched = self
-            .blocking(self.store.get_nodes_by_kind(kind))
+            .blocking("get_nodes_by_kind", self.store.get_nodes_by_kind(kind))
             .unwrap_or_default();
         if let Ok(mut cache) = self.kind_cache.lock() {
             cache.insert(kind, fetched.clone());
@@ -505,23 +632,29 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     }
 
     fn node_by_id(&self, id: &str) -> Option<Node> {
+        if let Some(ix) = &self.eager {
+            return ix.by_id.get(id).cloned();
+        }
         self.node_by_id_cache
             .get_or_insert_with(id.to_string(), || {
-                self.blocking(self.store.get_node(id)).flatten()
+                self.blocking("get_node", self.store.get_node(id)).flatten()
             })
     }
 
     fn count_files_with_name(&self, name: &str) -> u64 {
         self.count_cache.get_or_insert_with(name.to_string(), || {
-            self.blocking(self.store.count_nodes_matching_name_in_files(name))
-                .unwrap_or(0)
+            self.blocking(
+                "count_nodes_matching_name_in_files",
+                self.store.count_nodes_matching_name_in_files(name),
+            )
+            .unwrap_or(0)
         })
     }
 
     fn count_nodes_named(&self, name: &str) -> u64 {
         self.node_count_cache
             .get_or_insert_with(name.to_string(), || {
-                self.blocking(self.store.count_nodes_named(name))
+                self.blocking("count_nodes_named", self.store.count_nodes_named(name))
                     .unwrap_or(0)
             })
     }
@@ -549,11 +682,11 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     fn supertypes(&self, node_id: &str) -> Vec<Node> {
         self.supertype_cache
             .get_or_insert_with(node_id.to_string(), || {
-                self.blocking(self.store.outgoing(
-                    node_id,
-                    &[EdgeKind::Implements, EdgeKind::Extends],
-                    None,
-                ))
+                self.blocking(
+                    "outgoing",
+                    self.store
+                        .outgoing(node_id, &[EdgeKind::Implements, EdgeKind::Extends], None),
+                )
                 .unwrap_or_default()
                 .into_iter()
                 .map(|n| n.node)
@@ -564,7 +697,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     fn members_of(&self, node_id: &str) -> Vec<Node> {
         self.member_cache
             .get_or_insert_with(node_id.to_string(), || {
-                self.blocking(self.store.children(node_id))
+                self.blocking("children", self.store.children(node_id))
                     .unwrap_or_default()
             })
     }

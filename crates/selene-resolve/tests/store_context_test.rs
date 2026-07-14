@@ -322,8 +322,15 @@ async fn a_context_method_called_from_a_runtime_worker_panics() {
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         // A warm-cache read is fine (it touches no store)...
         assert!(ctx.known_names().contains("Dog"));
-        // ...but a GRAPH read must reach the store, and block_on cannot run here.
-        ctx.nodes_by_name("Dog")
+        // ...and so, NOW, is a node lookup: `nodes_by_name` used to reach the store and was what
+        // this test poked, but the eager node index (context.rs) answers it from memory. That is
+        // the whole point of the index — the ladder made 32 524 blocking reads on django and now
+        // makes ~48 — and it means this test must poke something that STILL crosses the seam.
+        //
+        // The seam is not gone and the hazard is not gone: `count_files_with_name`, `nodes_by_kind`,
+        // `supertypes`, `members_of` and every file-content read still `block_on`. Any one of them
+        // does; this one is a single store call with no cache in front of it on a cold context.
+        ctx.count_files_with_name("Dog")
     }));
     std::panic::set_hook(prev);
 
