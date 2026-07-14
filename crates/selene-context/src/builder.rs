@@ -79,6 +79,7 @@ impl<S: GraphStore> ContextBuilder<S> {
         // (`GraphStore::dominant_file`); a store error still degrades to `None`, which is the
         // same degradation TS takes on a SQL failure ("scoring works without the boost") and
         // never an `isError`.
+        let __t = std::time::Instant::now();
         let dominant = self.qm.store().dominant_file().await.ok().flatten().map(
             |(file_path, edge_count, next_edge_count)| DominantFile {
                 file_path,
@@ -90,9 +91,12 @@ impl<S: GraphStore> ContextBuilder<S> {
         // **`FindOptions::explore()`, never `::default()`** — see its docs. The default is TS's
         // `buildContext` option set (20 nodes, 3 roots, depth 1); explore's is 10× larger, and
         // running explore through the default is what made a four-concept question unanswerable.
+        tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/1: dominant_file");
+        let __t = std::time::Instant::now();
         let ctx =
             find_relevant_context(&self.qm, query, &FindOptions::explore(), dominant.as_ref())
                 .await?;
+        tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), nodes = ctx.subgraph.nodes.len(), "explore/2: find_relevant_context (relevance gather)");
 
         if ctx.subgraph.nodes.is_empty() {
             return Ok(self.no_results_handoff(query));
@@ -118,13 +122,21 @@ impl<S: GraphStore> ContextBuilder<S> {
             out.push_str(&self.low_confidence_handoff(query));
         }
 
+        let __t = std::time::Instant::now();
         out.push_str(&self.render_flow_section(query, &ctx).await?);
+        tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/3: flow section");
+        let __t = std::time::Instant::now();
         out.push_str(&render_boundaries(
             &find_boundaries(&self.qm, &ctx.subgraph.nodes).await?,
         ));
+        tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/4: boundaries");
         out.push_str(&self.render_relationships(&ctx, &budget));
+        let __t = std::time::Instant::now();
         out.push_str(&self.render_blast_radius(&ctx).await?);
+        tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/5: blast radius");
+        let __t = std::time::Instant::now();
         out.push_str(&self.render_files(&ctx, &budget).await?);
+        tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/6: files");
 
         Ok(truncate_to_ceiling(&out, &budget))
     }

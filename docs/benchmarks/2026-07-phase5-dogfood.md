@@ -27,11 +27,21 @@ The gate exists to prove the product answers a flow question with zero Read on a
 does **not**. Two independent failures, both measured on VS Code (349,737 nodes / 1,595,451 edges,
 indexed in 11.2 min):
 
-**1. Latency — unusable.** A single `explore` call took **38 s** for the ratified question and
-**223 s** (3.7 minutes) for a longer multi-concept query. On the small repos the same call is
-**1.2–1.4 s**. The relevance pipeline scales badly with graph size — roughly O(n) to O(n²) in nodes
-— so even a *correct* answer at 38–224 s violates the "a few fast tool calls" invariant. No agent
-waits 3 minutes for one tool call.
+**1. Latency — unusable, and LOCALIZED.** A single `explore` call took **38 s** for the ratified
+question and **223 s** (3.7 minutes) for a longer one, vs **1.2–1.4 s** on the small repos.
+Instrumented (`selene::explore` spans), the 35.6 s splits as:
+
+```
+dominant_file             6.0 s   ← one aggregation query, O(edges), no index
+find_relevant_context    25.5 s   ← the relevance gather: LIKE `CONTAINS` scans, no index, per term
+flow + boundaries + files 0.3 s
+```
+
+**31.5 s of 35.6 s is two unindexed scans that grow with the graph.** `dominant_file` is a single
+SurrealQL aggregation over 1.6M edges; the relevance gather's `search_name_like` does a `CONTAINS`
+with no index → a full 349k-row scan per query term. Both are fixable (index-back the name scans,
+bound or index `dominant_file`), but until they are, `explore` is unusable on a large repo — even a
+correct answer at 38 s violates the "a few fast tool calls" invariant.
 
 **2. Relevance — vocabulary gap.** The question *"how does a keypress become an executed command"*
 seeded on `CommandExecuted, executeCommands, executeCommand, …` — every symbol that lexically
