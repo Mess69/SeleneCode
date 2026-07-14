@@ -15,6 +15,7 @@ mod instructions;
 mod outcome;
 mod server;
 mod tools;
+mod validate;
 
 pub use instructions::SERVER_INSTRUCTIONS;
 pub use outcome::ToolOutcome;

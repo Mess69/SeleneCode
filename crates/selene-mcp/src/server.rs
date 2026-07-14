@@ -63,7 +63,9 @@ use rmcp::{tool, tool_router};
 use serde::Deserialize;
 
 use crate::handlers;
+use crate::outcome::ToolOutcome;
 use crate::tools::{TOOLS_ENV, visible_tools};
+use crate::validate;
 
 /// A tool call's arguments. `projectPath` is optional on every tool — the no-default-project
 /// instructions variant depends on it.
@@ -96,6 +98,18 @@ pub struct FilesArgs {
     /// The project to query.
     #[serde(default, rename = "projectPath")]
     pub project_path: Option<String>,
+}
+
+/// Cap a `query`-shaped call: a required free-form string plus the optional project path.
+fn check_query(query: &str, project_path: Option<&str>) -> Result<(), ToolOutcome> {
+    validate::free_form("query", query)?;
+    validate::path_like("projectPath", project_path)
+}
+
+/// Cap a `symbol`-shaped call.
+fn check_symbol(symbol: &str, project_path: Option<&str>) -> Result<(), ToolOutcome> {
+    validate::free_form("symbol", symbol)?;
+    validate::path_like("projectPath", project_path)
 }
 
 #[tool_router]
@@ -132,6 +146,9 @@ impl SeleneMcp {
                        hops), and a blast-radius summary. Use INSTEAD of reading files."
     )]
     async fn explore(&self, Parameters(a): Parameters<ExploreArgs>) -> CallToolResult {
+        if let Err(o) = check_query(&a.query, a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
         handlers::explore(self.root_for(a.project_path.as_deref()), &a.query)
             .await
             .to_call_result()
@@ -142,6 +159,9 @@ impl SeleneMcp {
         description = "Everything about one symbol: its source, callers, and callees."
     )]
     async fn node(&self, Parameters(a): Parameters<SymbolArgs>) -> CallToolResult {
+        if let Err(o) = check_symbol(&a.symbol, a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
         handlers::node(self.root_for(a.project_path.as_deref()), &a.symbol)
             .await
             .to_call_result()
@@ -149,6 +169,9 @@ impl SeleneMcp {
 
     #[tool(name = "search", description = "Find symbols by name.")]
     async fn search(&self, Parameters(a): Parameters<ExploreArgs>) -> CallToolResult {
+        if let Err(o) = check_query(&a.query, a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
         handlers::search(self.root_for(a.project_path.as_deref()), &a.query)
             .await
             .to_call_result()
@@ -159,6 +182,9 @@ impl SeleneMcp {
         description = "Who calls this symbol, grouped by definition site."
     )]
     async fn callers(&self, Parameters(a): Parameters<SymbolArgs>) -> CallToolResult {
+        if let Err(o) = check_symbol(&a.symbol, a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
         handlers::adjacency(self.root_for(a.project_path.as_deref()), &a.symbol, true)
             .await
             .to_call_result()
@@ -169,6 +195,9 @@ impl SeleneMcp {
         description = "What this symbol calls, grouped by definition site."
     )]
     async fn callees(&self, Parameters(a): Parameters<SymbolArgs>) -> CallToolResult {
+        if let Err(o) = check_symbol(&a.symbol, a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
         handlers::adjacency(self.root_for(a.project_path.as_deref()), &a.symbol, false)
             .await
             .to_call_result()
@@ -176,6 +205,9 @@ impl SeleneMcp {
 
     #[tool(name = "impact", description = "What breaks if this symbol changes.")]
     async fn impact(&self, Parameters(a): Parameters<SymbolArgs>) -> CallToolResult {
+        if let Err(o) = check_symbol(&a.symbol, a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
         handlers::impact(
             self.root_for(a.project_path.as_deref()),
             &a.symbol,
@@ -190,6 +222,12 @@ impl SeleneMcp {
         description = "The indexed files, optionally filtered by path."
     )]
     async fn files(&self, Parameters(a): Parameters<FilesArgs>) -> CallToolResult {
+        // `files` has no required free-form arg — `path` is an optional filter. Cap both path-likes.
+        if let Err(o) = validate::path_like("path", a.path.as_deref())
+            .and_then(|_| validate::path_like("projectPath", a.project_path.as_deref()))
+        {
+            return o.to_call_result();
+        }
         handlers::files(self.root_for(a.project_path.as_deref()), a.path.as_deref())
             .await
             .to_call_result()
