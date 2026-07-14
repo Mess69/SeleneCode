@@ -1405,6 +1405,34 @@ fn rerank_by_term_groups(scored: &mut [ScoredNode], terms: &[String]) {
 
 /// Terms that are substrings of one another are one concept. Longest first, so the longest
 /// term names the group.
+///
+/// # ⚠ Two ways to make this smarter were implemented, MEASURED, and reverted
+///
+/// Both target the same real defect: *"unresolved reference"* is one noun phrase, but this
+/// function's rule is **spelling**, so it yields two concepts. `resolve_rust_path_reference`
+/// therefore matches "two of the query's ideas" and is scaled ×2.0 by
+/// [`rerank_by_term_groups`], while `resolve_and_persist_batched` — the function that *is* the
+/// answer — matches one and is scaled **×0.6**. We reward a symbol for having spelled out the
+/// two words the agent happened to write side by side. The defect is real. Both fixes were worse.
+///
+/// 1. **Co-occurrence merging** (TS's `getSegmentCoOccurrence`, `maps/db-graph-search.md:43`):
+///    merge two concepts when ≥2 real symbol names contain a word from each — the codebase has a
+///    type called `UnresolvedReference`, which is the domain itself saying the two words name one
+///    thing. Implemented against the real corpus. It merges correctly, and it **flattens the
+///    query**: with *unresolved* and *reference* fused, nothing matches two concepts any more, so
+///    every candidate takes the ×0.6 and ranking falls back to raw lexical strength — where short
+///    names win on brevity. The gate question went from 2-of-3 to **0-of-3**, its roots replaced
+///    wholesale by `synth_edge`, `edge`, `create_edges`. Correcting the *penalty* is not the same
+///    as promoting the *answer*.
+///
+/// 2. **Letting pass 12's graph verdict count as a concept match** — see the note in
+///    [`rerank_by_term_groups`]. It promotes the utility layer, because the utility layer touches
+///    every concept.
+///
+/// The lesson both share, and it is worth stating once: **this multiplier is the wrong instrument
+/// for the last mile.** ×2.0-vs-×0.6 is a 3.3× swing applied to a score that already spans 10×,
+/// so anything fed into it either does nothing or overturns the ranking entirely. The remaining
+/// gap is not a weighting problem. See the module docs.
 pub fn term_groups(terms: &[String]) -> Vec<Vec<String>> {
     let mut sorted: Vec<&String> = terms.iter().collect();
     sorted.sort_by_key(|t| std::cmp::Reverse(t.len()));
