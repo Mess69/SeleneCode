@@ -110,7 +110,19 @@ tree-sitter-ruby       = "=0.23.1"
 # Storage + search  (PRD §5): SurrealDB embedded behind the GraphStore trait.
 # Decision 2026-07-12: sole backend, SurrealQL-max, no permissive fallback.
 # kv backends (kv-surrealkv / kv-rocksdb) are selected by selene-db features.
-surrealdb    = { version = "3.2", default-features = false }
+# `allocator` = mimalloc on aarch64 / jemalloc on x86 (surrealdb-core `src/mem/mod.rs`). SurrealDB's
+# own guidance for the embedded Rust engine asks for it — "using the correct memory allocator can
+# greatly improve the performance of the database core engine" — and it is NOT on by default, so a
+# `default-features = false` dependency (ours) never gets it. Measured on django: ladder 8.6 s ->
+# 6.6 s, persist 8.4 s -> 7.3 s, total 31.5 s -> 28.9 s. Graph byte-identical.
+#
+# The same page recommends two things we tested and REJECTED, and one we must never take:
+#   - `lto = true` (fat): NO measurable gain (28.86 s vs 28.90 s) and >10 min build. Kept `thin`.
+#   - a hand-built tokio runtime with a 10 MiB stack: no gain (30.5 s vs 28.9 s).
+#   - ⛔ `panic = 'abort'`: `selene-resolve` wraps the framework detectors and the synthesizers in
+#     `catch_unwind` — a panicking resolver is a COLLECTED ERROR, not a dead index. Abort turns
+#     every one of those into a crash.
+surrealdb    = { version = "3.2", default-features = false, features = ["allocator"] }
 # Surfaces / infra
 clap         = { version = "4", features = ["derive"] }
 rmcp         = { version = "2.2", default-features = false }  # official Rust MCP SDK
