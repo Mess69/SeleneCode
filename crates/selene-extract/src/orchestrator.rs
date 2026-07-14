@@ -319,6 +319,7 @@ impl<S: GraphStore> Indexer<S> {
         // `bulk_load_begin` makes "return with the FTS indexes dropped"
         // structurally impossible instead of merely remembered.
         emit(on_progress, Phase::Scanning, 0, 0, None);
+        let t_scan = Instant::now();
         let mut files = match scan_directory(&self.root, &ScanOverrides::default()) {
             Ok(files) => files,
             Err(e) => {
@@ -336,8 +337,11 @@ impl<S: GraphStore> Indexer<S> {
         // commit order IS the determinism contract (#1015, module docs).
         files.sort_unstable();
 
+        tracing::info!(target: "selene::index", ms = t_scan.elapsed().as_millis(), files = files.len(), "index/1: scan");
+
         // Initializing entry point: applies the schema on a fresh store and
         // defers FTS maintenance for the whole run (module docs).
+        let t_begin = Instant::now();
         if let Err(e) = self.store.bulk_load_begin().await {
             push_store_error(&mut result.errors, "bulk_load_begin", &e);
             // `begin` is schema-apply + a 4-statement index drop: a failure can
@@ -371,11 +375,19 @@ impl<S: GraphStore> Indexer<S> {
             Err(e) => push_store_error(&mut result.errors, "get_meta", &e),
         }
 
-        self.run_pipeline(&files, on_progress, &mut result).await;
+        tracing::info!(target: "selene::index", ms = t_begin.elapsed().as_millis(), "index/2: bulk_load_begin (schema + drop FTS)");
 
+        let t_pipe = Instant::now();
+        self.run_pipeline(&files, on_progress, &mut result).await;
+        tracing::info!(target: "selene::index", ms = t_pipe.elapsed().as_millis(), "index/3: pipeline TOTAL");
+
+        // The deferred-FTS bracket closes here: the 4 FULLTEXT indexes are rebuilt and POLLED
+        // (`wait_index_ready` sleeps between `INFO FOR INDEX` reads). Nothing had ever timed it.
+        let t_fin = Instant::now();
         if let Err(e) = self.store.bulk_load_finish().await {
             push_store_error(&mut result.errors, "bulk_load_finish", &e);
         }
+        tracing::info!(target: "selene::index", ms = t_fin.elapsed().as_millis(), "index/4: bulk_load_finish (rebuild + poll FTS)");
 
         result.success = result.files_indexed > 0
             || !result.errors.iter().any(|e| e.severity == Severity::Error);
@@ -456,6 +468,9 @@ impl<S: GraphStore> Indexer<S> {
         let total = files.len();
         let batch_size = parse_batch(self.workers);
         let mut processed = 0usize;
+        // Per-phase accumulators. The pipeline is read -> parse (rayon) -> commit (sequential,
+        // one store round trip PER FILE). Which of the three costs the 18 s was never measured.
+        let (mut ms_read, mut ms_parse, mut ms_commit) = (0u128, 0u128, 0u128);
 
         // The pool is built here, not in the constructor (see [`Indexer::new`]):
         // an OS refusal to spawn threads is a collected `parser_error`, not a
@@ -481,6 +496,7 @@ impl<S: GraphStore> Indexer<S> {
             // so progress stays monotonic and correct when a batch had reads
             // that failed or were skipped (a batch-relative offset would drift
             // by the number of missing inputs).
+            let t_read = Instant::now();
             let mut inputs: Vec<(usize, ParseInput)> = Vec::with_capacity(batch.len());
             for rel in batch {
                 processed += 1;
@@ -517,7 +533,10 @@ impl<S: GraphStore> Indexer<S> {
             }
 
             // Parse step: the whole batch fans out on the dedicated pool;
+            ms_read += t_read.elapsed().as_millis();
+
             // `collect` preserves input order.
+            let t_parse = Instant::now();
             let pool = Arc::clone(&pool);
             let extracted: Vec<(usize, ParseInput, ExtractionResult)> =
                 match tokio::task::spawn_blocking(move || {
@@ -545,7 +564,10 @@ impl<S: GraphStore> Indexer<S> {
                     }
                 };
 
+            ms_parse += t_parse.elapsed().as_millis();
+
             // Commit step: strictly sequential, in scan order (#1015).
+            let t_commit = Instant::now();
             for (ordinal, input, extraction) in &extracted {
                 emit(
                     on_progress,
@@ -590,7 +612,11 @@ impl<S: GraphStore> Indexer<S> {
                 }
                 result.errors.extend(extraction.errors.iter().cloned());
             }
+            ms_commit += t_commit.elapsed().as_millis();
         }
+
+        tracing::info!(target: "selene::index", ms_read, ms_parse, ms_commit, files = total,
+            "index/3a: pipeline breakdown (parse is rayon-parallel; commit is SEQUENTIAL, one store round trip per file)");
     }
 
     /// Commit one file's extraction through the single-file re-index

@@ -3860,6 +3860,7 @@ dependencies = [
  "tempfile",
  "tokio",
  "toml",
+ "tracing",
  "tree-sitter",
  "tree-sitter-c",
  "tree-sitter-c-sharp",

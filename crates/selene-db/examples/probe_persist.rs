@@ -60,7 +60,11 @@ DEFINE INDEX IF NOT EXISTS unresolved_key ON unresolved_ref FIELDS fromNodeId, r
 ";
 
 fn key(i: usize) -> (String, String, String) {
-    (format!("fn:{}", i % 400), format!("sym_{i}"), "calls".to_string())
+    (
+        format!("fn:{}", i % 400),
+        format!("sym_{i}"),
+        "calls".to_string(),
+    )
 }
 
 async fn open(tag: &str) -> Result<(Datastore, Session), Box<dyn std::error::Error>> {
@@ -71,8 +75,18 @@ async fn open(tag: &str) -> Result<(Datastore, Session), Box<dyn std::error::Err
         .build_with_path(&format!("rocksdb://{}", dir.display()))
         .await?;
     let ses = Session::owner().with_ns("selene").with_db("graph");
-    run(&ds, &ses, "DEFINE NAMESPACE selene; USE NS selene; DEFINE DATABASE graph;").await?;
-    run(&ds, &ses, &format!("DEFINE TABLE IF NOT EXISTS unresolved_ref SCHEMAFULL;{FIELDS}")).await?;
+    run(
+        &ds,
+        &ses,
+        "DEFINE NAMESPACE selene; USE NS selene; DEFINE DATABASE graph;",
+    )
+    .await?;
+    run(
+        &ds,
+        &ses,
+        &format!("DEFINE TABLE IF NOT EXISTS unresolved_ref SCHEMAFULL;{FIELDS}"),
+    )
+    .await?;
     Ok((ds, ses))
 }
 
@@ -88,7 +102,10 @@ async fn run(ds: &Datastore, ses: &Session, sql: &str) -> Result<(), Box<dyn std
 
 async fn count(ds: &Datastore, ses: &Session) -> Result<i64, Box<dyn std::error::Error>> {
     let mut out = 0;
-    for r in ds.execute("SELECT count() FROM unresolved_ref GROUP ALL;", ses, None).await? {
+    for r in ds
+        .execute("SELECT count() FROM unresolved_ref GROUP ALL;", ses, None)
+        .await?
+    {
         if let Value::Array(a) = r.result? {
             if let Some(Value::Object(o)) = a.first() {
                 if let Some(Value::Number(n)) = o.get("count") {
@@ -101,7 +118,11 @@ async fn count(ds: &Datastore, ses: &Session) -> Result<i64, Box<dyn std::error:
 }
 
 /// Seed SAMPLE rows. `keyed_id` = give each row the 3-tuple array as its record id (variant C).
-async fn seed(ds: &Datastore, ses: &Session, keyed_id: bool) -> Result<(), Box<dyn std::error::Error>> {
+async fn seed(
+    ds: &Datastore,
+    ses: &Session,
+    keyed_id: bool,
+) -> Result<(), Box<dyn std::error::Error>> {
     for c in (0..SAMPLE).step_by(CHUNK) {
         let rows: Vec<String> = (c..(c + CHUNK).min(SAMPLE))
             .map(|i| {
@@ -113,7 +134,12 @@ async fn seed(ds: &Datastore, ses: &Session, keyed_id: bool) -> Result<(), Box<d
                 }
             })
             .collect();
-        run(ds, ses, &format!("INSERT INTO unresolved_ref [{}];", rows.join(","))).await?;
+        run(
+            ds,
+            ses,
+            &format!("INSERT INTO unresolved_ref [{}];", rows.join(",")),
+        )
+        .await?;
     }
     Ok(())
 }
@@ -122,7 +148,9 @@ fn report(label: &str, secs: f64, before: i64, after: i64) {
     let per_key = secs / SAMPLE as f64;
     let projected = per_key * REFS as f64;
     if after != 0 {
-        println!("  {label:<40} {secs:>7.2}s   *** DELETED NOTHING ({before}->{after}) — INVALID ***");
+        println!(
+            "  {label:<40} {secs:>7.2}s   *** DELETED NOTHING ({before}->{after}) — INVALID ***"
+        );
     } else {
         println!(
             "  {label:<40} {secs:>7.2}s for {SAMPLE} keys  ->  {projected:>6.1}s projected at {REFS} refs"
@@ -151,7 +179,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         run(&ds, &ses, &sql).await?;
     }
     let secs = t.elapsed().as_secs_f64();
-    report("A  production: 1 DELETE per key", secs, before, count(&ds, &ses).await?);
+    report(
+        "A  production: 1 DELETE per key",
+        secs,
+        before,
+        count(&ds, &ses).await?,
+    );
     drop(ds);
 
     // ---- B: the obvious batch — array IN. Cannot use the index. -------------------------------
@@ -177,7 +210,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .await?;
     }
     let secs = t.elapsed().as_secs_f64();
-    report("B  batch: [a,b,c] IN [...]  (no index)", secs, before, count(&ds, &ses).await?);
+    report(
+        "B  batch: [a,b,c] IN [...]  (no index)",
+        secs,
+        before,
+        count(&ds, &ses).await?,
+    );
     drop(ds);
 
     // ---- C: the tuple IS the record id. Primary-key delete, batched. --------------------------
@@ -195,7 +233,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         run(&ds, &ses, &format!("DELETE [{}];", ids.join(","))).await?;
     }
     let secs = t.elapsed().as_secs_f64();
-    report("C  tuple AS record id (no hash)", secs, before, count(&ds, &ses).await?);
+    report(
+        "C  tuple AS record id (no hash)",
+        secs,
+        before,
+        count(&ds, &ses).await?,
+    );
     drop(ds);
 
     Ok(())

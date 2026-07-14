@@ -191,3 +191,74 @@ first clocked 66 000 rows in 0.16 s (412 k rows/s, against a Phase-1 benchmark o
 because `Datastore::execute` reports per-statement errors *inside* the responses and the INSERTs were
 failing on a missing namespace; and its first design printed nothing until the end, so 30 minutes of
 running produced zero numbers. **Assert the write landed. Print as you go.**
+
+---
+
+# Follow-up 2: the parse is 270 ms. The COMMIT is 19 seconds.
+
+`selene-extract` had **no `tracing` dependency at all** — the crate was structurally incapable of
+saying where its time went, which is precisely why nobody had ever looked at the 18 s. Added it and
+instrumented `index_all` / `run_pipeline`. django, 931 files:
+
+```
+index/1  scan                                    174 ms
+index/2  bulk_load_begin (schema + drop FTS)      17 ms
+index/3a read 98 ms | PARSE 270 ms | COMMIT 19 018 ms
+index/4  bulk_load_finish (rebuild + poll FTS)  3 544 ms
+resolve   fetch 1 288 | ladder 8 991 | persist 30 177 ms
+```
+
+## The native tree-sitter parse takes 0.27 s. It was never the problem.
+
+931 Python files, parsed, in **270 milliseconds**. The port's headline argument — that dropping the
+WASM layer and linking the grammars natively would be fast — is **true, and it is worth 0.4% of the
+run**. Every previous guess about where the time went (including this document's own, one section
+ago: *"the time is in the parse, which is exactly where the native tree-sitter port was supposed to
+WIN"*) was wrong.
+
+## The real shape of a 61-second run
+
+| | | |
+|---|---:|---|
+| **DB writes** (commit 19.0 s + persist 30.2 s) | **49.2 s** | **81%** |
+| resolve ladder (the actual work) | 9.0 s | 15% |
+| FTS rebuild + poll | 3.5 s | 6% |
+| **parse + scan** (the presumed culprit) | **0.44 s** | **0.7%** |
+
+## Why the commit costs 19 s to write what the DB ingests in 0.4 s
+
+`run_pipeline` parses a batch in parallel (rayon) and then commits it **strictly sequentially, one
+file at a time**, and per file it does:
+
+```rust
+self.store.get_file(&input.rel).await          // round trip: does this file exist? same hash?
+self.commit(input, extraction, hash).await     // round trip(s): replace_file_extraction (delete+insert)
+```
+
+931 files × (a lookup + a delete-then-insert) ≈ **20 ms per file**, awaited one after another.
+`probe_sync_mode` shows the same database ingests those 19 061 nodes in **0.4 s** when handed them
+in bulk. **We are 47× slower than the store we chose, because we talk to it one file at a time.**
+
+And on a **fresh** index — which `index_all` always is, it runs inside `bulk_load_begin/finish` —
+`get_file` returns `None` every single time and `replace_file_extraction` has nothing to replace.
+**931 of those round trips are pure waste by construction.**
+
+The sequential order is a real contract (#1015: commit order *is* the determinism contract), but
+**ordering is not the same as one-round-trip-per-file**: a batch can be accumulated in scan order
+and written in one call, preserving the order exactly.
+
+## Revised, honest projection
+
+| fix | django |
+|---|---|
+| today | 61 s |
+| + batched commit (19.0 s → ~1 s) | ~43 s |
+| + keyed-write variant C (persist 30.2 s → ~8 s) | **~21 s** |
+| CodeGraph TS | **5.7 s** |
+
+Both write fixes together take us from **10.7× to ~3.7×** behind. The remainder is then the ladder
+(9.0 s — single-core, and the one place where "parallelize it" is *finally* the right instinct rather
+than the wrong one) and the FTS rebuild (3.5 s).
+
+**Nothing here argues for replacing SurrealDB.** The engine ingests our whole django graph in under
+1.5 s. Every second we lose, we lose in how we talk to it.

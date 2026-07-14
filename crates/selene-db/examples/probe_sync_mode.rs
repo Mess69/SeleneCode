@@ -61,7 +61,11 @@ async fn run(label: &str, sync: Option<&str>) -> Result<(), Box<dyn std::error::
     // 66 000 rows in 0.16 s (412 k rows/s, against a Phase-1 benchmark of 706 nodes/s). A write
     // that wrote nothing is not a fast write.
     for r in ds
-        .execute("DEFINE NAMESPACE selene; USE NS selene; DEFINE DATABASE graph;", &ses, None)
+        .execute(
+            "DEFINE NAMESPACE selene; USE NS selene; DEFINE DATABASE graph;",
+            &ses,
+            None,
+        )
         .await?
     {
         r.result?;
@@ -70,9 +74,21 @@ async fn run(label: &str, sync: Option<&str>) -> Result<(), Box<dyn std::error::
     let t0 = Instant::now();
     for c in (0..NODES).step_by(CHUNK) {
         let rows: Vec<String> = (c..(c + CHUNK).min(NODES))
-            .map(|i| format!("{{id:'n{i}',name:'sym{i}',kind:'function',file:'src/f{}.rs'}}", i % 400))
+            .map(|i| {
+                format!(
+                    "{{id:'n{i}',name:'sym{i}',kind:'function',file:'src/f{}.rs'}}",
+                    i % 400
+                )
+            })
             .collect();
-        for r in ds.execute(&format!("INSERT INTO node [{}];", rows.join(",")), &ses, None).await? {
+        for r in ds
+            .execute(
+                &format!("INSERT INTO node [{}];", rows.join(",")),
+                &ses,
+                None,
+            )
+            .await?
+        {
             r.result?; // `execute` reports per-statement errors INSIDE the responses, not as Err
         }
     }
@@ -86,7 +102,14 @@ async fn run(label: &str, sync: Option<&str>) -> Result<(), Box<dyn std::error::
                 format!("{{id:'e{i}',src:'n{a}',dst:'n{b}',kind:'calls'}}")
             })
             .collect();
-        for r in ds.execute(&format!("INSERT INTO edge [{}];", rows.join(",")), &ses, None).await? {
+        for r in ds
+            .execute(
+                &format!("INSERT INTO edge [{}];", rows.join(",")),
+                &ses,
+                None,
+            )
+            .await?
+        {
             r.result?;
         }
     }
@@ -95,10 +118,16 @@ async fn run(label: &str, sync: Option<&str>) -> Result<(), Box<dyn std::error::
     let total = t0.elapsed();
     // A write that wrote nothing is not a fast write. COUNT before believing any number.
     let cnt = ds
-        .execute("SELECT count() FROM node GROUP ALL; SELECT count() FROM edge GROUP ALL;", &ses, None)
+        .execute(
+            "SELECT count() FROM node GROUP ALL; SELECT count() FROM edge GROUP ALL;",
+            &ses,
+            None,
+        )
         .await?;
-    let shown: Vec<String> =
-        cnt.into_iter().map(|r| format!("{:?}", r.result.map(|v| format!("{v:?}")))).collect();
+    let shown: Vec<String> = cnt
+        .into_iter()
+        .map(|r| format!("{:?}", r.result.map(|v| format!("{v:?}"))))
+        .collect();
     println!("      rows actually in the store: {}", shown.join(" | "));
     println!(
         "  {label:<34} nodes {:>7.2}s   edges {:>7.2}s   TOTAL {:>7.2}s",
