@@ -262,3 +262,96 @@ than the wrong one) and the FTS rebuild (3.5 s).
 
 **Nothing here argues for replacing SurrealDB.** The engine ingests our whole django graph in under
 1.5 s. Every second we lose, we lose in how we talk to it.
+
+---
+
+# Follow-up 3: the optimisation pass. 1.9× faster, and one silent data-loss bug found.
+
+| corpus | files | before | **after** | codegraph TS | gap |
+|---|---:|---:|---:|---:|---|
+| codegraph/src | 162 | 18.4 s | **10.1 s** | 2.4 s | TS 4.2× |
+| SeleneCode/crates | 328 | 22.8 s | **12.3 s** | 2.8 s | TS 4.4× |
+| django | 931 | 61.1 s | **31.5 s** | 5.7 s | TS 5.5× |
+
+The gap closed from **7.7–10.7× to 4.2–5.5×**. What actually moved, in order of size:
+
+### 1. The commit talked to the store one file at a time (19.0 s → 9.3 s)
+
+`get_file()` + `replace_file_extraction()` per file, awaited serially — ~5 round trips × 931 files.
+On a fresh index (which `index_all` always is) `get_file` returns `None` every time and there is
+nothing to replace: **most of it was waste by construction.** Now: one `all_files()`, and new files
+are accumulated in scan order and written in four calls. Already-indexed files keep the per-file
+REPLACE protocol, which is correctness (#1015), not overhead.
+
+### 2. The resolve loop DRAINED a queue to advance — and dropped references doing it (24 s → ~6 s)
+
+It ran at `offset 0` forever and relied on `delete_resolved` + `mark_failed` to remove each batch's
+rows so the next fetch returned the next ones. **The key it deleted by —
+`(fromNodeId, referenceName, referenceKind)` — is not unique.** django's `_check_token` raises
+`RejectRequest` on five different lines: five rows, one key. The loop resolved the first, deleted by
+key, and **took the other four with it**. Edge identity includes the line, so those were four real
+edges that never got made. **The graph shipped without them.** This is incident #760's exact
+species, and it was still live.
+
+The loop now walks the queue (`START offset`), mutates nothing during the pass, and rewrites the
+queue once at the end: *drop every pending row, re-insert the failed ones as failed.* Two statements
+instead of 52 354 keyed writes — and the bug is structurally impossible, because nothing is deleted
+by a non-unique key any more.
+
+⚠ **The edges still go in per batch, and that is a DEPENDENCY.** Deferring every insert to the end
+ran 3 s faster and produced **46 937 edges instead of 46 946** — the ladder reads the graph earlier
+batches wrote. Hoisting the writes out of the loop silently changes the answer.
+
+### 3. `START offset` is a skip-scan (2.2 s → 0.36 s)
+
+The offset walk I had just introduced paged with `LIMIT n START offset`, which walks the first
+`offset` rows to discard them — O(n²/batch), and it would have gone quadratic on VS Code. Nothing
+mutates the queue during the pass, so there is nothing to page around: fetch once, iterate in memory.
+
+### 4. Three indexes were being maintained for no reader (36.2 s → 33.5 s)
+
+`unresolved_key` — the 3-field composite — was added two days earlier and took persist 42.8 s →
+11.0 s. It was a real fix *for the keyed writes*. Once the keyed writes were gone, **nothing queried
+it**, and it was still being maintained on 52 358 inserts and 52 358 deletes. Same for
+`unresolved_ref_name` and `unresolved_file_path`, whose only queries have zero callers.
+
+> An index is a cost paid on every write to serve a read. When the read goes away, nobody goes back
+> and removes the index.
+
+### Measured and REJECTED
+
+- **`CHUNK` tuning** (100/250/500/1000): no effect — bulk 9.1–9.2 s, persist 10.9–12.3 s, all noise.
+  SurrealDB's own benchmark shows batch-100 at ~2× the row throughput of batch-1000, but that
+  measures **network** round trips; we are in-process.
+- **`SURREAL_DATASTORE_SYNC`**: inert. The SDK never calls `Builder::with_config()`, so every
+  `SURREAL_*` variable is dead in embedded mode. Worth 12% anyway.
+
+## Where the remaining 31.5 s goes, and what is left
+
+```
+bulk write   ~8.1 s   (nodes 3.6 · edges 1.8 · unresolved 2.5)
+ladder        8.6 s   ← SINGLE CORE
+persist      ~8.4 s   (insert_edges 2.4 · queue rewrite ~6)
+FTS rebuild   3.2 s
+synthesis     2.8 s
+scan + parse  0.4 s   ← the thing everyone suspected
+```
+
+Remaining levers, largest first — **none of them is the database engine**:
+
+1. **Don't round-trip the queue through the disk at all** (~−7 s). We write 52 358 unresolved refs,
+   read them back, and delete them — a hand-off buffer between two phases of the same process.
+   ⚠ **Blocked on a decision**: the resolution order is `(fromNodeId, referenceName, referenceKind,
+   id)` and `id` is a **SurrealDB-generated record id**. Resolution results depend on it (batch N
+   sees batch N-1's edges). Handing refs over in memory means ordering them without that id, which
+   **changes the graph**. It would also make determinism independent of the engine's id generation,
+   which is arguably a latent bug — but it is a deliberate change, not a free win.
+2. **Defer the node indexes during bulk load, like FTS already is** (~−2.6 s). `insert_nodes` is
+   3.6 s for 19 061 nodes; the same store ingests them in 0.4 s on a bare table. The gap is index
+   maintenance.
+3. **Parallelize the ladder** (8.6 s, one core). ⚠ Batch N depends on batch N-1's edges, so this
+   cannot be parallelized *across* batches without changing the answer.
+
+**Honest ceiling:** 1 + 2 lands around ~22 s; adding 3 lands around ~16 s. **That is still ~3× TS.**
+Our node insert alone (19 061 rows, 3.6 s) is most of TS's entire 5.7 s run. Beating SQLite here is
+not obviously reachable by tuning — it needs the write volume itself to come down.
