@@ -346,9 +346,15 @@ Remaining levers, largest first — **none of them is the database engine**:
    sees batch N-1's edges). Handing refs over in memory means ordering them without that id, which
    **changes the graph**. It would also make determinism independent of the engine's id generation,
    which is arguably a latent bug — but it is a deliberate change, not a free win.
-2. **Defer the node indexes during bulk load, like FTS already is** (~−2.6 s). `insert_nodes` is
-   3.6 s for 19 061 nodes; the same store ingests them in 0.4 s on a bare table. The gap is index
-   maintenance.
+2. ~~**Defer the node indexes during bulk load, like FTS already is**~~ — **TRIED, MEASURED, A WASH.
+   Reverted.** Dropping the nine ordinary `node` indexes for the load and rebuilding them in
+   `bulk_load_finish` did exactly what it was supposed to on the insert side — `insert_nodes`
+   **3 634 ms → 2 254 ms** — and then handed the saving straight back at the rebuild:
+   `bulk_load_finish` **3 241 ms → 5 066 ms**. Net **31.5 s → 32.5 s**. SurrealDB's bulk
+   `DEFINE INDEX` costs *more* than the 19 061 incremental maintenances it avoids, which is the
+   opposite of the usual bulk-load intuition and is why it had to be measured rather than assumed.
+   The graph was byte-identical throughout, so this is a clean negative result: **the 3.6 s in
+   `insert_nodes` is not reachable by moving *when* the indexes are built.**
 3. **Parallelize the ladder** (8.6 s, one core). ⚠ Batch N depends on batch N-1's edges, so this
    cannot be parallelized *across* batches without changing the answer.
 
