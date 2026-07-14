@@ -19,14 +19,15 @@ pub async fn index_fixture(dir: &Path) -> SurrealStore {
     store.apply_schema().await.expect("schema");
 
     let indexer = Indexer::new(dir.to_path_buf(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     assert!(
         result.files_indexed > 0,
         "{dir:?} indexed ZERO files — the test would be asserting against an empty graph"
     );
     let store = indexer.into_store();
 
-    selene_resolve::resolve_and_persist_batched(&store, dir, None)
+    selene_resolve::resolve_and_persist_in_memory(&store, dir, __ix.unresolved.clone(), None)
         .await
         .expect("resolution must never fail an index");
 

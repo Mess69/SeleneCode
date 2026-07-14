@@ -53,15 +53,17 @@ async fn where_does_indexing_time_actually_go() {
 
     let t = Instant::now();
     let indexer = Indexer::new(root.clone(), store.clone());
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     let ms_extract = t.elapsed().as_millis();
     let files = result.files_indexed;
     assert!(files > 0, "indexed nothing from {repo} — wrong path?");
 
     let t = Instant::now();
-    let stats = selene_resolve::resolve_and_persist_batched(&store, &root, None)
-        .await
-        .expect("resolution");
+    let stats =
+        selene_resolve::resolve_and_persist_in_memory(&store, &root, __ix.unresolved.clone(), None)
+            .await
+            .expect("resolution");
     let ms_resolve = t.elapsed().as_millis();
 
     let total = ms_extract + ms_resolve;

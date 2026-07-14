@@ -315,7 +315,8 @@ pub async fn index_and_drive(dir: &Path) -> Pipeline {
     let store = SurrealStore::in_memory().await.expect("in-memory store");
     store.apply_schema().await.expect("schema");
     let indexer = Indexer::new(dir.to_path_buf(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     assert!(
         result.files_indexed > 0,
         "{dir:?} indexed ZERO files — the gate would be comparing nothing"
@@ -324,9 +325,10 @@ pub async fn index_and_drive(dir: &Path) -> Pipeline {
 
     // Detection, emission, the ladder, the conformance passes, the caches, synthesis —
     // all of it, in the order the DRIVER declares, not the order a test remembered.
-    let stats = selene_resolve::resolve_and_persist_batched(&store, dir, None)
-        .await
-        .expect("the driver must never fail an index");
+    let stats =
+        selene_resolve::resolve_and_persist_in_memory(&store, dir, __ix.unresolved.clone(), None)
+            .await
+            .expect("the driver must never fail an index");
 
     let ctx = StoreContext::new(store, dir.to_path_buf())
         .await
@@ -362,7 +364,7 @@ async fn detected_pipeline(dir: &Path, require_framework: bool) -> Pipeline {
     let store = SurrealStore::in_memory().await.expect("in-memory store");
     store.apply_schema().await.expect("schema");
     let indexer = Indexer::new(dir.to_path_buf(), store);
-    indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
     let ctx = StoreContext::new(indexer.into_store(), dir.to_path_buf())
         .await
         .expect("store context");
@@ -393,7 +395,8 @@ pub async fn index_and_resolve(
 
     // (1) Real extraction — nodes, same-file edges, unresolved refs.
     let indexer = Indexer::new(dir.to_path_buf(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     assert!(
         result.files_indexed > 0,
         "the fixture indexed ZERO files — the harness would be testing nothing"
@@ -424,11 +427,25 @@ pub async fn index_and_resolve(
     // (3) Resolve. The resolver is sync and drives the async store through
     // `block_on`, so it must run off the runtime's worker — exactly as
     // production does under `spawn_blocking`.
-    let pending = ctx
-        .store()
-        .unresolved_pending_batch(0, 10_000)
-        .await
-        .expect("pending refs");
+    // **The references come from TWO places, and forgetting either one silently guts a flow.**
+    //
+    // - Extraction's refs now come home in the `IndexResult` (`index_all` no longer stages them in
+    //   the store — they were a hand-off buffer between two phases of the same process).
+    // - The FRAMEWORK pass writes its own, INTO THE STORE, mid-run: route→handler links cannot
+    //   exist until the route nodes do.
+    //
+    // Taking only the store's set left every ordinary call unresolved; taking only the in-memory
+    // set left every ROUTE unresolved. The dispatch gate caught the second one
+    // (`flow_bare_attribute_route_to_action_to_service`: the route reached the controller and the
+    // controller reached nothing), which is exactly what that gate is for — a route that reaches
+    // nothing is worse than no route.
+    let mut pending = __ix.unresolved.clone();
+    pending.extend(
+        ctx.store()
+            .unresolved_pending_batch(0, 10_000)
+            .await
+            .expect("pending refs"),
+    );
 
     let (resolver, edges, resolved) = tokio::task::block_in_place(move || {
         let mut resolver = ReferenceResolver::new(ctx);

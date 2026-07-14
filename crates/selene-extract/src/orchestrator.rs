@@ -200,6 +200,20 @@ pub struct IndexResult {
     /// a persisted wire contract with no fitting variant).
     pub notes: Vec<String>,
     pub duration_ms: u64,
+    /// **The unresolved references, carried in memory — NOT written to the store.**
+    ///
+    /// They used to be persisted here and read straight back by the resolver: 52 358 rows written
+    /// to disk (2.4 s), fetched again, and then deleted (a further ~3.5 s). A hand-off buffer
+    /// between two phases of the SAME PROCESS, round-tripped through a database.
+    ///
+    /// The resolver takes them from here instead (`resolve_and_persist_in_memory`). The store's
+    /// end state is unchanged — after a resolve pass the table holds exactly the FAILED refs, and
+    /// that is still what gets written. Only the intermediate state, which nothing ever observed,
+    /// is gone.
+    ///
+    /// The incremental path (`index_files` → `replace_file_extraction`) still persists them: there
+    /// the refs must outlive the process, because a later resolve is a different run.
+    pub unresolved: Vec<UnresolvedRef>,
 }
 
 /// Progress callback (sync — invoked inline between pipeline steps).
@@ -663,23 +677,23 @@ impl<S: GraphStore> Indexer<S> {
             }
             ms_e = t.elapsed().as_millis();
 
-            let t = Instant::now();
-            if let Err(e) = self.store.insert_unresolved(&pending_unresolved).await {
-                push_store_error(&mut result.errors, "insert_unresolved", &e);
-            }
-            ms_u = t.elapsed().as_millis();
+            // ⚠ **The unresolved refs are NOT written.** They go home with the caller
+            // (`IndexResult::unresolved`) and the resolver reads them from memory. Writing them
+            // here cost 2.4 s on django, and the resolver's first act was to read them back and
+            // its last was to delete them.
 
             let t = Instant::now();
             if let Err(e) = self.store.upsert_files(&pending_files).await {
                 push_store_error(&mut result.errors, "upsert_files", &e);
             }
             ms_f = t.elapsed().as_millis();
+            result.unresolved = pending_unresolved;
         }
         let ms_bulk = t_bulk.elapsed().as_millis();
         tracing::info!(target: "selene::index",
             nodes = pending_nodes.len(), ms_nodes = ms_n,
             edges = pending_edges.len(), ms_edges = ms_e,
-            unresolved = pending_unresolved.len(), ms_unresolved = ms_u,
+            unresolved = result.unresolved.len(), ms_unresolved = ms_u,
             files = pending_files.len(), ms_files = ms_f,
             "index/3b: the batched write, per call");
 

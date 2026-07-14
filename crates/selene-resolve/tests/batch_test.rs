@@ -11,7 +11,7 @@ use std::path::Path;
 use selene_core::{EdgeKind, NodeKind};
 use selene_db::SurrealStore;
 use selene_extract::Indexer;
-use selene_resolve::{RESOLVE_BATCH, resolve_and_persist_batched};
+use selene_resolve::{RESOLVE_BATCH, resolve_and_persist_batched, resolve_and_persist_in_memory};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
@@ -21,37 +21,56 @@ fn fixture(name: &str) -> std::path::PathBuf {
 
 /// Index a fixture and hand back the store — the state an indexer leaves behind, and the
 /// exact state the driver is asked to pick up.
-async fn indexed(name: &str) -> (SurrealStore, std::path::PathBuf) {
+/// Index a fixture and hand back the store, the dir, **and the references extraction produced**.
+///
+/// The refs used to be fetched back out of the store; `index_all` no longer writes them (they were
+/// a hand-off buffer between two phases of the same process — see
+/// `resolve_and_persist_in_memory`). They come home in the `IndexResult` now, and the driver takes
+/// them from there, exactly as `selene index` does.
+async fn indexed(
+    name: &str,
+) -> (
+    SurrealStore,
+    std::path::PathBuf,
+    Vec<selene_db::UnresolvedRef>,
+) {
     let dir = fixture(name);
     let store = SurrealStore::in_memory().await.unwrap();
     store.apply_schema().await.unwrap();
     let indexer = Indexer::new(dir.clone(), store);
     let result = indexer.index_all(None).await;
     assert!(result.files_indexed > 0);
-    (indexer.into_store(), dir)
+    assert!(
+        !result.unresolved.is_empty(),
+        "the fixture must have references to resolve — a driver that resolves nothing would pass          every assertion below vacuously"
+    );
+    (indexer.into_store(), dir, result.unresolved)
 }
 
 /// **The driver resolves, and the edges land in the STORE** — not merely in a return
 /// value a test could read and a product never would.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_driver_persists_edges_and_drains_the_pending_set() {
-    let (store, dir) = indexed("express").await;
+    let (store, dir, refs) = indexed("express").await;
 
-    let pending_before = store.unresolved_pending_count().await.unwrap();
-    assert!(pending_before > 0, "the fixture must have refs to resolve");
+    // The references are no longer staged in the store between extract and resolve — `indexed()`
+    // asserts the fixture produced some, which is the same guard against a vacuous pass.
 
-    let stats = resolve_and_persist_batched(&store, &dir, None)
+    let stats = resolve_and_persist_in_memory(&store, &dir, refs.clone(), None)
         .await
         .unwrap();
 
     assert!(stats.resolved > 0, "nothing resolved: {stats:?}");
     assert!(
-        stats.total > pending_before as usize,
-        "the driver processed {} refs but extraction left {pending_before}. It must be \
-         MORE: the framework pass (step 1) emits its own route→handler references before \
-         the ladder runs, and they are resolved in the same loop. Equal would mean the \
-         framework refs were never inserted; fewer would mean rows were skipped.",
-        stats.total
+        stats.total > refs.len(),
+        "the driver processed {} refs but extraction produced {}. It must be MORE: the \
+         framework pass (step 1) emits its own route→handler references INTO THE STORE before \
+         the ladder runs — they cannot exist until the route nodes do — and they are resolved in \
+         the same loop. Equal would mean the in-memory path silently dropped them, which is a \
+         FEATURE regression (every Express/Django/Spring route left unresolved) hiding inside an \
+         edge count dominated by ordinary calls.",
+        stats.total,
+        refs.len()
     );
 
     // The pending set is DRAINED — resolved rows deleted, the rest marked failed. If the
@@ -87,9 +106,9 @@ async fn the_driver_persists_edges_and_drains_the_pending_set() {
 /// after all of it. One assertion, six ordering constraints.
 #[tokio::test(flavor = "multi_thread")]
 async fn the_pass_order_holds_end_to_end_through_the_driver() {
-    let (store, dir) = indexed("react-render").await;
+    let (store, dir, refs) = indexed("react-render").await;
 
-    let stats = resolve_and_persist_batched(&store, &dir, None)
+    let stats = resolve_and_persist_in_memory(&store, &dir, refs.clone(), None)
         .await
         .unwrap();
 
@@ -112,9 +131,9 @@ async fn the_pass_order_holds_end_to_end_through_the_driver() {
 /// framework pass emits, and `known_names` is warmed once).
 #[tokio::test(flavor = "multi_thread")]
 async fn the_framework_pass_runs_before_the_context_is_warmed() {
-    let (store, dir) = indexed("spring").await;
+    let (store, dir, refs) = indexed("spring").await;
 
-    resolve_and_persist_batched(&store, &dir, None)
+    resolve_and_persist_in_memory(&store, &dir, refs.clone(), None)
         .await
         .unwrap();
 
@@ -150,7 +169,7 @@ async fn the_framework_pass_runs_before_the_context_is_warmed() {
 async fn a_name_mutating_resolver_trips_the_guard_instead_of_looping_forever() {
     use selene_core::{RefStatus, UnresolvedRef};
 
-    let (store, dir) = indexed("express").await;
+    let (store, dir, refs) = indexed("express").await;
 
     // A reference whose `from_node_id` names no node: it can never resolve, and
     // `mark_failed` is what removes it. Insert it, then delete the FILE it belongs to so
@@ -176,7 +195,7 @@ async fn a_name_mutating_resolver_trips_the_guard_instead_of_looping_forever() {
     // leaves the pending set does not return.
     let stats = tokio::time::timeout(
         std::time::Duration::from_secs(60),
-        resolve_and_persist_batched(&store, &dir, None),
+        resolve_and_persist_in_memory(&store, &dir, refs.clone(), None),
     )
     .await
     .expect(
@@ -197,8 +216,8 @@ async fn a_name_mutating_resolver_trips_the_guard_instead_of_looping_forever() {
 /// A store outage must not be indistinguishable from "nothing to resolve".
 #[tokio::test(flavor = "multi_thread")]
 async fn the_stats_carry_the_store_read_error_count() {
-    let (store, dir) = indexed("express").await;
-    let stats = resolve_and_persist_batched(&store, &dir, None)
+    let (store, dir, refs) = indexed("express").await;
+    let stats = resolve_and_persist_in_memory(&store, &dir, refs.clone(), None)
         .await
         .unwrap();
 
@@ -217,8 +236,8 @@ async fn the_stats_carry_the_store_read_error_count() {
 #[tokio::test(flavor = "multi_thread")]
 async fn two_runs_produce_the_same_edges() {
     async fn edge_keys(name: &str) -> Vec<String> {
-        let (store, dir) = indexed(name).await;
-        resolve_and_persist_batched(&store, &dir, None)
+        let (store, dir, refs) = indexed(name).await;
+        resolve_and_persist_in_memory(&store, &dir, refs.clone(), None)
             .await
             .unwrap();
 

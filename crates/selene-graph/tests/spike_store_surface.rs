@@ -130,12 +130,13 @@ async fn index_fixture(dir: &Path) -> SurrealStore {
     store.apply_schema().await.expect("schema");
 
     let indexer = Indexer::new(dir.to_path_buf(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     assert!(result.files_indexed > 0, "the fixture indexed ZERO files");
     let store = indexer.into_store();
 
     // The REAL driver — detection, framework emission, the ladder, conformance, synthesis.
-    selene_resolve::resolve_and_persist_batched(&store, dir, None)
+    selene_resolve::resolve_and_persist_in_memory(&store, dir, __ix.unresolved.clone(), None)
         .await
         .expect("resolution must never fail an index");
 
@@ -352,12 +353,13 @@ async fn perf_indexing_this_repos_crates_dir() {
 
     let t0 = Instant::now();
     let indexer = Indexer::new(root.clone(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     let extract_time = t0.elapsed();
     let store = indexer.into_store();
 
     let t1 = Instant::now();
-    selene_resolve::resolve_and_persist_batched(&store, &root, None)
+    selene_resolve::resolve_and_persist_in_memory(&store, &root, __ix.unresolved.clone(), None)
         .await
         .unwrap();
     let resolve_time = t1.elapsed();

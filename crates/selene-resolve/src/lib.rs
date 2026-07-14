@@ -347,7 +347,10 @@ mod strip_comments;
 pub mod synth;
 mod types;
 
-pub use batch::{PERSIST_CHUNK, RESOLVE_BATCH, resolve_and_persist, resolve_and_persist_batched};
+pub use batch::{
+    PERSIST_CHUNK, RESOLVE_BATCH, resolve_and_persist, resolve_and_persist_batched,
+    resolve_and_persist_in_memory,
+};
 pub use builtins::is_built_in_or_external;
 pub use cache::{CACHE_SIZE_ENV, DEFAULT_CACHE_LIMIT, SyncLru, cache_limit, content_cache_limit};
 pub use context::{ResolutionContext, StoreContext};

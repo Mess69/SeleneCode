@@ -110,9 +110,45 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
 /// → synthesize. This is what an indexer calls.
 ///
 /// `on_progress(done, total)` is called once per batch.
+/// Resolve everything the STORE has pending. The durable path: the incremental re-index writes its
+/// references through `replace_file_extraction`, and a later run picks them up here.
 pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     store: &S,
     root: &Path,
+    on_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Result<ResolutionStats> {
+    resolve_pending(store, root, None, on_progress).await
+}
+
+/// Resolve references the caller **already holds** — the full-index path.
+///
+/// `index_all` produces the references and used to write all 52 358 of them to disk (2.4 s) so that
+/// this function could read them straight back (0.3 s) and then delete them (~3.5 s). A hand-off
+/// buffer between two phases of the same process, round-tripped through a database. It takes them
+/// from memory now.
+///
+/// **The store's end state is identical**: after a resolve pass the `unresolved_ref` table holds
+/// exactly the references that FAILED, and those are still written (`replace_pending_with_failed`).
+/// Only the intermediate state — which nothing ever read — is gone.
+///
+/// It also makes the resolution order **independent of the database**. The store path orders by
+/// `(fromNodeId, referenceName, referenceKind, id)`, and that `id` is a SurrealDB-generated record
+/// id: the graph we produced therefore depended on the engine's id generation, which is a
+/// determinism bug wearing a performance costume. In-memory, the order is extraction order — file
+/// scan order, then emission order within a file — which is ours, and reproducible.
+pub async fn resolve_and_persist_in_memory<S: GraphStore + Clone>(
+    store: &S,
+    root: &Path,
+    pending: Vec<UnresolvedRef>,
+    on_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
+) -> Result<ResolutionStats> {
+    resolve_pending(store, root, Some(pending), on_progress).await
+}
+
+async fn resolve_pending<S: GraphStore + Clone>(
+    store: &S,
+    root: &Path,
+    in_memory: Option<Vec<UnresolvedRef>>,
     on_progress: Option<&(dyn Fn(usize, usize) + Sync)>,
 ) -> Result<ResolutionStats> {
     // Phase timings. A 12k-file repo spends minutes in here; without per-phase spans a
@@ -139,7 +175,10 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
     tracing::info!(ms = t.elapsed().as_millis(), "resolve/2: ctx#2 warm");
 
-    let total = store.unresolved_pending_count().await? as usize;
+    let total = match &in_memory {
+        Some(p) => p.len(),
+        None => store.unresolved_pending_count().await? as usize,
+    };
     let mut stats = ResolutionStats::default();
     let mut resolver = ReferenceResolver::new(ctx);
     let mut remaining_before = usize::MAX;
@@ -185,7 +224,44 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     // LOAD-BEARING: batch N resolves against the edges batch N-1 wrote, so the order references are
     // visited changes the answer. This must stay exactly the order the paged fetch produced.
     let t = std::time::Instant::now();
-    let pending = store.unresolved_pending_batch(0, usize::MAX).await?;
+    let pending = match in_memory {
+        Some(mut p) => {
+            // ⚠ **The framework pass writes its OWN references to the store, and they must be
+            // resolved too.** Step 1 above (`run_framework_extract`) emits route→handler links —
+            // they cannot exist until the route nodes do, so they are born mid-run, in the store,
+            // not in the extractor's output. Taking only the caller's in-memory refs would leave
+            // every Express/Django/Spring route unresolved: a FEATURE regression, silent, and
+            // invisible in an edge count that is dominated by ordinary calls.
+            //
+            // `batch_test` caught this. Keep it.
+            let from_frameworks = store.unresolved_pending_batch(0, usize::MAX).await?;
+            p.extend(from_frameworks);
+
+            // **Reproduce the store's ORDER, not its record ids.**
+            //
+            // The store path returns `ORDER BY fromNodeId, referenceName, referenceKind, id`, and
+            // resolution results depend on it: batch N resolves against the edges batch N-1 wrote,
+            // so which reference is seen first decides which of two mutually-dependent references
+            // resolves. Handing the refs over in EXTRACTION order (file by file) instead lost **9
+            // of django's 28 180 bindings** — real edges, gone, because a reference that used to be
+            // visited early now came late.
+            //
+            // So sort by the same key. The `id` tiebreak is deliberately NOT reproduced: it is a
+            // SurrealDB-generated record id, and depending on it means the graph we produce depends
+            // on the engine's id generation — a determinism bug wearing a performance costume.
+            // `sort_by` is stable, so ties fall back to extraction order, which is OURS and
+            // reproducible (verified: two runs, identical graph).
+            p.sort_by(|a, b| {
+                (&a.from_node_id, &a.reference_name, &a.reference_kind).cmp(&(
+                    &b.from_node_id,
+                    &b.reference_name,
+                    &b.reference_kind,
+                ))
+            });
+            p
+        }
+        None => store.unresolved_pending_batch(0, usize::MAX).await?,
+    };
     ms_fetch += t.elapsed().as_millis();
 
     for batch in pending.chunks(RESOLVE_BATCH) {

@@ -49,11 +49,12 @@ async fn explore(project: &str, query: &str) -> (String, u64) {
     let store = SurrealStore::in_memory().await.unwrap();
     store.apply_schema().await.unwrap();
     let indexer = Indexer::new(dir.clone(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     assert!(result.files_indexed > 0, "{project}: indexed ZERO files");
     let store = indexer.into_store();
 
-    selene_resolve::resolve_and_persist_batched(&store, &dir, None)
+    selene_resolve::resolve_and_persist_in_memory(&store, &dir, __ix.unresolved.clone(), None)
         .await
         .expect("resolution must never fail an index");
 
@@ -213,9 +214,9 @@ async fn the_gate_corpus_is_a_real_resolved_graph() {
     let store = SurrealStore::in_memory().await.unwrap();
     store.apply_schema().await.unwrap();
     let indexer = Indexer::new(dir.clone(), store);
-    indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
     let store = indexer.into_store();
-    selene_resolve::resolve_and_persist_batched(&store, &dir, None)
+    selene_resolve::resolve_and_persist_in_memory(&store, &dir, __ix.unresolved.clone(), None)
         .await
         .unwrap();
 

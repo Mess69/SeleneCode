@@ -188,16 +188,18 @@ async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
     store.apply_schema().await.expect("schema");
 
     let indexer = Indexer::new(dir.to_path_buf(), store);
-    let result = indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
+    let result = &__ix;
     assert!(
         result.files_indexed > 0,
         "{dir:?} indexed ZERO files — the gate would be comparing nothing"
     );
     let store = indexer.into_store();
 
-    let stats = selene_resolve::resolve_and_persist_batched(&store, dir, None)
-        .await
-        .expect("the driver must never fail an index");
+    let stats =
+        selene_resolve::resolve_and_persist_in_memory(&store, dir, __ix.unresolved.clone(), None)
+            .await
+            .expect("the driver must never fail an index");
     assert_eq!(
         stats.store_read_errors, 0,
         "{dir:?}: the driver swallowed {} store read error(s). A store outage is otherwise \

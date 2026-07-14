@@ -96,9 +96,12 @@ async fn index(path: PathBuf) -> Result<()> {
     );
 
     eprintln!("resolving …");
-    let stats = selene_resolve::resolve_and_persist_batched(&store, &root, None)
-        .await
-        .context("resolution failed")?;
+    // The references come from `index_all` in memory. They are NOT round-tripped through the
+    // store — see `resolve_and_persist_in_memory`.
+    let stats =
+        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+            .await
+            .context("resolution failed")?;
 
     let (nodes, edges) = store.node_edge_count().await.unwrap_or((0, 0));
     eprintln!(

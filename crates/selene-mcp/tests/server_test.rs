@@ -128,9 +128,9 @@ async fn explore_answers_from_a_real_index_in_one_call() {
     let store = selene_db::SurrealStore::open(&dir).await.unwrap();
     store.apply_schema().await.unwrap();
     let indexer = selene_extract::Indexer::new(root.clone(), store);
-    indexer.index_all(None).await;
+    let __ix = indexer.index_all(None).await;
     let store = indexer.into_store();
-    selene_resolve::resolve_and_persist_batched(&store, &root, None)
+    selene_resolve::resolve_and_persist_in_memory(&store, &root, __ix.unresolved.clone(), None)
         .await
         .unwrap();
     drop(store);
