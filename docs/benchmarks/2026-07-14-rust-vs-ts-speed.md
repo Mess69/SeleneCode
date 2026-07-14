@@ -361,3 +361,86 @@ Remaining levers, largest first — **none of them is the database engine**:
 **Honest ceiling:** 1 + 2 lands around ~22 s; adding 3 lands around ~16 s. **That is still ~3× TS.**
 Our node insert alone (19 061 rows, 3.6 s) is most of TS's entire 5.7 s run. Beating SQLite here is
 not obviously reachable by tuning — it needs the write volume itself to come down.
+
+---
+
+# Follow-up 4: 10.7× → 2.0–2.9×. The database was never the problem.
+
+| corpus | files | this morning | **now** | codegraph TS | gap |
+|---|---:|---:|---:|---:|---|
+| codegraph/src | 162 | 18.4 s | **6.2 s** | 2.4 s | **TS 2.6×** |
+| SeleneCode/crates | 328 | 22.8 s | **5.5 s** | 2.8 s | **TS 2.0×** |
+| django | 931 | 61.1 s | **16.4 s** | 5.7 s | **TS 2.9×** |
+
+Deterministic across runs. Coverage unchanged (and 4 references RECOVERED that the old code silently
+dropped). Every gate green. `explore` still answers the milestone question 3/3.
+
+## The two findings that did the work, and they are the same finding
+
+**1. The "ladder" was not CPU-bound. It was 32,524 blocking point lookups.**
+
+The module docs said *"resolution is CPU-bound over a warm cache, not I/O-bound"*. Counted:
+
+```
+blocking store reads   32,524      time blocked  4,810 ms  = 69% of the ladder
+get_node (POINT LOOKUP BY PRIMARY KEY)   14,674 calls
+get_nodes_by_name                        12,279 calls
+```
+
+We were asking a database, one row at a time, 32,524 times, to reconstruct a table of 19,061 rows
+that fits in ~8 MB of RAM. The LRU could not help and its size was not the fix: raising it from 5,000
+to 200,000 removed **8%** of the reads. They are **cold misses** — 12,279 distinct names, each
+fetched once. *A lazy cache pays one round trip per distinct key, forever.*
+
+One scan (127 ms) replaced all of them. Ladder: **6,839 ms → 1,889 ms**.
+
+**2. The reference queue was a hand-off buffer round-tripped through the disk.**
+
+`index_all` wrote 52,358 unresolved references to the store (2.4 s) so the resolver could read them
+back (0.3 s) and delete them (~3.5 s) — between two phases of the **same process**. They are passed
+in memory now. Persist: **7.3 s → 3.4 s**.
+
+It also removed a **determinism bug**: the store ordered by `(fromNodeId, referenceName,
+referenceKind, id)` and that `id` is a **SurrealDB-generated record id**. The graph we shipped
+depended on the engine's id generation.
+
+## The lesson, stated once
+
+**The resolution phase is not a graph problem. It is a symbol-table lookup** — *"which nodes are
+named `foo`?"* — and the right place for a dictionary you hit 32,524 times is **RAM**, not a
+database, whatever kind of database it is.
+
+The graph engine is for **storing** the result and **traversing** it (`explore`, callers, impact).
+It was never the right tool for the **build** side. Every second we lost, we lost by treating an
+in-process computation as a database workload.
+
+**Nothing here argued for replacing SurrealDB.** It ingests the whole django graph in under 1.5 s.
+Its own benchmark has it at 300 k CRUD ops/s — 3.5× Redis. It was never slow. We were loud.
+
+## Also measured, also rejected (so nobody re-runs them)
+
+| idea | verdict |
+|---|---|
+| `SURREAL_DATASTORE_SYNC` / fsync | **inert** — the SDK never calls `Builder::with_config()`, so every `SURREAL_*` var is dead in embedded mode. Worth 12% anyway. |
+| `WHERE [a,b,c] IN [...]` batch delete (**recommended by our own docs**) | **64× REGRESSION** — an array expression cannot use the composite index |
+| `CHUNK` tuning (100/250/500/1000) | **no effect** — SurrealDB's batch-size numbers measure *network* round trips; we are in-process |
+| deferring the node indexes for the bulk load | **a wash** — the bulk `DEFINE INDEX` costs more than the 19,061 incremental maintenances it avoids |
+| `lto = true` (fat) | **no gain**, >10 min build |
+| tokio 10 MiB stack, explicit multi_thread | **no gain** |
+| ⛔ `panic = 'abort'` (SurrealDB recommends it) | **NEVER** — `selene-resolve` wraps the framework detectors and synthesizers in `catch_unwind`; a panicking resolver is a *collected error*, not a dead index |
+| SurrealDB `allocator` feature (mimalloc) | ✅ **31.5 s → 28.9 s** — not on by default, and a `default-features = false` dep never gets it |
+
+## What is left on django's 16.4 s
+
+```
+bulk write   ~5.5 s   (nodes 3.4 · edges 1.6)
+persist       3.4 s   (insert_edges 2.4 · queue rewrite ~1)
+FTS rebuild   3.2 s
+synthesis     2.8 s
+ladder        1.9 s
+parse+scan    0.3 s
+```
+
+No single item dominates any more. Beating 5.7 s needs the **write volume** to come down (the node
+table is SCHEMAFULL with ~25 fields and 9 indexes) or the FTS/synthesis passes to be reconsidered —
+not more tuning.
