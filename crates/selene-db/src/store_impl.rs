@@ -162,6 +162,10 @@ impl GraphStore for SurrealStore {
         SurrealStore::upsert_file(self, f).await
     }
 
+    async fn upsert_files(&self, files: &[FileRecord]) -> Result<()> {
+        SurrealStore::upsert_files(self, files).await
+    }
+
     async fn get_file(&self, path: &str) -> Result<Option<FileRecord>> {
         SurrealStore::get_file(self, path).await
     }

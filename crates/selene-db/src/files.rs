@@ -101,6 +101,34 @@ impl SurrealStore {
         Ok(())
     }
 
+    /// [`Self::upsert_file`] for many records, **one round trip per chunk**.
+    ///
+    /// The single-record form costs a round trip each, and the extract pipeline calls it once per
+    /// file: on django (931 files) that was part of a commit step measured at **19.0 s**, against
+    /// the 0.4 s the same store needs to ingest the 19 061 nodes those files produce. The
+    /// database was never the problem — talking to it one file at a time was.
+    ///
+    /// Order is preserved (it is the determinism contract, #1015): records are written in the
+    /// order given, which the caller keeps in scan order.
+    pub async fn upsert_files(&self, files: &[FileRecord]) -> Result<()> {
+        for chunk in files.chunks(crate::util::CHUNK) {
+            let mut sql = String::new();
+            for i in 0..chunk.len() {
+                sql.push_str(&format!(
+                    "UPSERT type::record('file', $p{i}) CONTENT $c{i};"
+                ));
+            }
+            let mut q = self.db().query(sql);
+            for (i, f) in chunk.iter().enumerate() {
+                q = q
+                    .bind((format!("p{i}"), f.path.clone()))
+                    .bind((format!("c{i}"), file_content(f)?));
+            }
+            q.await?.check()?;
+        }
+        Ok(())
+    }
+
     /// Look up a file record by path. `None` if not tracked — not an error.
     pub async fn get_file(&self, path: &str) -> Result<Option<FileRecord>> {
         let sql = format!("SELECT {FILE_FIELDS} FROM $rid");

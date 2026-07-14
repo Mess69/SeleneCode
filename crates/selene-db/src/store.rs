@@ -458,6 +458,10 @@ pub trait GraphStore: Send + Sync {
     fn upsert_file(&self, f: &FileRecord) -> impl Future<Output = Result<()>> + Send;
 
     /// Look up a file record by path. `None` if not tracked.
+    /// [`Self::upsert_file`] for many records, batched into one round trip per chunk, **in the
+    /// order given** (commit order is the determinism contract, #1015).
+    fn upsert_files(&self, files: &[FileRecord]) -> impl Future<Output = Result<()>> + Send;
+
     fn get_file(&self, path: &str) -> impl Future<Output = Result<Option<FileRecord>>> + Send;
 
     /// Every tracked file record.

@@ -471,6 +471,23 @@ impl<S: GraphStore> Indexer<S> {
         // Per-phase accumulators. The pipeline is read -> parse (rayon) -> commit (sequential,
         // one store round trip PER FILE). Which of the three costs the 18 s was never measured.
         let (mut ms_read, mut ms_parse, mut ms_commit) = (0u128, 0u128, 0u128);
+        // Accumulated across the whole run, in scan order.
+        let (mut pending_nodes, mut pending_edges) = (Vec::new(), Vec::new());
+        let (mut pending_unresolved, mut pending_files) = (Vec::new(), Vec::new());
+
+        // **The file index, fetched ONCE.** This used to be a `get_file(rel).await` inside the
+        // commit loop — one round trip per file, 931 of them on django, and on a fresh index every
+        // single one returns `None`. One query replaces all of them.
+        let known: std::collections::HashMap<String, String> = match self.store.all_files().await {
+            Ok(files) => files
+                .into_iter()
+                .map(|f| (f.path, f.content_hash))
+                .collect(),
+            Err(e) => {
+                push_store_error(&mut result.errors, "all_files", &e);
+                std::collections::HashMap::new()
+            }
+        };
 
         // The pool is built here, not in the constructor (see [`Indexer::new`]):
         // an OS refusal to spawn threads is a collected `parser_error`, not a
@@ -578,45 +595,132 @@ impl<S: GraphStore> Indexer<S> {
                 );
 
                 let content_hash = hash_content(&input.content);
-                match self.store.get_file(&input.rel).await {
-                    Ok(Some(existing)) if existing.content_hash == content_hash => {
+                match known.get(&input.rel) {
+                    // Unchanged: nothing to do.
+                    Some(h) if *h == content_hash => {
                         result.files_skipped += 1;
                         continue;
                     }
-                    Ok(_) => {}
-                    Err(e) => {
-                        push_store_error(&mut result.errors, "get_file", &e);
-                        result.files_errored += 1;
-                        continue;
-                    }
-                }
-
-                match self.commit(input, extraction, content_hash).await {
-                    Ok(stats) => {
-                        result.nodes_created += stats.nodes_inserted;
-                        result.edges_created += stats.edges_inserted;
-                        let has_error = extraction
-                            .errors
-                            .iter()
-                            .any(|e| e.severity == Severity::Error);
-                        if has_error {
-                            result.files_errored += 1;
-                        } else {
-                            result.files_indexed += 1;
+                    // **Already indexed ⇒ the single-file REPLACE protocol, unchanged.** It
+                    // snapshots cross-file incoming edges, deletes, re-inserts and re-attaches
+                    // them (#1015 / Task 6). That protocol is correctness, not overhead, and it
+                    // is not batchable. It costs ~5 round trips — for the handful of files an
+                    // incremental re-index actually touches, which is what it is for.
+                    Some(_) => {
+                        match self.commit(input, extraction, content_hash).await {
+                            Ok(stats) => {
+                                result.nodes_created += stats.nodes_inserted;
+                                result.edges_created += stats.edges_inserted;
+                                Self::tally(result, extraction);
+                            }
+                            Err(e) => {
+                                push_store_error(&mut result.errors, "replace_file_extraction", &e);
+                                result.files_errored += 1;
+                            }
                         }
+                        result.errors.extend(extraction.errors.iter().cloned());
                     }
-                    Err(e) => {
-                        push_store_error(&mut result.errors, "replace_file_extraction", &e);
-                        result.files_errored += 1;
+                    // **New file ⇒ nothing to replace.** `cross_file_incoming_with_target` finds
+                    // nothing, `delete_file` deletes nothing, the re-attach pass re-attaches
+                    // nothing. Accumulate instead, and write the whole batch below in four calls.
+                    None => {
+                        pending_nodes.extend(extraction.nodes.iter().cloned());
+                        pending_edges.extend(extraction.edges.iter().cloned());
+                        pending_unresolved.extend(
+                            extraction
+                                .unresolved
+                                .iter()
+                                .map(|u| to_db_ref(u, &input.rel, input.language.as_str())),
+                        );
+                        pending_files.push(Self::file_record_of(input, extraction, content_hash));
+                        result.nodes_created += extraction.nodes.len() as u64;
+                        Self::tally(result, extraction);
+                        result.errors.extend(extraction.errors.iter().cloned());
                     }
                 }
-                result.errors.extend(extraction.errors.iter().cloned());
             }
             ms_commit += t_commit.elapsed().as_millis();
         }
 
-        tracing::info!(target: "selene::index", ms_read, ms_parse, ms_commit, files = total,
-            "index/3a: pipeline breakdown (parse is rayon-parallel; commit is SEQUENTIAL, one store round trip per file)");
+        // **The bulk write.** Nodes BEFORE edges — `insert_edges` validates that both endpoints
+        // exist. Extraction emits zero cross-file edges, so every edge's endpoints are in this
+        // batch. Insertion order is scan order, which is the determinism contract (#1015): the
+        // vectors were filled in the order the commit loop visited the files, and that loop runs
+        // in scan order.
+        let t_bulk = Instant::now();
+        let (mut ms_n, mut ms_e, mut ms_u, mut ms_f) = (0u128, 0u128, 0u128, 0u128);
+        if !pending_nodes.is_empty() || !pending_files.is_empty() {
+            let t = Instant::now();
+            if let Err(e) = self.store.insert_nodes(&pending_nodes).await {
+                push_store_error(&mut result.errors, "insert_nodes", &e);
+            }
+            ms_n = t.elapsed().as_millis();
+
+            let t = Instant::now();
+            match self.store.insert_edges(&pending_edges).await {
+                Ok(n) => result.edges_created += n,
+                Err(e) => push_store_error(&mut result.errors, "insert_edges", &e),
+            }
+            ms_e = t.elapsed().as_millis();
+
+            let t = Instant::now();
+            if let Err(e) = self.store.insert_unresolved(&pending_unresolved).await {
+                push_store_error(&mut result.errors, "insert_unresolved", &e);
+            }
+            ms_u = t.elapsed().as_millis();
+
+            let t = Instant::now();
+            if let Err(e) = self.store.upsert_files(&pending_files).await {
+                push_store_error(&mut result.errors, "upsert_files", &e);
+            }
+            ms_f = t.elapsed().as_millis();
+        }
+        let ms_bulk = t_bulk.elapsed().as_millis();
+        tracing::info!(target: "selene::index",
+            nodes = pending_nodes.len(), ms_nodes = ms_n,
+            edges = pending_edges.len(), ms_edges = ms_e,
+            unresolved = pending_unresolved.len(), ms_unresolved = ms_u,
+            files = pending_files.len(), ms_files = ms_f,
+            "index/3b: the batched write, per call");
+
+        tracing::info!(target: "selene::index", ms_read, ms_parse, ms_commit, ms_bulk, files = total,
+            "index/3a: pipeline breakdown (ms_commit = per-file REPLACE path; ms_bulk = batched new-file write)");
+    }
+
+    /// One file's `FileRecord`. Shared by both commit paths so they cannot drift.
+    fn file_record_of(
+        input: &ParseInput,
+        extraction: &ExtractionResult,
+        content_hash: String,
+    ) -> FileRecord {
+        FileRecord {
+            path: input.rel.clone(),
+            content_hash,
+            language: input.language.as_str().to_string(),
+            size: input.size,
+            modified_at: input.modified_at,
+            indexed_at: now_millis(),
+            node_count: u32::try_from(extraction.nodes.len()).unwrap_or(u32::MAX),
+            errors: extraction
+                .errors
+                .iter()
+                .filter_map(|e| serde_json::to_value(e).ok())
+                .collect(),
+        }
+    }
+
+    /// A file counts as indexed unless its extraction carried a hard error. Shared by both commit
+    /// paths, so the batched one cannot report different totals from the per-file one.
+    fn tally(result: &mut IndexResult, extraction: &ExtractionResult) {
+        if extraction
+            .errors
+            .iter()
+            .any(|e| e.severity == Severity::Error)
+        {
+            result.files_errored += 1;
+        } else {
+            result.files_indexed += 1;
+        }
     }
 
     /// Commit one file's extraction through the single-file re-index
