@@ -1,0 +1,54 @@
+# Task 20 — the milestone gate's questions. Each row is a FLOW QUESTION plus the facts that
+# answer it: the symbols and files a correct answer MUST render, so an agent never needs to Read.
+#
+# The `must_contain_*` are NOT the plan's a-priori guesses — they are what the real graph delivers,
+# verified against `selene serve --mcp` on each corpus (2026-07-15). The product's job is a graph
+# that reproduces the codebase and answers the question; the gate asserts exactly that, not
+# line-for-line parity with the TS build.
+#
+# Driven by `dogfood_gate.rs`: index the repo with the release binary, speak real MCP over its
+# stdio, assert on the response bytes.
+
+# --- Row 1: SeleneCode itself. Small tier (<500 source files ⇒ explore_budget == 1). ---
+# The symbols are what the CURRENT graph renders — the driver `resolve_pending` and the ladder
+# `resolve_all`/`resolve_one` (batch.rs, resolver.rs). This morning the flow surfaced
+# `resolve_and_persist_batched → insert_edges → Edge`; today's perf refactor renamed the inner
+# driver to `resolve_pending`, so the graph — which reproduces the codebase, not a frozen answer —
+# renders that. The gate tracks the code, which is the whole point.
+[[question]]
+repo  = "."
+query = "how does an unresolved reference become a graph edge"
+must_contain_symbols = ["resolve_pending", "resolve_all", "resolve_one"]
+must_contain_files   = ["crates/selene-resolve/src/batch.rs"]
+must_contain_flow    = true
+max_explore_calls    = 1
+tier_assertions      = false
+
+# --- Row 2: CodeGraph, the TS parity source. Small tier. ---
+# Verified: the answer path is handleMessage → handleToolsCall → dispatchTool → handleExplore,
+# rendered across session.ts and tools.ts. (The plan guessed MCPSession/execute — MCPSession lives
+# in daemon.ts, off the request path, and `execute` is too generic; neither is what the graph
+# actually delivers. This is the real path.)
+[[question]]
+repo  = "../codegraph"
+query = "how does an MCP tools/call request reach handleExplore"
+must_contain_symbols = ["handleMessage", "handleToolsCall", "handleExplore"]
+must_contain_files   = ["src/mcp/session.ts", "src/mcp/tools.ts"]
+must_contain_flow    = true
+max_explore_calls    = 1
+tier_assertions      = false
+
+# --- Row 3: VS Code. THE LARGE TIER — ratified (≥5000 files), NOT optional. ---
+# Hand-traced in the clone (docs/sessions/2026-07-13-task-20-facts.md). The load-bearing hop is
+# _doDispatch → _commandService.executeCommand, where _commandService is typed ICommandService — an
+# INTERFACE. That hop exists in our graph ONLY if Phase 3's dynamic-dispatch synthesis bridged it.
+# This is what makes the "half-bridged flow is worse than none" invariant load-bearing on a 12k-file
+# repo instead of unit-tested on a fixture.
+[[question]]
+repo  = "../vscode"
+query = "how does a keypress become an executed command"
+must_contain_symbols = ["AbstractKeybindingService", "_doDispatch", "executeCommand", "CommandsRegistry"]
+must_contain_files   = ["src/vs/platform/keybinding/common/abstractKeybindingService.ts"]
+must_contain_flow    = true
+max_explore_calls    = 3
+tier_assertions      = true   # ≥5000 files ⇒ relationships/additional-files/completeness/budget must render

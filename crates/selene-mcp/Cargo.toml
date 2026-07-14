@@ -36,6 +36,9 @@ selene-extract = { path = "../selene-extract" }
 selene-resolve = { path = "../selene-resolve" }
 serde_json = { workspace = true }
 tempfile = { workspace = true }
+# Task 20 dogfood gate: reads tests/fixtures/dogfood/questions.toml (read-only).
+toml = { workspace = true }
+serde = { workspace = true }
 
 [lints]
 workspace = true
