@@ -177,15 +177,30 @@ DEFINE FIELD IF NOT EXISTS language ON unresolved_ref TYPE string;
 DEFINE FIELD IF NOT EXISTS status ON unresolved_ref TYPE string;
 DEFINE FIELD IF NOT EXISTS nameTail ON unresolved_ref TYPE string;
 DEFINE INDEX IF NOT EXISTS unresolved_from_node ON unresolved_ref FIELDS fromNodeId;
-DEFINE INDEX IF NOT EXISTS unresolved_ref_name ON unresolved_ref FIELDS referenceName;
-DEFINE INDEX IF NOT EXISTS unresolved_file_path ON unresolved_ref FIELDS filePath;
 DEFINE INDEX IF NOT EXISTS unresolved_status ON unresolved_ref FIELDS status;
--- The 3-part resolution key, composite. `delete_resolved`/`mark_failed` filter on exactly
--- (fromNodeId, referenceName, referenceKind) — the #760 key — and there was no index over
--- it: `referenceKind` had none at all, so every keyed write degraded to an index hit on one
--- field plus a filter. Persist measured **82% of a whole index run** (42.8 s of 52 s on
--- codegraph, vs 2.6 s for the resolve ladder itself).
-DEFINE INDEX IF NOT EXISTS unresolved_key ON unresolved_ref FIELDS fromNodeId, referenceName, referenceKind;
+-- ⚠ THREE INDEXES WERE REMOVED HERE (2026-07-14), AND ONE OF THEM WAS THIS FILE'S PROUDEST LINE.
+--
+-- `unresolved_key` — the composite (fromNodeId, referenceName, referenceKind), the #760 key — was
+-- added in `899aea6` and it was a real fix: `delete_resolved`/`mark_failed` filtered on exactly
+-- that tuple with no index over it, and persist measured **82% of a whole index run** (42.8 s of
+-- 52 s on codegraph). Adding it took persist 42.8 s -> 11.0 s.
+--
+-- Then the resolve loop stopped doing keyed writes at all. It used to run at offset 0 and DRAIN
+-- this table to advance, so every batch had to delete and mark by key. It now walks the queue and
+-- rewrites it once (`replace_pending_with_failed`), which filters on `status` alone. **Nothing in
+-- the product queries the composite any more** — so it was being maintained on all 52 358 inserts
+-- and all 52 358 deletes, for no reader. Same for `unresolved_ref_name` and `unresolved_file_path`:
+-- the only queries that used them (`unresolved_by_files`, `retryable_failed`) have ZERO callers.
+--
+-- Removing all three, measured on django: insert_unresolved 3.9 s -> 2.5 s, persist 10.9 s -> 8.4 s,
+-- total 36.2 s -> 33.5 s. Graph byte-identical.
+--
+-- The lesson is not that indexes are bad. It is that **an index is a cost paid on every write to serve
+-- a read** — and when the read goes away, nobody goes back to remove the index. `899aea6` was right
+-- when it was written and wrong two days later, and the only reason we noticed is that the writes
+-- were being measured. `delete_resolved`/`mark_failed` still exist on the trait and are still
+-- tested; without the composite they are slower, and that is correct — nothing in the hot path
+-- calls them.
 ";
 
 /// `meta` table: opaque `key -> value` store (record id = key). Backs
