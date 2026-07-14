@@ -13,37 +13,51 @@ the same assertions against a stopword must FAIL, proving they can tell a real a
 
 Run: `cargo test -p selene-mcp --test dogfood_gate -- --ignored --nocapture`
 
-| repo | files | tier | query | symbols rendered | flow steps | Read-advice | verdict |
-|---|---:|---|---|---|---:|---|---|
-| SeleneCode (`.`) | _TBD_ | <500 | how does an unresolved reference become a graph edge | resolve_pending, resolve_all, resolve_one | _TBD_ | 0 | _TBD_ |
-| CodeGraph (`../codegraph`) | _TBD_ | <500 | how does an MCP tools/call request reach handleExplore | handleMessage, handleToolsCall, handleExplore | _TBD_ | 0 | _TBD_ |
-| **VS Code (`../vscode`)** | _TBD_ | **≥5000** | how does a keypress become an executed command | AbstractKeybindingService, _doDispatch, executeCommand, CommandsRegistry | _TBD_ | 0 | _TBD_ |
+| repo | files | nodes | tier | explore latency | answer | verdict |
+|---|---:|---:|---|---:|---|---|
+| SeleneCode (`.`) | 12,123* | 5,069 | <500** | **1.2 s** | correct (resolve_pending → … → Edge) | ✅ PASS |
+| CodeGraph (`../codegraph`) | ~500 | ~4,900 | <500 | **1.4 s** | correct (handleMessage → handleToolsCall → handleExplore) | ✅ PASS |
+| **VS Code (`../vscode`)** | **12,123** | **349,737** | **≥5000** | **38–224 s** | **WRONG — 1 of 4 symbols, 0 files shown, off-topic flow** | ❌ **FAIL** |
 
-Negative control (`"the"` on SeleneCode): must FAIL the sufficiency assertions — _TBD_.
+\* SeleneCode's file count is inflated by its own indexed fixture corpora. \** budget still resolves to 1 in practice.
 
-**The VS Code row is the one that matters.** The load-bearing hop is
-`_doDispatch → _commandService.executeCommand`, where `_commandService` is typed `ICommandService`
-— an **interface**. That hop exists in our graph only if Phase 3's dynamic-dispatch synthesis
-bridged it. A missing bridge renders the flow as `_doDispatch → ?` and sends the agent to Read — the
-exact failure the sufficiency invariant forbids, now load-bearing on a 12k-file repo instead of a
-fixture.
+## ⛔ THE MILESTONE GATE FAILS ON THE LARGE TIER — and that is the finding, not a bug to paper over
 
-## Half B — the real-agent zero-Read run (`scripts/dogfood.sh`, manual)
+The gate exists to prove the product answers a flow question with zero Read on a ≥5000-file repo. It
+does **not**. Two independent failures, both measured on VS Code (349,737 nodes / 1,595,451 edges,
+indexed in 11.2 min):
 
-A headless `claude -p` session with the binary registered as an MCP server, tool_use blocks counted
-mechanically: a run passes only if the agent used `selene_explore` within budget, opened **nothing**
-(Read/Grep/Glob/Task == 0), and its answer **named** the required symbols. n=3 per repo; ≥2 must pass.
+**1. Latency — unusable.** A single `explore` call took **38 s** for the ratified question and
+**223 s** (3.7 minutes) for a longer multi-concept query. On the small repos the same call is
+**1.2–1.4 s**. The relevance pipeline scales badly with graph size — roughly O(n) to O(n²) in nodes
+— so even a *correct* answer at 38–224 s violates the "a few fast tool calls" invariant. No agent
+waits 3 minutes for one tool call.
 
-Run: `./scripts/dogfood.sh` — results appended below.
+**2. Relevance — vocabulary gap.** The question *"how does a keypress become an executed command"*
+seeded on `CommandExecuted, executeCommands, executeCommand, …` — every symbol that lexically
+matches *command/executed* — and **missed** `AbstractKeybindingService` / `_doDispatch`, because the
+code says **keybinding / dispatch**, not **keypress**. The graph *has* the symbols (re-querying with
+"keybinding dispatch" surfaces `_doDispatch`; with the literal names, 3 of 4). The relevance cannot
+bridge the query's word to the code's word at this scale. The flow it did draw wandered
+`references` edges through unrelated editor-model types — the "half-bridged flow is worse than none"
+failure, exactly.
 
-| repo | run | explore calls | Read | Grep | Glob | answered | verdict |
-|---|---:|---:|---:|---:|---:|---|---|
-| _pending manual run_ | | | | | | | |
+**What this means for the product.** SeleneCode answers flow questions correctly and fast on
+small/medium repos (SeleneCode, codegraph, and django all resolve in 1–2 s). It does **not** yet
+work on a 349k-node repo, on either axis. This is the truth the milestone gate was built to surface,
+and it is more valuable known than assumed. Fixing it is two separate efforts: (a) make the
+relevance pipeline scale (bounded scans, index-backed candidate generation, a frontier cap on the
+flow BFS) and (b) bridge query vocabulary to code vocabulary (segment/synonym matching — the TS
+build's `name_segment_vocab`, which SeleneCode never ported).
+
+## Half B — the real-agent zero-Read run
+
+Not run: Half A already fails on the large tier, so the real-agent run would only confirm a known negative. It is gated behind a passing Half A.
 
 ## Indexing cost (for reference)
 
 | repo | files | nodes | index time |
 |---|---:|---:|---|
-| SeleneCode | _TBD_ | _TBD_ | _TBD_ |
-| CodeGraph | _TBD_ | _TBD_ | _TBD_ |
-| VS Code | 12,123 | 349,737 | _TBD_ |
+| SeleneCode | 12,123* | 5,069 | ~10 s |
+| CodeGraph | ~500 | ~4,900 | ~4 s |
+| VS Code | 12,123 | 349,737 | **672 s (11.2 min)** |
