@@ -191,15 +191,29 @@ fichier qu'il doit ensuite ouvrir. La sonde teste maintenant les **sections de f
    `references`. Déclarés dans l'enum, jamais peuplés : exactement la forme du « seam inerte » que
    ce projet paie en boucle (§9). À trancher : les peupler, ou les consigner comme déviation.
 
-## 3. Perf — de 10,7× derrière TS à **2,0–2,9×** (2026-07-14)
+## 3. Perf — de 10,7× derrière TS à **1,4–1,9×** (2026-07-14, une journée)
 
 | corpus | ce matin | **maintenant** | codegraph TS | écart |
 |---|---:|---:|---:|---|
-| codegraph/src (162 f.) | 18,4 s | **6,2 s** | 2,4 s | **TS 2,6×** |
-| SeleneCode (328 f.) | 22,8 s | **5,5 s** | 2,8 s | **TS 2,0×** |
-| django (931 f.) | 61,1 s | **16,4 s** | 5,7 s | **TS 2,9×** |
+| codegraph/src (162 f.) | 18,4 s | **3,6 s** | 2,4 s | **TS 1,5×** |
+| SeleneCode (328 f.) | 22,8 s | **4,0 s** | 2,8 s | **TS 1,4×** |
+| django (931 f.) | 61,1 s | **10,9 s** | 5,7 s | **TS 1,9×** |
 
 Déterministe. Couverture intacte (+4 références que l'ancien code **jetait**). Tous les gates verts.
+`explore` répond toujours 3/3.
+
+**L'arc de la journée** (chaque ligne = un commit, mesuré, graphe identique) :
+```
+matin (séquentiel, file-par-disque, 32k lookups bloquants)   django 61,1s   TS 10,7x
++ commit groupé (931 allers-retours -> 4)                            51,2s
++ bug du delete par clé corrigé (il JETAIT des refs) + réécriture    40,0s
++ fetch unique (START offset = O(n²))                                36,2s
++ index morts retirés                                                33,5s
++ feature `allocator` de SurrealDB (mimalloc)                        28,9s
++ index de nœuds en mémoire (32 524 lookups bloquants -> 48)         23,7s
++ file de refs gardée en mémoire (plus d'aller-retour disque)        16,4s
++ écritures CONCURRENTES + FTS en parallèle du resolve               10,9s   TS 1,9x
+```
 
 ### ⚠ LA LEÇON, en une phrase — lis-la avant d'optimiser quoi que ce soit
 
@@ -238,15 +252,18 @@ impact) — **jamais** à la phase de construction.
 | ⛔ `panic = 'abort'` (**recommandé par SurrealDB**) | **JAMAIS** — `selene-resolve` enveloppe les détecteurs de framework et les synthétiseurs dans `catch_unwind` : un résolveur qui panique est une **erreur collectée**, pas un index mort |
 | feature `allocator` de SurrealDB (mimalloc) | ✅ **31,5 → 28,9 s** — pas activée par défaut, et un `default-features = false` ne l'a jamais |
 
-### Ce qui reste sur les 16,4 s de django
+### Ce qui reste sur les 10,9 s de django, et le SEUL levier qui vaut encore le coup
 
 ```
-écriture bulk  ~5,5 s (nœuds 3,4 · arêtes 1,6)   persist  3,4 s
-rebuild FTS     3,2 s                            synthèse 2,8 s
-ladder          1,9 s                            parse    0,3 s
+écriture bulk  ~4,5 s (nœuds 0,8 · arêtes 0,6 · sérialisation + fichiers)
+synthèse        2,8 s   ← mono-thread                persist  ~2 s
+ladder          1,9 s                                FTS      0 s (recouvert)
 ```
-**Plus aucun poste ne domine.** Descendre sous 5,7 s demande de réduire le **volume écrit**
-(la table `node` est `SCHEMAFULL`, ~25 champs, 9 index) ou de revoir FTS/synthèse — **pas du réglage.**
+**Plus aucun poste ne domine, et le FTS est gratuit** (recouvert par le resolve). Pour passer
+**DEVANT** TS (5,7 s), il faut soit réduire le **volume écrit** — la table `node` est `SCHEMAFULL`,
+~25 champs, 9 index — soit revoir la **synthèse** (2,8 s, mono-thread). **C'est un changement de
+modèle de données, pas du réglage** — le seul levier restant qui vaille plus qu'une fraction de
+seconde. ⚠ **À ne PAS entreprendre sans arbitrage** : ça touche la forme du graphe.
 
 Détail complet : `docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`.
 
