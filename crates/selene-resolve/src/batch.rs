@@ -129,7 +129,10 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     let extract_stats = run_framework_extract(store, &ctx, &detected).await?;
     let post = run_post_extract(store, &ctx, &detected).await?;
     drop(ctx);
-    tracing::info!(ms = t.elapsed().as_millis(), "resolve/1b: framework extract");
+    tracing::info!(
+        ms = t.elapsed().as_millis(),
+        "resolve/1b: framework extract"
+    );
 
     // --- (2) the context, over a graph that now HAS the route/config nodes ----
     let t = std::time::Instant::now();
@@ -241,7 +244,11 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
             tracing::warn!(error = %e, "synthesis failed — the base graph stands");
             0
         });
-    tracing::info!(ms = t.elapsed().as_millis(), synthesized, "resolve/6: synthesis");
+    tracing::info!(
+        ms = t.elapsed().as_millis(),
+        synthesized,
+        "resolve/6: synthesis"
+    );
     tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve: TOTAL");
     if synthesized > 0 {
         stats

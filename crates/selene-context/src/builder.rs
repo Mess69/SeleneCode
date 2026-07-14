@@ -34,7 +34,9 @@ use crate::boundaries::{find_boundaries, render_boundaries};
 use crate::budgets::{ExploreBudget, budget_for, truncate_to_ceiling};
 use crate::error::Result;
 use crate::flow::{build_flow_from_named_symbols, render_flow};
-use crate::relevance::{Confidence, FindOptions, RelevantContext, find_relevant_context};
+use crate::relevance::{
+    Confidence, DominantFile, FindOptions, RelevantContext, find_relevant_context,
+};
 use crate::stopwords::extract_search_terms;
 
 /// The section prefix a file block starts with. **Load-bearing**: truncation cuts on it, so
@@ -71,7 +73,26 @@ impl<S: GraphStore> ContextBuilder<S> {
         let file_count = self.qm.file_count().await?;
         let budget = budget_for(file_count);
 
-        let ctx = find_relevant_context(&self.qm, query, &FindOptions::default(), None).await?;
+        // Pass 4c's core-directory boost. This argument was **hardcoded to `None`** — the store
+        // had no `dominant_file` primitive, so the boost could never fire, and a scoring pass
+        // that never fires reads exactly like one that does. The primitive exists now
+        // (`GraphStore::dominant_file`); a store error still degrades to `None`, which is the
+        // same degradation TS takes on a SQL failure ("scoring works without the boost") and
+        // never an `isError`.
+        let dominant = self.qm.store().dominant_file().await.ok().flatten().map(
+            |(file_path, edge_count, next_edge_count)| DominantFile {
+                file_path,
+                edge_count,
+                next_edge_count,
+            },
+        );
+
+        // **`FindOptions::explore()`, never `::default()`** — see its docs. The default is TS's
+        // `buildContext` option set (20 nodes, 3 roots, depth 1); explore's is 10× larger, and
+        // running explore through the default is what made a four-concept question unanswerable.
+        let ctx =
+            find_relevant_context(&self.qm, query, &FindOptions::explore(), dominant.as_ref())
+                .await?;
 
         if ctx.subgraph.nodes.is_empty() {
             return Ok(self.no_results_handoff(query));

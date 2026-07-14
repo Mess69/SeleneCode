@@ -54,9 +54,21 @@ async fn an_unprovable_flow_is_none_not_a_guess_and_not_an_error() {
     let store = index_fixture(tmp.path()).await;
     let qm = QueryManager::new(store, tmp.path().to_path_buf());
 
+    // ⚠ **This case used to be `["hashPassword", "handleLogin"]` — "backwards, so no path".**
+    // That premise is dead, and deliberately so: `build_flow_from_named_symbols` is now
+    // **order-independent** (it seeds the BFS from *every* named symbol and keeps the longest
+    // chain, rather than demanding a path from each name to the next one the caller happened to
+    // list — see its doc comment for the three reasons, each measured). Under that contract the
+    // old pair is perfectly provable, so the assertion had been failing ever since, asserting a
+    // behaviour the code had correctly stopped having.
+    //
+    // The *intent* — never draw a chain you cannot prove — is what matters, so it is re-tested
+    // on a pair that is genuinely unprovable: `login` → `hashPassword` is a real edge but only
+    // **two** nodes, and a 2-node "flow" is just an edge (`limits::MIN_FLOW_NODES`). It tells the
+    // agent nothing it did not already ask, so it must not be rendered as a spine.
     let none = build_flow_from_named_symbols(
         &qm,
-        &["hashPassword".to_string(), "handleLogin".to_string()], // backwards — no such path
+        &["hashPassword".to_string(), "login".to_string()], // an edge, but never a 3-node chain
     )
     .await
     .expect("'there is no flow' is an ANSWER, not a malfunction");

@@ -1,6 +1,7 @@
 //! Relevance scoring — **the ordered pass list. Order IS behavior.**
 //!
 //! ```text
+//!  0. corpus-derived terms — the codebase's own sub-words the query contains ✅
 //!  1. symbol extraction from the query                        (Task 5) ✅
 //!  2. exact-name lookup + co-location boost   (+20 per extra) (Task 5) ✅
 //!  3. TitleCase prefix search over definitions (+15 + brevity)(Task 5) ✅
@@ -32,6 +33,17 @@
 //! Passes 1–11 are all lexical — they match the query's WORDS against symbol NAMES. **Pass 12
 //! is the only one that consults the graph**, and without it a natural-language flow question
 //! is answered by word-matching alone. See [`apply_graph_connectivity`].
+//!
+//! # Pass 0 exists because every other pass tests containment in only ONE direction
+//!
+//! Passes 1–11 all ask *"does the symbol's name contain the query's word?"* — and for a question
+//! like *"how does an unresolved reference become a graph edge"* the answer is `resolve_one`,
+//! whose name contains **none** of those words. `"unresolved"` contains `"resolve"`; nothing ever
+//! asked. So the four symbols that answer the milestone question were **not candidates at all**,
+//! and every previous attempt to fix this re-ranked a set that did not contain the answer.
+//!
+//! Pass 0 asks the reverse question, and asks it of the **corpus, not of English**. See
+//! [`derive_corpus_terms`].
 //!
 //! # The weights are ported — and the SCALE they are weighed against was not
 //!
@@ -81,11 +93,8 @@ pub const HIGH_VALUE_NODE_KINDS: &[NodeKind] = &[
 /// (`maps/mcp-context.md` §3). Pass 12 will only *volunteer* a node of one of these kinds: a
 /// constant may sit right next to the answer, but it is not a hop, and an agent asking how
 /// something works cannot follow it anywhere.
-pub const CALLABLE_KINDS: &[NodeKind] = &[
-    NodeKind::Function,
-    NodeKind::Method,
-    NodeKind::Component,
-];
+pub const CALLABLE_KINDS: &[NodeKind] =
+    &[NodeKind::Function, NodeKind::Method, NodeKind::Component];
 
 /// The kinds pass 3 searches — a "definition" is a type, not a function.
 const DEFINITION_KINDS: &[NodeKind] = &[
@@ -124,13 +133,23 @@ pub mod weights {
     // ── Pass 5's rerank. MULTIPLICATIVE — see `rerank_by_term_groups`. ──────────────
     /// Per matched concept, when a node matched ≥2: `×(1 + 0.5n)`.
     pub const GROUP_SCALE: f64 = 0.5;
-    /// A node literally *named* a common query word (`edge`, `graph`). Matches the letter of
-    /// the query and none of its meaning.
-    pub const COMMON_WORD_EXACT: f64 = 0.3;
     /// **The penalty the port dropped.** One concept out of several ⇒ probably noise.
     pub const SINGLE_CONCEPT: f64 = 0.6;
 
     // ── Passes 6 & 7's LIKE scaling. ───────────────────────────────────────────────
+    /// Pass 6 & 7: **how many names the LIKE channel may even look at.** TS: *"CamelCase-boundary
+    /// LIKE matches (**limit 200**…)"* (`maps/mcp-context.md:132`).
+    ///
+    /// This was `search_limit * 2` — **sixteen**, and the third ported constant in this file to
+    /// arrive an order of magnitude too small (see [`FTS_MAX`] and `FindOptions::explore`). It is
+    /// not a budget knob; it is a *blindfold*. The term `resolve` matches **74** callables in this
+    /// corpus, so a cap of 16 hands back an arbitrary sixteenth of them, tier-sorted — and
+    /// `resolve_one`, `resolve_all` and `resolve_and_persist_batched` were simply **not
+    /// candidates**, no matter what any downstream pass did with the ones that were.
+    ///
+    /// The cap must be sized against the corpus's answer, not against how many roots we intend to
+    /// keep. Ranking cuts to `search_limit` at the end; that is where the narrowing belongs.
+    pub const LIKE_LIMIT: usize = 200;
     /// Pass 6's base, before brevity and the match tier (TS: `8 + brevity + pathScore`).
     pub const LIKE_BASE: f64 = 8.0;
     /// Pass 6: per *extra* term, added after the `×(1+termCount)` scale.
@@ -143,7 +162,174 @@ pub mod weights {
     /// Pass 12: what a *maximally* corroborated node earns. Sized against the lexical weights
     /// above on purpose — a node the whole lexical seed set points at must be able to outrank
     /// a node that merely shares a word with the query.
-    pub const CONNECTIVITY: f64 = 60.0;
+    pub const CONNECTIVITY: f64 = 30.0;
+}
+
+/// How deep pass 13 may look for a root that covers an as-yet-uncovered concept, as a multiple
+/// of `search_limit`. Governs **reach, not count**.
+const ROOT_POOL_MULTIPLE: usize = 10;
+
+/// **Pass 0 — corpus-derived terms. The direction every other pass forgets to look.**
+///
+/// Every lexical pass in this file asks the same question: does the **symbol's name contain the
+/// query's word**? For *"how does an unresolved reference become a graph edge"* that is:
+///
+/// ```text
+/// "resolve_one".contains("unresolved")   ->  false      <- the question we ask
+/// "unresolved".contains("resolve")       ->  TRUE       <- the question we never ask
+/// ```
+///
+/// The agent asked about an *un-**resolv**-ed* reference. The subsystem that turns one into an
+/// edge is called ***resolve***. They share a stem, this codebase says so out loud in 52 symbol
+/// names — and not one pass can see it, because containment is only ever tested one way.
+///
+/// That is why the milestone question returned **zero of its four required symbols**. It was
+/// never a ranking bug: `resolve_and_persist_batched`, `resolve_all` and `resolve_one` were not
+/// *candidates at all*, so no amount of re-scoring downstream could have surfaced them. Every
+/// previous attempt tuned the ranking of a set that did not contain the answer.
+///
+/// # The corpus is the dictionary — not English
+///
+/// The trap here is to reach for morphology: a negation-prefix list (`un-`, `de-`, `non-`), a
+/// snowball stemmer, an English verb table. All of them are wrong, and this crate's language
+/// contract is why — they bake *one human language's grammar* into a tool whose users write
+/// prompts in any of them.
+///
+/// So we never guess what a word *means*. We ask **the codebase which of its own sub-words the
+/// query happens to contain**: enumerate the substrings of a query term and keep only the ones
+/// this project actually names things with. `unresolved` yields exactly `resolve` (52 witnesses)
+/// and `resolved` (15) — and nothing else, because `olved`, `nresolv` and `esolve` name nothing.
+/// **The vocabulary does the filtering**, so no dictionary is needed and none is language-bound.
+/// On a Spring codebase the same rule turns `unauthenticated` into `authenticate`; on Django,
+/// `unmigrated` into `migrate`. It holds for one reason, and the reason is not English: **code
+/// names the negation of a concept by prefixing the concept.**
+///
+/// # Validation is free
+///
+/// A candidate segment is real iff some symbol's name *starts* with it — an **indexed prefix
+/// lookup** (`get_nodes_by_name_prefix`), not a scan. That is also exactly the shape of TS's own
+/// primitive, down to its caveat: `getStemVariants` *"mints non-words by design (prefix-match
+/// only)"* (`maps/db-graph-search.md:115`). TS ports it, threads it through
+/// `extractSearchTerms(query, {stems})`, and backs it with a materialized `name_segment_vocab`
+/// table. **SeleneCode ported neither.** The name-prefix index we already maintain *is* that
+/// vocabulary; it had simply never been asked.
+///
+/// # Why nothing downstream needs to change
+///
+/// A derived term is a *substring* of the literal term it came from, and [`term_groups`] already
+/// groups terms that contain one another — so `resolve` folds into the `unresolved` **concept**
+/// on its own. The derived term therefore widens the candidate pool *without inventing a
+/// concept*: `resolve_one` enters ranking already carrying *unresolved*, which is precisely what
+/// pass 12 needs to bridge it against the *edge* pole. Pass 5's concept count is unchanged, so
+/// nothing is double-counted.
+///
+/// Returns the derived terms. **Empty is the common case and the correct one** — a query whose
+/// words are already the codebase's words (*"how are edges created during resolution"*) derives
+/// nothing, and this pass is a measured no-op on it. It fires where we are blind, and nowhere
+/// else.
+pub async fn derive_corpus_terms<S: GraphStore>(
+    qm: &QueryManager<S>,
+    terms: &[String],
+) -> Result<Vec<String>> {
+    let mut out: Vec<String> = Vec::new();
+
+    for term in terms {
+        let lower = term.to_lowercase();
+        if lower.len() < segments::MIN_TERM {
+            continue;
+        }
+
+        // Every substring long enough to name something, short enough to be a real derivation.
+        // Longest first — `resolve` is a better term than `resolv`, and we keep few.
+        // **Both directions, and it must be both.** Two real queries need opposite trims:
+        //
+        //   "un|resolved"  -> drop the FRONT  -> `resolve`   (code negates by prefixing)
+        //   "resolut|ion"  -> drop the BACK   -> `resolut`   (code inflects by suffixing)
+        //
+        // An earlier cut of this pass allowed only the front-trim, on the reasoning that a
+        // back-trim admits nothing the literal term does not. That reasoning is right about
+        // *`unresolv`* and wrong about the pass: it fixed the milestone query and took
+        // *"how are edges created during resolution"* from 3-of-3 to 0-of-3 in the same build.
+        // Direction is not the discriminator.
+        let chars: Vec<char> = lower.chars().collect();
+        let mut candidates: IndexSet<String> = IndexSet::new();
+        for start in 0..chars.len() {
+            for end in (start + segments::MIN_SEGMENT)..=chars.len() {
+                if chars.len() - (end - start) < segments::MIN_TRIM {
+                    continue; // a one-character shave is a spelling, not a stem
+                }
+                let cand: String = chars[start..end].iter().collect();
+                if !terms.iter().any(|t| t.to_lowercase() == cand) && !out.contains(&cand) {
+                    candidates.insert(cand);
+                }
+            }
+        }
+
+        // **The discriminator is how much of the codebase a segment NAMES.**
+        //
+        // `unresolved` yields both `resolve` and `unresolv`. They are the same length class and
+        // both "valid" by any structural rule — but `resolve` names **52** symbols in this project
+        // and `unresolv` names a handful of truncations. One is a word this codebase speaks; the
+        // other is a spelling accident. So we do not reason about morphology at all: we ask the
+        // corpus which sub-words it actually uses, and keep the ones it uses most.
+        //
+        // This is the whole reason the pass is language-agnostic. No prefix list, no stemmer, no
+        // verb table — the vocabulary of the project under the cursor is the only dictionary, and
+        // it is right about Java, Python and Go for exactly the same reason it is right here.
+        let mut scored: Vec<(String, usize)> = Vec::new();
+        for cand in candidates {
+            let hits = qm
+                .store()
+                .get_nodes_by_name_prefix(&cand, segments::WITNESS_LOOKUP)
+                .await
+                .map_err(selene_graph::GraphError::from)?;
+
+            let witnesses: IndexSet<String> = hits
+                .iter()
+                .filter(|n| !is_test_file(&n.file_path))
+                .map(|n| n.name.to_lowercase())
+                .collect();
+
+            if witnesses.len() >= segments::MIN_WITNESSES {
+                scored.push((cand, witnesses.len()));
+            }
+        }
+
+        // Most-named first; longer wins a tie (a longer stem is a more specific claim); then
+        // alphabetical, because the output is rendered and ties must not reorder between runs.
+        scored.sort_by(|a, b| {
+            b.1.cmp(&a.1)
+                .then_with(|| b.0.len().cmp(&a.0.len()))
+                .then_with(|| a.0.cmp(&b.0))
+        });
+
+        for (cand, _) in scored.into_iter().take(segments::MAX_PER_TERM) {
+            out.push(cand);
+        }
+    }
+
+    Ok(out)
+}
+
+/// Pass 0's constants. Every one exists to keep **the corpus**, not English, in charge.
+pub mod segments {
+    /// Shorter than this and a segment names nothing: `dge`, `raph`, `olve`.
+    pub const MIN_SEGMENT: usize = 5;
+    /// A term must be long enough to contain a segment *and still be a different word*.
+    pub const MIN_TERM: usize = 7;
+    /// The derivation must drop at least this many characters. Without it `reference` derives
+    /// `referenc` — a spelling, not a stem, and it doubles every score it touches for nothing.
+    pub const MIN_TRIM: usize = 2;
+    /// How many symbol names must start with a segment before we believe it is a word this
+    /// project speaks. **3, not 1** — one hit is a coincidence (a lone `solver` helper would
+    /// mint `solve`); three is a vocabulary.
+    pub const MIN_WITNESSES: usize = 3;
+    /// How many names to pull when counting witnesses. Only distinctness matters, so this is a
+    /// ceiling, not a budget.
+    pub const WITNESS_LOOKUP: usize = 20;
+    /// At most this many derivations per query word. `unresolved` yields `resolve` and
+    /// `resolved`; a third would be `resolv`, which finds no symbol the first two did not.
+    pub const MAX_PER_TERM: usize = 2;
 }
 
 /// **Pass 12's adjacency** — TS's `computeGraphRelevance` walks these nine kinds *undirected*
@@ -171,10 +357,16 @@ pub mod rwr {
     pub const HOPS: usize = 2;
     /// Neighbors expanded per node — a hub with 3 000 callers must not define the answer.
     pub const MAX_NEIGHBORS_PER_NODE: usize = 60;
+    /// Above this many neighbors, a node is a **hub**: its neighbors are still collected, but it
+    /// may not be walked *through* to a further hop. See the hub guard in
+    /// [`apply_graph_connectivity`] — without it, `UnresolvedRef` (168 neighbors) hands its
+    /// concept to half the repository.
+    pub const HUB_DEGREE: usize = 24;
     /// A *discovered* node (one no lexical pass found) must carry at least this share of the
     /// best bridge's score to be admitted. Below it, the walk is just leaking into the repo at
-    /// large.
-    pub const ADMISSION: f64 = 0.15;
+    /// large. **Deliberately strict**: pass 12 volunteers symbols the query never named, so it
+    /// must volunteer only the ones it is sure of.
+    pub const ADMISSION: f64 = 0.35;
 }
 
 /// How much graph to gather.
@@ -199,6 +391,44 @@ impl Default for FindOptions {
             traversal_depth: 1,
             max_nodes: 20,
             min_score: 0.3,
+            node_kinds: HIGH_VALUE_NODE_KINDS.to_vec(),
+        }
+    }
+}
+
+impl FindOptions {
+    /// **What `explore` asks for — and it is NOT [`Default`].**
+    ///
+    /// TS has two option sets and they are ten times apart. `buildContext`'s defaults are
+    /// `{maxNodes:20, searchLimit:3, traversalDepth:1, minScore:0.3}`; the **explore handler
+    /// never uses them** — it passes `{searchLimit:8, traversalDepth:3, maxNodes:200,
+    /// minScore:0.2}` explicitly (`maps/mcp-context.md:115` vs `:132`). We ported the defaults
+    /// and then called `explore` through them, so the product ran the whole time on the option
+    /// set TS reserves for its *other*, smaller surface.
+    ///
+    /// It is not a tuning difference; it is what made the question unanswerable. Asked *"how
+    /// does an unresolved reference become a graph edge"* — **four** concepts — ranking got
+    /// **three** roots to span them with, and a 20-node budget divided across those roots gives
+    /// each one ~6 neighbors at depth 1. The chain the answer needs
+    /// (`resolve_and_persist_batched → resolve_all → resolve_one → create_edges`) is four hops
+    /// long and its middle is made of symbols no ranking would ever surface on their own. A
+    /// depth-1 walk on a 20-node budget cannot reach it, so no downstream pass could have fixed
+    /// this: the answer was never gathered.
+    ///
+    /// **This also retires a "measured" conclusion that was measuring the wrong thing.** Pass 13
+    /// records that a 4th root was tried and reverted because it *thinned the other three* — true,
+    /// and only because `max_nodes / roots` was `20/4`. At 200 the trade-off it describes does
+    /// not exist. A measurement is only as good as the configuration it ran under.
+    ///
+    /// Output size is unaffected: what an agent receives is capped by [`crate::budgets`]
+    /// (file-count tiered) and cut by `truncate_to_ceiling` — `max_nodes` governs how much graph
+    /// is *considered*, not how many bytes are *sent*.
+    pub fn explore() -> Self {
+        Self {
+            search_limit: 8,
+            traversal_depth: 3,
+            max_nodes: 200,
+            min_score: 0.2,
             node_kinds: HIGH_VALUE_NODE_KINDS.to_vec(),
         }
     }
@@ -275,12 +505,31 @@ pub async fn score_candidates<S: GraphStore>(
     opts: &FindOptions,
     dominant: Option<&DominantFile>,
 ) -> Result<Vec<ScoredNode>> {
-    // --- pass 1: the terms ---------------------------------------------------
     let terms = extract_search_terms(query);
+    score_candidates_with_terms(qm, query, &terms, opts, dominant).await
+}
+
+/// [`score_candidates`], over a term list the caller has already built.
+///
+/// **The terms are a parameter because they are no longer a pure function of the query.**
+/// [`derive_corpus_terms`] widens them with the codebase's own sub-words (`unresolved` ⇒
+/// `resolve`), and those derived terms have to reach *every* lexical pass. The extraction
+/// therefore happens once, above. It used to be re-derived independently here and in
+/// [`find_relevant_context`] — which is exactly the shape of bug where one caller gets the
+/// enriched list and the other quietly does not.
+pub async fn score_candidates_with_terms<S: GraphStore>(
+    qm: &QueryManager<S>,
+    query: &str,
+    terms: &[String],
+    opts: &FindOptions,
+    dominant: Option<&DominantFile>,
+) -> Result<Vec<ScoredNode>> {
+    // --- pass 1: the terms ---------------------------------------------------
     if terms.is_empty() {
         // A stopword-only query. **Empty is an ANSWER**, and the caller renders guidance.
         return Ok(Vec::new());
     }
+    let terms: Vec<String> = terms.to_vec();
 
     // Insertion-ordered: the order reaches ranking, so never a HashMap.
     let mut by_id: IndexMap<String, ScoredNode> = IndexMap::new();
@@ -537,13 +786,25 @@ pub async fn find_relevant_context<S: GraphStore>(
     opts: &FindOptions,
     dominant: Option<&DominantFile>,
 ) -> Result<RelevantContext> {
-    let terms = extract_search_terms(query);
+    let literal = extract_search_terms(query);
+
+    // --- pass 0: corpus-derived terms -----------------------------------------
+    //
+    // **Runs FIRST, and it must.** It re-scores nothing — it *admits* candidates no other pass
+    // can reach, because every other pass asks whether a symbol's name contains a query word,
+    // and the answer to a "how does X become Y" question is routinely a symbol whose name
+    // contains only a *stem* of one (`unresolved` ⇒ `resolve_one`). Run it any later and the
+    // candidate set it exists to widen has already been scored, cut and ranked without it.
+    //
+    // Empty on most queries, and that is correct — see [`derive_corpus_terms`].
+    let derived = derive_corpus_terms(qm, &literal).await?;
+    let terms: Vec<String> = literal.iter().cloned().chain(derived).collect();
 
     // Passes 1–4.
-    let scored = score_candidates(qm, query, opts, dominant).await?;
+    let scored = score_candidates_with_terms(qm, query, &terms, opts, dominant).await?;
 
     // --- passes 6 & 7: LIKE matches -------------------------------------------
-    let like = like_passes(qm, &terms, opts).await?;
+    let like = like_passes_pub(qm, &terms, opts).await?;
     let mut by_id: IndexMap<String, ScoredNode> = IndexMap::new();
     for s in scored.into_iter().chain(like) {
         match by_id.get_mut(&s.node.id) {
@@ -569,15 +830,15 @@ pub async fn find_relevant_context<S: GraphStore>(
     // removed. A rerank whose result is `max()`-ed against its own input is a no-op — which is
     // why the ported penalty appeared to do nothing when it was first restored.
     //
-    // (TS reranks before its LIKE passes because in TS the LIKE channels *add* to a node's
-    // score. Ours take the max. With a `max()` merge, the rescale has to come last, or it
-    // cannot survive the merge. The deviation is in the ORDER; the weights are TS's.)
+    // (TS reranks before its LIKE passes because in TS the LIKE channels *add* to a node's score.
+    // Ours take the max. With a `max()` merge, the rescale has to come last, or it cannot survive
+    // the merge. The deviation is in the ORDER; the weights are TS's.)
     rerank_by_term_groups(&mut scored, &terms);
 
     // --- pass 12: graph connectivity ------------------------------------------
-    // BEFORE the sort and BEFORE the truncate, because it both re-scores what the lexical
-    // passes found AND admits what they could not. Running it after the cut would let the cut
-    // throw away the answer first.
+    // BEFORE the sort and BEFORE the truncate, because it both re-scores what the lexical passes
+    // found AND admits what they could not. Running it after the cut would let the cut throw the
+    // answer away first.
     sort_candidates(&mut scored); // seed order = lexical rank
     apply_graph_connectivity(qm, &mut scored, &terms, opts).await?;
 
@@ -591,17 +852,44 @@ pub async fn find_relevant_context<S: GraphStore>(
     // for "how does an unresolved reference become a graph edge" sits around rank 8–10, and a
     // pool of 9 cannot reliably see it. The pool is widened; **the root count is unchanged**,
     // and so is the subgraph budget below it.
-    let pool: Vec<ScoredNode> = scored
+    let mut pool: Vec<ScoredNode> = scored
         .iter()
         .take(opts.search_limit * ROOT_POOL_MULTIPLE)
         .cloned()
         .collect();
     scored.truncate(opts.search_limit * 3);
 
+    // **A test may not be a ROOT.** Pass 12 already refuses to *seed* from test files, and the
+    // reason it gives applies with more force here: a test named
+    // `delete_file_cascades_nodes_edges_and_unresolved` lexically matches half of any query about
+    // edges or unresolved refs — it is a sentence, not a symbol — and it is never the answer to
+    // "how does this work". Measured: it took root 1 for *"how are edges created during
+    // resolution"* and dragged the whole answer into the test suite, because a root is not merely
+    // ranked, it *steers* — the flow seeds, the BFS, and the blast radius all start from it.
+    //
+    // The ×0.3 dampen is not enough on its own and cannot be: a long test name matches many terms,
+    // so the compound bonus it earns outruns the penalty. The dampen keeps tests *rankable*; this
+    // keeps them from *steering*. (TS gates the same way — `maps/mcp-context.md:119` — including
+    // the escape below.)
+    let q = query.to_lowercase();
+    let asking_about_tests = q.contains("test") || q.contains("spec");
+    if !asking_about_tests && pool.iter().any(|s| !is_test_file(&s.node.file_path)) {
+        // …and never prune to nothing: if the honest answer really does live in the tests, an
+        // empty root set would turn a found answer into a "nothing relevant" handoff.
+        pool.retain(|s| !is_test_file(&s.node.file_path));
+    }
+
     // --- pass 9: confidence ---------------------------------------------------
     let confidence = confidence_of(&scored, &terms);
 
     // --- pass 13: root diversity ----------------------------------------------
+    //
+    // ⚠ **The root count stays at `search_limit`.** Growing it to cover every concept a query
+    // names was tried, measured, and reverted: a 4th root for "how does an unresolved reference
+    // become a graph edge" pulled in a variable literally named `edge`, and because `max_nodes`
+    // is divided across the roots (pass 11), the extra root *thinned the other three* — the Flow
+    // section stopped rendering and a second probe lost a file it had been finding. A wider
+    // answer is not a better one when the budget is fixed. See `relevance-report.md`.
     let roots: Vec<ScoredNode> = pick_diverse_roots(&pool, &terms, opts.search_limit);
     if roots.is_empty() {
         // NOT an error. "Nothing relevant" is an answer, and the caller renders guidance.
@@ -761,15 +1049,15 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
     candidates: &mut Vec<ScoredNode>,
     terms: &[String],
     opts: &FindOptions,
-) -> Result<()> {
+) -> Result<IndexMap<String, usize>> {
     if candidates.is_empty() {
-        return Ok(());
+        return Ok(IndexMap::new());
     }
 
     // Nothing to bridge unless the query names at least two distinct concepts.
     let groups = term_groups(terms);
     if groups.len() < 2 {
-        return Ok(());
+        return Ok(IndexMap::new());
     }
 
     /// Which of the query's concepts does this name (and its path) carry?
@@ -805,7 +1093,7 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
     // Two seeds carrying two *different* concepts, or there is no bridge to look for.
     let distinct: IndexSet<usize> = seeds.iter().flat_map(|(_, c)| c.iter().copied()).collect();
     if seeds.len() < 2 || distinct.len() < 2 {
-        return Ok(());
+        return Ok(IndexMap::new());
     }
 
     // --- walk out, carrying each seed's concepts with it ------------------------------------
@@ -836,19 +1124,38 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
 
             let mut next: Vec<String> = Vec::new();
             for id in &frontier {
-                for entry in out
+                let neighbors: Vec<_> = out
                     .get(id)
                     .into_iter()
                     .flatten()
                     .chain(inc.get(id).into_iter().flatten())
-                    .take(rwr::MAX_NEIGHBORS_PER_NODE)
-                {
+                    .collect();
+
+                // **THE HUB GUARD. Do not route a concept THROUGH a node everything touches.**
+                //
+                // `UnresolvedRef` has 168 neighbors and `Edge` has 98 — they are the domain's
+                // hub types, and they are (correctly) seeds. But expanding a second hop through
+                // them pours the seed's concept over half the repository: every function that
+                // so much as mentions an `UnresolvedRef` inherits the *unresolved* concept, and
+                // then any of them that also brushes the *edge* side scores as a "bridge".
+                //
+                // Measured, that is exactly what happened — `key_of`, `as_str`, `name_tail`,
+                // `normalize_posix`, `is_builtin_type` all scored 40–60 and crowded the real
+                // answer out of the pool. They bridge nothing; they are simply *near* everything.
+                //
+                // A node's neighbors are always COLLECTED (a hub's neighbors are legitimate
+                // one-hop bridges — `create_edges` is a neighbor of `Edge`). What a hub may not
+                // do is serve as a *corridor* to a further hop. Concepts travel through
+                // specifics, not through hubs.
+                let is_corridor = neighbors.len() <= rwr::HUB_DEGREE;
+
+                for entry in neighbors.into_iter().take(rwr::MAX_NEIGHBORS_PER_NODE) {
                     if !opts.node_kinds.contains(&entry.node.kind)
                         || is_test_file(&entry.node.file_path)
                     {
                         continue;
                     }
-                    if seen.insert(entry.node.id.clone()) {
+                    if is_corridor && seen.insert(entry.node.id.clone()) {
                         next.push(entry.node.id.clone());
                     }
                     known
@@ -871,7 +1178,7 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
         .map(|(id, _)| id.clone())
         .collect();
     if reached.is_empty() {
-        return Ok(());
+        return Ok(IndexMap::new());
     }
 
     // Inverse-degree damping. A node reached by many seeds is interesting **in proportion to
@@ -902,7 +1209,7 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
 
     let max_gain = gains.iter().map(|(_, g)| *g).fold(0.0f64, f64::max);
     if max_gain <= 0.0 {
-        return Ok(());
+        return Ok(IndexMap::new());
     }
 
     // --- apply: boost what we had, ADMIT what the graph found --------------------------------
@@ -952,88 +1259,62 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
         }
     }
 
-    Ok(())
+    // **The verdict, handed to pass 5.** Which of the query's concepts each symbol was PROVEN to
+    // touch — not by how it is spelled, but by what it calls and what calls it. Pass 5 reads this
+    // as evidence of the same kind as a name match, and it is the only reason
+    // `resolve_and_persist_batched` can outrank a symbol that merely contains two of the query's
+    // words. Only ≥2-concept bridges are reported; a single concept is not a bridge.
+    Ok(reached
+        .iter()
+        .map(|id| (id.clone(), bridged[id].len()))
+        .collect())
 }
 
-
-/// **Pass 13 — root diversity.** Pick `limit` roots that are **distinct symbols** and that
-/// **span the query's concepts**.
+/// **Pass 13 — root diversity.** Pick `limit` roots, **never two with the same name**.
 ///
-/// # Two ways the root budget was being wasted, and both silently
+/// The graph legitimately holds three nodes named `insert_edges` — a trait declaration, its
+/// impl, and a delegating impl. Ranking scored all three, and the roots came back as
+/// *`insert_edges`, `insert_edges`, `insert_edges`*: the whole root budget spent on three
+/// spellings of one symbol, and with it every downstream section — the flow seeds, the file
+/// sections, the blast radius — collapsed onto a single point.
 ///
-/// **One name, three roots.** The graph legitimately holds three nodes named `insert_edges` —
-/// a trait declaration, its impl, and a delegating impl. Ranking scored all three, and the
-/// roots came back as *`insert_edges`, `insert_edges`, `insert_edges`*: the whole root budget
-/// spent on three spellings of one symbol, and with it every downstream section — the flow
-/// seeds, the file sections, the blast radius — collapsed onto a single point.
+/// One name, one root. The rest of the budget goes to symbols that say something new.
 ///
-/// **One pole, three roots.** Worse, and much harder to see. Asked *"how does an unresolved
-/// reference become a **graph edge**"*, the three best-scoring symbols were `UnresolvedReference`,
-/// `unresolved`, `GraphStore` — every one of them on the *unresolved* side of the question, and
-/// not one on the *edge* side. The answer that came back was a perfectly true, perfectly useless
-/// chain showing how an unresolved reference is **created** (`visit_node → extract_go_imports →
-/// add_unresolved`), because that is the only story the roots could tell. The half of the
-/// question the agent actually asked about — how it *becomes an edge* — had no root to stand on.
+/// # What this pass deliberately does NOT do: force the roots to span the query's concepts
 ///
-/// A question with two concepts is answered by code that touches both. So the roots must touch
-/// both: take the best candidate for each concept the query names **first**, and only then fill
-/// what is left by score. It costs nothing when a query has one concept, and it is the whole
-/// answer when it has two.
-pub fn pick_diverse_roots(scored: &[ScoredNode], terms: &[String], limit: usize) -> Vec<ScoredNode> {
-    let groups = term_groups(terms);
-
-    /// The concepts this candidate carries.
-    let concepts_of = |s: &ScoredNode| -> IndexSet<usize> {
-        let hay = format!("{} {}", s.node.name, s.node.file_path).to_lowercase();
-        groups
-            .iter()
-            .enumerate()
-            .filter(|(_, g)| g.iter().any(|t| hay.contains(&t.to_lowercase())))
-            .map(|(i, _)| i)
-            .collect()
-    };
-
+/// It is a tempting idea, it was implemented, and **the measurements killed it**. Asked *"how
+/// does an unresolved reference become a graph edge"*, all three roots land on the *unresolved*
+/// pole and none on *edge* — so the answer explains where the reference came from and never
+/// reaches the edge. Reserving a root for each concept looks like the obvious fix.
+///
+/// It is not, for a reason worth writing down: **the best candidate for a concept is not
+/// necessarily a good candidate.** Forcing coverage of `edge` promoted a local variable
+/// literally named `edge` over a strong, well-connected symbol — and because `max_nodes` is
+/// divided across the roots (pass 11), that junk root also *thinned the good ones*. Two probes
+/// that had been rendering a Flow section stopped. A root spent on a concept is a root not
+/// spent on an answer.
+///
+/// Ranking already knows which candidates are strong. Diversity should only stop it repeating
+/// itself — not overrule it. See `relevance-report.md` for the before/after that settled this.
+pub fn pick_diverse_roots(
+    scored: &[ScoredNode],
+    _terms: &[String],
+    limit: usize,
+) -> Vec<ScoredNode> {
+    let mut seen: Vec<String> = Vec::new();
     let mut roots: Vec<ScoredNode> = Vec::new();
-    let mut seen_names: Vec<String> = Vec::new();
-    let mut covered: IndexSet<usize> = IndexSet::new();
 
-    // **Cover an UNCOVERED concept, best-scoring first.** A plain per-concept loop is not enough:
-    // there are usually more concepts than root slots, so iterating the concepts in order spends
-    // the whole budget on the first few and never reaches the last. Asked "how does an unresolved
-    // reference become a graph *edge*", that is precisely how `edge` — the destination, the
-    // actual subject of the question — ended up with no root at all.
-    //
-    // So take the best candidate that says something NEW, and repeat. (Maximal marginal
-    // relevance: rank, minus what is already represented.)
-    while roots.len() < limit {
-        let pick = scored.iter().find(|s| {
-            !seen_names.contains(&s.node.name.to_lowercase())
-                && concepts_of(s).iter().any(|c| !covered.contains(c))
-        });
-        let Some(p) = pick else { break };
-        covered.extend(concepts_of(p));
-        seen_names.push(p.node.name.to_lowercase());
-        roots.push(p.clone());
-    }
-
-    // Fill any remaining slots by rank — **never two roots with the same name**. The graph holds
-    // three nodes named `insert_edges` (a trait decl and two impls); they are three *spellings*,
-    // not three answers, and left alone they took the entire budget.
     for s in scored {
         if roots.len() >= limit {
             break;
         }
         let name = s.node.name.to_lowercase();
-        if seen_names.contains(&name) {
+        if seen.contains(&name) {
             continue;
         }
-        seen_names.push(name);
+        seen.push(name);
         roots.push(s.clone());
     }
-
-    // The rendered order is still rank order — concept coverage decides *membership*, not
-    // presentation, and the summary line must stay sorted best-first.
-    sort_candidates(&mut roots);
     roots
 }
 
@@ -1068,10 +1349,26 @@ fn rerank_by_term_groups(scored: &mut [ScoredNode], terms: &[String]) {
 
     for s in scored.iter_mut() {
         let hay = format!("{} {}", s.node.name, s.node.file_path).to_lowercase();
-        let concepts = groups
+        let lexical = groups
             .iter()
             .filter(|g| g.iter().any(|t| hay.contains(&t.to_lowercase())))
             .count();
+
+        // ⚠ **Pass 12's bridged-concept verdict is DELIBERATELY NOT used here, and it was
+        // measured.** It is a tempting idea — a symbol that *reaches* the `edge` concept by
+        // calling `create_edges` arguably matches it as truly as one that merely spells it — and
+        // feeding `max(lexical, bridged)` into this multiplier does raise the right symbol.
+        //
+        // It also raises `file_node_id`, `hash_content` and `node_id` into the top roots for
+        // *"how are edges created during resolution"*, and took that query from 3-of-3 to 0-of-3.
+        // The reason is the one this file already records twice (`rwr`'s hub guard, pass 12's
+        // callable gate): **the utility layer touches every concept**, so a *multiplicative*
+        // reward for touching two of them is a reward for being plumbing. Pass 12's additive,
+        // degree-damped boost is bounded and survives that; a ×2 rescale does not.
+        //
+        // Graph evidence belongs in pass 12's own bounded channel. It must not be allowed to
+        // multiply.
+        let concepts = lexical;
 
         let lower = s.node.name.to_lowercase();
         let exact = terms.iter().any(|t| t.to_lowercase() == lower);
@@ -1079,31 +1376,31 @@ fn rerank_by_term_groups(scored: &mut [ScoredNode], terms: &[String]) {
         if concepts >= 2 {
             s.score *= 1.0 + weights::GROUP_SCALE * concepts as f64;
             s.term_hits = s.term_hits.max(concepts);
-        } else if exact && !is_code_shaped(&s.node.name) {
-            // A node literally NAMED `edge` or `graph`. It matches the query word exactly and
-            // means nothing — the query used the word in English, not as an identifier.
-            s.score *= weights::COMMON_WORD_EXACT;
         } else if exact {
-            // A distinctive exact match is EXEMPT: `handleLogin` named exactly is the answer.
+            // **An exact name match is EXEMPT from the penalty.**
+            //
+            // TS splits this branch: a *distinctive* exact match is exempt, a *common-word*
+            // exact match is ×0.3. We first ported that split with a word-shape test — is the
+            // name an identifier (`handle_login`) or an English word (`edge`)? — and it was
+            // measurably wrong on the very query it was meant to help.
+            //
+            // Asked *"how does an unresolved reference become a graph **edge**"*, the shape
+            // test read `Edge` as a common word and scaled it 25 → 7.5. But `Edge` is the
+            // central domain type of a graph database: it is not a word that happens to
+            // collide with the query, it is *the thing the query is about*. The penalty
+            // dropped it out of the candidate pool entirely, and with it went the entire
+            // `edge` half of the question.
+            //
+            // The stopword list is already the defense against common words — anything
+            // meaningless was filtered out before it ever became a term. A word that survives
+            // stopwords AND exactly names a symbol is the strongest signal the query has, and
+            // it must not be second-guessed by a heuristic about its spelling.
         } else {
             // One concept out of several. Not wrong — just not corroborated. This is the
             // branch the port dropped.
             s.score *= weights::SINGLE_CONCEPT;
         }
     }
-}
-
-/// Is this name an *identifier* rather than an English word? `handle_login`, `UnresolvedRef`
-/// and `resolve_and_persist_batched` are code-shaped; `edge`, `graph` and `data` are not.
-///
-/// This distinguishes TS's *"distinctive exact match"* (exempt) from its *"common-word exact
-/// match"* (×0.3). The map names the two branches but not the predicate that separates them,
-/// so the shape test below is **our reading**, not a port — recorded as such.
-fn is_code_shaped(name: &str) -> bool {
-    name.contains('_')
-        || name.contains('.')
-        || name.chars().skip(1).any(char::is_uppercase) // a camelCase/PascalCase boundary
-        || name.len() >= 8
 }
 
 /// Terms that are substrings of one another are one concept. Longest first, so the longest
@@ -1138,7 +1435,7 @@ pub fn term_groups(terms: &[String]) -> Vec<Vec<String>> {
 
 /// **Passes 6 & 7.** camelCase-boundary and compound (≥2-term) LIKE matches — the names FTS
 /// cannot see, because FTS tokenizes and `handleLoginRequest` is one token.
-async fn like_passes<S: GraphStore>(
+pub async fn like_passes_pub<S: GraphStore>(
     qm: &QueryManager<S>,
     terms: &[String],
     opts: &FindOptions,
@@ -1157,7 +1454,7 @@ async fn like_passes<S: GraphStore>(
     for term in terms {
         let hits = qm
             .store()
-            .search_name_like(term, &opts.node_kinds, opts.search_limit * 2)
+            .search_name_like(term, &opts.node_kinds, weights::LIKE_LIMIT)
             .await
             .map_err(selene_graph::GraphError::from)?;
         for c in hits {
@@ -1179,11 +1476,18 @@ async fn like_passes<S: GraphStore>(
     // Both were ported as a flat `+5 per extra term`, which is what let a name matching ONE
     // query word rank alongside a name matching THREE. The whole point of a compound hit is
     // that it is *categorically* stronger — `20` per extra term, not `5`.
+    // **Count CONCEPTS, not terms.** This counted raw terms, which was harmless while every term
+    // was a distinct word the agent typed — and became a double-count the moment pass 0 started
+    // deriving terms *from* other terms. `UnresolvedReference` contains `unresolved` AND its
+    // derivation `resolve`, so it scored as a two-concept compound hit for what is manifestly one
+    // idea, and climbed 141 → 157 for free. Grouping first is what pass 5 and pass 12 already do;
+    // this pass was the odd one out.
+    let groups = term_groups(terms);
     for s in out.iter_mut() {
         let name = s.node.name.to_lowercase();
-        let hits = terms
+        let hits = groups
             .iter()
-            .filter(|t| name.contains(&t.to_lowercase()))
+            .filter(|g| g.iter().any(|t| name.contains(&t.to_lowercase())))
             .count();
         if hits == 0 {
             continue;

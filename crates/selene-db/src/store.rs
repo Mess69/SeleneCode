@@ -583,6 +583,17 @@ pub trait GraphStore: Send + Sync {
     /// the totals are needed.
     fn node_edge_count(&self) -> impl Future<Output = Result<(u64, u64)>> + Send;
 
+    /// The **busiest file and its runner-up**, by the number of edges leaving
+    /// symbols defined in them: `(file_path, edge_count, next_edge_count)`.
+    /// `None` on an empty graph.
+    ///
+    /// This is TS's `getDominantFile()`, and it exists to feed the core-directory
+    /// boost in relevance pass 4 (`selene-context`). That boost was implemented
+    /// against a value **no caller could ever produce** — the spike's audit of the
+    /// TS store did not list this primitive, so the pass was wired to `None`, and
+    /// a scoring pass that never fires reads exactly like a scoring pass that does.
+    fn dominant_file(&self) -> impl Future<Output = Result<Option<(String, u64, u64)>>> + Send;
+
     /// Drop every node, edge, file, and unresolved-ref row (full re-index
     /// discard). Project metadata (e.g. schema version) is untouched.
     fn clear(&self) -> impl Future<Output = Result<()>> + Send;

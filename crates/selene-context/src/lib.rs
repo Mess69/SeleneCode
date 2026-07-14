@@ -44,7 +44,8 @@ pub use flow::{FLOW_KINDS, FlowStep, build_flow_from_named_symbols, describe_hop
 pub use node_view::{NodeView, build_node_view, node_not_found, render_node_view};
 pub use relevance::{
     Confidence, DominantFile, FindOptions, HIGH_VALUE_NODE_KINDS, RWR_EDGE_KINDS, RelevantContext,
-    ScoredNode, apply_graph_connectivity, brevity, confidence_of, find_relevant_context,
-    is_test_file, pick_diverse_roots, rwr, score_candidates, sort_candidates, term_groups, weights,
+    ScoredNode, apply_graph_connectivity, brevity, confidence_of, derive_corpus_terms,
+    find_relevant_context, is_test_file, like_passes_pub, pick_diverse_roots, rwr,
+    score_candidates, score_candidates_with_terms, segments, sort_candidates, term_groups, weights,
 };
 pub use stopwords::{STOPWORDS, extract_search_terms, extract_symbols_from_query};

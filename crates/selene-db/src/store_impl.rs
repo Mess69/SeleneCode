@@ -258,6 +258,10 @@ impl GraphStore for SurrealStore {
         SurrealStore::node_edge_count(self).await
     }
 
+    async fn dominant_file(&self) -> Result<Option<(String, u64, u64)>> {
+        SurrealStore::dominant_file(self).await
+    }
+
     async fn clear(&self) -> Result<()> {
         SurrealStore::clear(self).await
     }

@@ -88,6 +88,38 @@ impl SurrealStore {
         Ok(())
     }
 
+    /// The busiest file and its runner-up, by edges leaving symbols defined in
+    /// them — `(file_path, edge_count, next_edge_count)`, `None` on an empty
+    /// graph. See [`GraphStore::dominant_file`](crate::GraphStore::dominant_file).
+    ///
+    /// The tie-break on equal counts is the **path**, so the "dominant" file
+    /// cannot flip between runs on a corpus with two equally-busy files — this
+    /// value feeds a scoring boost, and a boost that moves under a re-index is a
+    /// ranking that moves under a re-index.
+    pub async fn dominant_file(&self) -> Result<Option<(String, u64, u64)>> {
+        let mut resp = self.db().query(edge_group_by_file_sql()).await?;
+
+        let mut totals: BTreeMap<String, u64> = BTreeMap::new();
+        for i in 0..EdgeKind::ALL.len() {
+            let rows: Vec<serde_json::Value> = resp.take(i)?;
+            for row in rows {
+                if let (Some(f), Some(c)) = (row["f"].as_str(), row["count"].as_u64()) {
+                    *totals.entry(f.to_string()).or_insert(0) += c;
+                }
+            }
+        }
+
+        let mut ranked: Vec<(String, u64)> = totals.into_iter().collect();
+        ranked.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+
+        Ok(match (ranked.first(), ranked.get(1)) {
+            (Some((path, count)), next) => {
+                Some((path.clone(), *count, next.map_or(0, |(_, n)| *n)))
+            }
+            (None, _) => None,
+        })
+    }
+
     /// Aggregate graph statistics (see [`GraphStats`]). Every count is a
     /// store-side `count()`/`GROUP BY` aggregate, never a full scan decoded
     /// in Rust.
@@ -171,6 +203,20 @@ impl SurrealStore {
 /// mirrors `src/edges.rs`'s `insert_edge_chunk` per-kind statements/
 /// `src/unresolved.rs`'s keyed batching: one round trip regardless of the
 /// 12-table split.
+/// One `SELECT in.filePath AS f, count() FROM {kind} GROUP BY f;` per edge-kind
+/// relation table. Edges are stored one `TYPE RELATION` table per [`EdgeKind`],
+/// so "how many edges leave this file" is a group-by per table, summed in Rust.
+fn edge_group_by_file_sql() -> String {
+    let mut sql = String::with_capacity(EdgeKind::ALL.len() * 64);
+    for kind in EdgeKind::ALL {
+        sql.push_str(&format!(
+            "SELECT in.filePath AS f, count() FROM {} GROUP BY f;",
+            kind.as_str()
+        ));
+    }
+    sql
+}
+
 fn edge_group_all_sql() -> String {
     let mut sql = String::with_capacity(EdgeKind::ALL.len() * 40);
     for kind in EdgeKind::ALL {
