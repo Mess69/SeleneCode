@@ -444,3 +444,62 @@ parse+scan    0.3 s
 No single item dominates any more. Beating 5.7 s needs the **write volume** to come down (the node
 table is SCHEMAFULL with ~25 fields and 9 indexes) or the FTS/synthesis passes to be reconsidered —
 not more tuning.
+
+---
+
+# Follow-up 5: concurrency. 16.4s → 10.9s, and now within 1.4–1.9× of TS.
+
+| corpus | files | this morning | **now** | codegraph TS | gap |
+|---|---:|---:|---:|---:|---|
+| codegraph/src | 162 | 18.4 s | **3.6 s** | 2.4 s | **TS 1.5×** |
+| SeleneCode/crates | 328 | 22.8 s | **4.0 s** | 2.8 s | **TS 1.4×** |
+| django | 931 | 61.1 s | **10.9 s** | 5.7 s | **TS 1.9×** |
+
+The whole day's factor: **5.1–5.7× faster than where it started.** Deterministic, graph
+byte-identical, every gate green, `explore` still 3/3.
+
+## The store was talked to one query at a time
+
+SurrealDB's own benchmark reaches 300k ops/s **with 128 clients issuing 48 concurrent queries each**.
+We awaited one query at a time: 39 sequential round trips to insert django's 19,061 nodes, 94 for its
+edges, and a 3.2s FULLTEXT poll standing in front of a resolve that reads none of it. The engine was
+built for concurrency; the caller supplied none.
+
+- **`insert_nodes` concurrent** (buffer_unordered, cap 16): **3,416 ms → 793 ms**. Ids are
+  content-hashed and unique — no two chunks touch the same record.
+- **`insert_edges` concurrent** (bounded try_join_all): **1,479 ms → 555 ms**. The within-call dedup
+  made chunk identities disjoint; the count is a sum.
+- **FULLTEXT build `tokio::join!`ed with the resolve**: the `DEFINE INDEX … CONCURRENTLY` poll was
+  3.2s of pure waiting. `search_fts` has one consumer — `explore` — so the resolve does not need it.
+  It now builds while the resolve runs.
+
+Concurrency cap is 16, not unbounded: SurrealDB's RocksDB layer sizes its inline-blocking permit pool
+from the tokio worker count, so past that the futures just queue on a semaphore inside the engine.
+
+**Proven, not asserted:** graph diffed edge-by-edge vs the sequential build, parity gate at tolerance
+0 (6/6), dispatch gate asserting route→handler flows survive the FTS build running *while the
+framework pass inserts route nodes* (5/5). A concurrent write that invented or dropped an edge fails
+all three. None does.
+
+## The full arc, one line each
+
+```
+morning (sequential, queue-through-disk, 32k blocking lookups)   django 61.1s   TS 10.7x
++ batched commit (931 round trips -> 4)                                  51.2s
++ keyed-write bug fixed (was DROPPING references) + queue rewrite        40.0s
++ fetch once (START offset was O(n^2))                                   36.2s
++ dead indexes removed                                                   33.5s
++ SurrealDB `allocator` feature (mimalloc)                               28.9s
++ eager node index (32,524 blocking lookups -> 48)                       23.7s
++ reference queue kept in memory (no disk round-trip)                    16.4s
++ concurrent writes + FTS overlapped with resolve                        10.9s   TS 1.9x
+```
+
+## What beating TS outright would take
+
+django's 10.9s is now: bulk write ~4.5s (nodes 0.8 · edges 0.6 · the rest is serialization + files),
+synthesis 2.8s, persist ~2s, ladder 1.9s. No single item dominates, and the FTS is now free
+(overlapped). To go *under* 5.7s the write VOLUME has to drop — the `node` table is SCHEMAFULL with
+~25 fields and 9 indexes — or synthesis (2.8s, single-threaded) has to be revisited. That is a
+data-model change, not tuning, and it is the only lever left that is worth more than a fraction of a
+second.
