@@ -6,7 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 SeleneCode is **local-first code intelligence, in Rust** — the Rust port of [CodeGraph](../codegraph). It parses any supported codebase with tree-sitter, stores symbols/edges/files in an **embedded graph database**, and exposes a knowledge graph to AI agents over **MCP**. Per-project data lives in `.selene/`. Extraction is **deterministic** (AST-derived, never LLM-summarized). The goal is a **single static binary** that serves as installer, indexer, and MCP server.
 
-**Status: resolution complete (Phase 3).** `selene-core` (the data model), `selene-db` (Phase 1 — `GraphStore` + SurrealDB embedded), `selene-extract` (Phase 2 — tree-sitter extraction over the 12 v0 languages, scan pipeline, orchestrator) and `selene-resolve` (Phase 3 — the `resolve_one` ladder, imports, the name matcher, 11 framework resolvers, 4 dynamic-dispatch synthesizer channels + the Django ORM descriptor) are implemented and tested; the remaining layer crates are stubs. Phase 3 is held by **two gates**: a TS↔Rust resolution-parity gate on edge *identity* (tolerance 0) and a dispatch-coverage gate asserting whole *flows* — see `crates/selene-resolve/src/lib.rs`. The full target architecture is the PRD: `docs/specs/2026-07-11-rust-graph-db-migration-design.md`. Read it before designing anything — it is the source of truth for the crate boundaries, the DB decision, and the invariants below.
+**Status: the binary runs, indexes a real repo, serves MCP — and `explore` answers.** `selene-core` (the data model), `selene-db` (Phase 1 — `GraphStore` + SurrealDB embedded), `selene-extract` (Phase 2 — tree-sitter extraction over the 12 v0 languages), `selene-resolve` (Phase 3 — the `resolve_one` ladder, imports, the name matcher, 11 framework resolvers, 4 dynamic-dispatch synthesizer channels + the Django ORM descriptor), `selene-graph`, `selene-context` (Phase 4) and `selene-mcp` (Phase 5) are implemented and tested. **`selene-cli`, `selene-sync` and `selene-installer` are still 3-line stubs** — so there are exactly two commands (`index`, `serve`), you re-index BY HAND when code changes, and the MCP config is written by hand.
+
+**It works; it is not the product yet.** Two things are unproven and both are load-bearing: **Task 20** (the milestone gate — nobody has yet *measured* that an agent answers with **zero Read/Grep** on a large repo) and **Task 19** (`isError` discipline). And **there is no speed benchmark against the CodeGraph TS build** — every perf number on record is Rust vs its own earlier self. Do not claim we are faster; it has never been measured. Phase 3 is held by **two gates**: a TS↔Rust resolution-parity gate on edge *identity* (tolerance 0) and a dispatch-coverage gate asserting whole *flows* — see `crates/selene-resolve/src/lib.rs`. **Start from `RESUME.md` at the repo root** — it is the single handoff doc. The full target architecture is the PRD: `docs/specs/2026-07-11-rust-graph-db-migration-design.md`. Read it before designing anything — it is the source of truth for the crate boundaries, the DB decision, and the invariants below.
 
 ## Build, Test, Run
 
@@ -50,7 +52,14 @@ files → selene-extract (tree-sitter) → selene-db (nodes/edges/files)
   `framework`) and are queried, never parsed out of an id. Its `lib.rs` carries the
   public-interface ledger, the deferrals, the two gates, and the deviation-ledger
   pointer (`tests/fixtures/dispatch/deviations.toml` is the single authority).
-- `selene-graph`, `selene-context`, `selene-mcp`, `selene-sync`, `selene-installer`, `selene-cli` — stubs; each crate's `lib.rs` names its role + PRD section.
+- `selene-graph` (traversal/`QueryManager`), `selene-context` (the `explore` answer — relevance, the
+  Flow spine, budgets) and `selene-mcp` (the MCP surface) — **implemented**. `selene-context`'s
+  `relevance.rs` carries the pass ledger, **and the record of what has been measured and REVERTED**:
+  read it before touching ranking, or you will retry a dead approach. The seed picker's decisive
+  signal is **directional** — concepts spanned via *outgoing* calls, which separates an orchestrator
+  from plumbing (`out=0, in=huge`) structurally rather than by weighting.
+- `selene-sync`, `selene-installer`, `selene-cli` — **3-line stubs.** Plans are written and ruled
+  (Phases 6 + 7, 35 tasks) but nothing is built.
 
 Shared third-party deps and their versions are declared once in the root `[workspace.dependencies]`; crates opt in with `dep.workspace = true`.
 

@@ -338,3 +338,35 @@ nœuds est juste une arête »).
 OUVERT (pré-existant, reproduit, non corrigé) : (1) les tests dans `src/` pilotent les flows —
 `is_test_file` teste le CHEMIN, or Rust met ses tests dans le fichier source ; (2) `type_of` et
 `returns` sont à ZÉRO dans un index Rust réel (émis comme `references` ?) — seam inerte potentiel.
+
+--- 2026-07-14, plus tard : deux affirmations que la doc laissait passer, corrigées ---
+
+Aucun code changé. Deux questions simples ont révélé que la doc mentait par omission :
+
+1. **« On est meilleurs en perf ? »** — **ON N'EN SAIT RIEN.** RESUME.md §3 s'intitulait « Perf —
+   RÉGLÉ » et annonçait **6×** et **2,5×**. Ces chiffres sont **Rust contre son propre passé** : on a
+   corrigé DEUX BUGS À NOUS (le mauvais backend DB ; un index composite manquant). Ils ne disent
+   **rien** sur CodeGraph TS. **Il n'existe AUCUN benchmark de vitesse Rust vs TS** — les trois docs
+   de `docs/benchmarks/` mesurent la *justesse* (identité des arêtes, tolérance 0) et le gate DB
+   Phase 1 oppose SurrealKV à RocksDB, deux backends À NOUS. Un lecteur pressé (moi, dans deux
+   semaines) aurait cité « 6× » comme si on battait CodeGraph.
+   ⇒ §3 réécrit. Le benchmark tête-à-tête devient une tâche explicite (§5.A ter) : `../codegraph` est
+   sur le disque, c'est ~30 min. **Et il faut comparer les nœuds/arêtes produits, pas seulement le
+   temps** — sinon « plus rapide » peut vouloir dire « il en fait moins », l'erreur que ce projet
+   répète.
+   ⚠ Contre-indice : persist ≈ 54 % du temps, `resolve_all` sur UN cœur, VS Code extrapolé à ~54 min.
+   Ce n'est pas un profil de gagnant évident. Ne suppose pas la victoire.
+
+2. **« C'est prêt ? C'est CodeGraph en Rust ? »** — **Non. Ça marche, ce n'est pas le produit.**
+   RESUME.md ne répondait à ça **nulle part**, alors que c'est la première question qu'on pose.
+   `selene-cli`, `selene-sync`, `selene-installer` = **3 lignes chacun**. Conséquences concrètes :
+   **2 commandes** (`index`, `serve`), **réindexation À LA MAIN**, config MCP écrite à la main.
+   (Piège : `selene-resolve` (17 k lignes) et `selene-graph` sont IMPLÉMENTÉS — le mot « stub » traîne
+   dans leur doc de module et trompe un `grep`.)
+   ⇒ nouveau §1 bis dans RESUME.md, et le bloc « Status » de CLAUDE.md réécrit (il annonçait encore
+   « the remaining layer crates are stubs », faux depuis que graph/context/mcp tournent).
+
+**La leçon est la même que celle du §9, sous une autre forme :** l'instrument qui ment n'est pas
+toujours un test — ici c'était **le titre d'une section**. « Perf — RÉGLÉ » était vrai (nos bugs sont
+réglés) et trompeur (ça ne dit rien de la comparaison qui compte). Écris ce que la mesure prouve,
+pas ce qu'elle suggère.

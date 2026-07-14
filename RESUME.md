@@ -36,6 +36,48 @@ planifié, plus un blocage.
 
 ---
 
+## 1 bis. « Est-ce que c'est prêt ? Est-ce que c'est CodeGraph en Rust ? »
+
+**Non.** Ça **marche**, ce n'est pas le **produit**. Distinction qui coûte cher si on la rate.
+
+### Ce qui existe vraiment
+
+Un binaire unique, SurrealDB embarqué (RocksDB), qui **indexe** et **sert du MCP**. Vérifié en vrai,
+pas déduit : `selene index` + `selene serve --mcp` + `explore` répond (§2).
+**11–12 langages** (c, cpp, go, java, js, kotlin, php, python, ruby, rust, ts).
+
+### Ce qui n'existe PAS — et ce sont des stubs de 3 lignes, pas des « presque finis »
+
+| crate | lignes | conséquence concrète |
+|---|---|---|
+| `selene-cli` | **3** | **2 commandes en tout** : `index`, `serve`. Pas de `status`, rien d'autre. |
+| `selene-sync` | **3** | **Tu réindexes À LA MAIN quand ton code change.** Pas de watch, pas d'incrémental branché. |
+| `selene-installer` | **3** | Pas de `selene install`. La config MCP s'écrit **à la main**. |
+
+*(`selene-resolve` (17 k lignes) et `selene-graph` sont **implémentés** — le mot « stub » traîne dans
+leur doc de module et trompe un `grep`. Ne te fais pas avoir.)*
+
+### Les trois trous qui séparent « ça tourne » de « ça tient sa promesse »
+
+1. **Task 20 — le gate du jalon — n'est pas écrit.** Personne n'a **prouvé** qu'un agent répond avec
+   **zéro Read/Grep** sur un gros dépôt (VS Code, 11 938 fichiers). C'est *la* promesse du produit.
+   Elle est **plausible, pas démontrée**. Tout le reste est décoration tant que ce n'est pas mesuré.
+2. **Task 19 — discipline `isError`** pas faite. Un `?` qui s'échappe d'un handler et l'agent
+   abandonne l'outil **pour toujours** (§5.B).
+3. **`explore` n'est prouvé que sur TS et Rust.** Le gate Phase 4 tourne sur **2 projets, tous les
+   deux TS**. Python/Django, Go, Java/Spring : le code existe, **rien ne le prouve**.
+
+### Utilisable dès maintenant, avec ces réserves
+
+```bash
+cargo build --release -p selene
+./target/release/selene index /chemin/du/repo
+# puis pointer la config MCP sur :
+#   ./target/release/selene serve --mcp --path /chemin/du/repo
+```
+
+---
+
 ## 2. LE BLOCAGE EST LEVÉ (`c0c7143`) — lire ceci avant de retoucher la pertinence
 
 ### Ce que fait `explore` maintenant
@@ -149,10 +191,35 @@ fichier qu'il doit ensuite ouvrir. La sonde teste maintenant les **sections de f
    `references`. Déclarés dans l'enum, jamais peuplés : exactement la forme du « seam inerte » que
    ce projet paie en boucle (§9). À trancher : les peupler, ou les consigner comme déviation.
 
-## 3. Perf — RÉGLÉ (garder le contexte, ne pas refaire)
+## 3. Perf — deux régressions à NOUS, corrigées. **Zéro comparaison avec TS.**
+
+### ⚠ Lis ça avant de citer le moindre chiffre
 
 `selene index` sur codegraph (162 fichiers) : **52,4 s → 20,6 s**. Sur SeleneCode : **8 m 52 s →
 1 m 29 s**. Sortie **identique** à chaque fois (aucune arête perdue), gates Phase 3 verts.
+
+**Ces chiffres sont Rust contre SON PROPRE PASSÉ.** On a corrigé deux bugs à nous. Ils ne disent
+**rien** sur CodeGraph TS. `8 m 52 s → 1 m 29 s` veut dire *« on était mauvais, on l'est moins »* —
+**pas** *« on bat CodeGraph »*.
+
+> **Il n'existe AUCUN benchmark de vitesse Rust vs TS.** Les trois docs de `docs/benchmarks/`
+> comparent la **justesse**, pas le temps : parité d'extraction (identité des nœuds/arêtes,
+> tolérance 0), parité de résolution (303 arêtes, tolérance 0), et le gate DB Phase 1 — qui oppose
+> **SurrealKV à RocksDB**, deux backends *à nous*. Aucun ne chronomètre le build TS.
+
+**L'argument** (ce n'est **pas** une mesure) : le port supprime des coûts que TS payait — la couche
+WASM (pool de workers, resets de parser, retries OOM) est **supprimée, pas portée**, et les
+grammaires tree-sitter sont **liées nativement**. Bonnes raisons d'être devant. Ce projet a déjà été
+puni exactement pour ce genre de raisonnement (le binaire a tourné **trois phases** sur un backend
+que son propre benchmark avait rejeté, parce que personne ne l'avait **lancé**).
+
+**Contre-indice à ne pas balayer :** le persist fait encore **~54 %** du temps, et `resolve_all`
+tourne sur **un seul cœur** (9 inactifs). VS Code extrapole à **~54 min**. Ce n'est pas un profil de
+gagnant évident.
+
+**À faire, c'est une demi-heure :** `../codegraph` **est là**. Indexer le **même dépôt** avec les
+deux, même machine, chronomètre — et comparer **aussi le nombre de nœuds/arêtes produits**, sinon
+« plus rapide » peut simplement vouloir dire « il en fait moins ».
 
 **Deux bugs, tous deux instructifs :**
 
@@ -209,6 +276,9 @@ cargo test --workspace 2>&1 | grep -c 'test result: FAILED'   # doit afficher 0
 - `get_dominant_file()` n'a pas de primitive store → la passe 4 du scoring est un **no-op silencieux
   qui a l'air de marcher**. L'implémenter ou l'enregistrer comme déviation explicite.
 - snapshots `insta` (Task 13 half 2) + table de budgets dans `docs/benchmarks/` : jamais faits.
+- ⬜ **AUCUN benchmark de VITESSE vs le build TS.** Les trois docs de `docs/benchmarks/` mesurent la
+  *justesse* (identité des arêtes, tolérance 0), jamais le temps. On **ne sait pas** si on est plus
+  rapide que CodeGraph. `../codegraph` est là : c'est une demi-heure de travail (§5.A bis).
 
 ---
 
@@ -222,6 +292,16 @@ mortes.
 ### A bis. Les deux défauts pré-existants d'`explore` (§2 bis)
 Ni l'un ni l'autre ne bloque Task 20, mais le premier laisse un **test piloter une réponse** :
 tests dans `src/` (Rust met ses tests DANS le fichier) ; et `type_of`/`returns` à zéro dans l'index.
+
+### A ter. Le benchmark qu'on n'a jamais fait : **Rust vs TS, en vitesse** (~30 min)
+On **ne sait pas** si on bat CodeGraph. Tous nos chiffres de perf sont *Rust contre son propre passé*
+(§3). `../codegraph` est sur le disque — les deux builds peuvent indexer le **même dépôt**.
+
+Protocole, et **le second point n'est pas optionnel** :
+1. Même corpus, même machine, plusieurs tailles (petit / moyen / VS Code), chronomètre.
+2. **Comparer aussi les nœuds/arêtes produits** — sinon « plus rapide » peut simplement vouloir dire
+   « il en fait moins ». C'est exactement l'erreur que ce projet répète (§9).
+3. Écrire le résultat dans `docs/benchmarks/`, **même s'il est mauvais.**
 
 ### B. Finir la Phase 5
 - **Task 19 — la discipline `isError`.** Le piège est documenté par le spike du projet lui-même :
