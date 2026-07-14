@@ -26,16 +26,16 @@
 //! "read the file" — it says how to *ask this tool* a better question, because sending the
 //! agent to `Read` is losing the bet on purpose.
 
-use selene_core::EdgeKind;
+use selene_core::{EdgeKind, Node};
 use selene_db::GraphStore;
 use selene_graph::{QueryManager, number_lines};
 
 use crate::boundaries::{find_boundaries, render_boundaries};
 use crate::budgets::{ExploreBudget, budget_for, truncate_to_ceiling};
 use crate::error::Result;
-use crate::flow::{build_flow_from_named_symbols, render_flow};
+use crate::flow::{build_flow_from_named_symbols, build_flow_from_nodes, render_flow};
 use crate::relevance::{
-    Confidence, DominantFile, FindOptions, RelevantContext, find_relevant_context,
+    Confidence, DominantFile, FindOptions, RelevantContext, find_relevant_context, term_groups,
 };
 use crate::stopwords::extract_search_terms;
 
@@ -161,17 +161,27 @@ impl<S: GraphStore> ContextBuilder<S> {
             return Ok(render_flow(&steps));
         }
 
-        // 2. Otherwise, the gathered subgraph: roots first (they are the answer we believe in),
-        //    then everything the walk pulled in around them (which is where the intermediates
-        //    live).
-        let mut names: Vec<String> = ctx.roots.iter().map(|r| r.node.name.clone()).collect();
+        // 2. Otherwise, the gathered subgraph: roots first (they are the answer we believe in,
+        //    and they seed the walk), then everything the walk pulled in around them (which is
+        //    where the intermediates live).
+        //
+        //    **Pass the NODES, not their names.** These are already resolved — turning them back
+        //    into strings so the flow builder can look them up again capped the set at
+        //    `MAX_NAMES` (16 of 147, dropping the chain's own sinks) and risked re-resolving a
+        //    name onto the wrong symbol. See [`build_flow_from_nodes`].
+        let mut nodes: Vec<Node> = ctx.roots.iter().map(|r| r.node.clone()).collect();
         for n in ctx.subgraph.nodes.values() {
-            if !names.contains(&n.name) {
-                names.push(n.name.clone());
+            if !nodes.iter().any(|x| x.id == n.id) {
+                nodes.push(n.clone());
             }
         }
-        if names.len() >= 2
-            && let Some(steps) = build_flow_from_named_symbols(&self.qm, &names).await?
+        //    The query's CONCEPTS decide which of the many provable chains is the answer: a flow
+        //    must arrive at a pole it did not start from. Without them the walk keeps the longest
+        //    chain, which is the deepest one, which for "…become a graph edge" walked eight hops
+        //    further into the resolver and ended on `WorkspacePackages`.
+        let concepts = term_groups(&ctx.terms);
+        if nodes.len() >= 2
+            && let Some(steps) = build_flow_from_nodes(&self.qm, &nodes, &concepts).await?
         {
             return Ok(render_flow(&steps));
         }
@@ -275,8 +285,7 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
     /// The file sections — verbatim, line-numbered source.
     async fn render_files(&self, ctx: &RelevantContext, budget: &ExploreBudget) -> Result<String> {
         // Group the gathered nodes by file, keeping first-seen (rank) order.
-        let mut by_file: indexmap::IndexMap<String, Vec<&selene_core::Node>> =
-            indexmap::IndexMap::new();
+        let mut by_file: indexmap::IndexMap<String, Vec<&Node>> = indexmap::IndexMap::new();
         for node in ctx.subgraph.nodes.values() {
             by_file
                 .entry(node.file_path.clone())

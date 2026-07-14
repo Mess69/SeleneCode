@@ -28,7 +28,7 @@
 //! the source", which is exactly the thing it would otherwise go looking for.
 
 use indexmap::IndexMap;
-use selene_core::{Edge, EdgeKind, Node, Provenance};
+use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance};
 use selene_db::GraphStore;
 use selene_graph::QueryManager;
 
@@ -50,6 +50,37 @@ pub const FLOW_KINDS: &[EdgeKind] = &[
 /// (`maps/mcp-context.md` §`buildFlowFromNamedSymbols`); `References` is kept because Rust's
 /// method-value and trait-object hops land there.
 const BFS_KINDS: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::References];
+
+/// Kinds a flow may **not end on**.
+///
+/// A spine ends where the answer is, and a constant is not an answer — it is a value that
+/// happens to sit near one. Asked *"how does a file get indexed"*, the walk arrived at
+/// `FILE_DDL` (a `&str` of schema DDL) purely because its NAME contains *file*, and it beat the
+/// real pipeline (`index → index_all → run_pipeline → …`) for being shorter. Spelling is not
+/// arrival.
+///
+/// `selene-context` has made this exact mistake once before, one layer up: pass 12's admission
+/// gate exists because the connectivity walk kept volunteering `RESOLVE_BATCH` and
+/// `INSERT_CHUNK` — two `usize` chunk-size constants that "sit next to the answer and explain
+/// none of it". Same species, same fix, and TS draws the line in the same place: non-callable
+/// `{constant, variable, field, property}` endpoints never take the ordinary spine
+/// (`maps/mcp-context.md` §10).
+///
+/// **Types are NOT excluded**, deliberately: *"…become a graph **edge**"* is answered by
+/// arriving at `Edge`, and that is the whole shape of a "how does X become Y" question.
+///
+/// **This is TS's list, exactly — four kinds, no more.** A first cut also excluded
+/// `Import`/`Export`/`Parameter`/`EnumMember`, which is a defensible-sounding guess and was
+/// wrong: in a two-file project whose only call edge is `handleLogin → login`, the sole provable
+/// 3-node spine runs through the `login` **import** node, and excluding it deleted the Flow
+/// section entirely (`selene-mcp/tests/server_test.rs`). Widening a ported list "while we're
+/// here" is how a fix becomes a regression.
+const SINK_EXCLUDED: &[NodeKind] = &[
+    NodeKind::Constant,
+    NodeKind::Variable,
+    NodeKind::Field,
+    NodeKind::Property,
+];
 
 /// TS parity constants (`maps/mcp-context.md` §10). Ported, not chosen.
 mod limits {
@@ -127,6 +158,49 @@ pub async fn build_flow_from_named_symbols<S: GraphStore>(
             named.entry(n.id.clone()).or_insert(n);
         }
     }
+    // The agent NAMED these symbols; the concepts are the names themselves, one group each.
+    let concepts: Vec<Vec<String>> = names.iter().map(|n| vec![n.clone()]).collect();
+    walk_flow(qm, named, &concepts).await
+}
+
+/// The same walk, over nodes the caller **already holds** — no name round-trip.
+///
+/// [`build_flow_from_named_symbols`] exists to turn the symbols an *agent typed* into nodes, and
+/// its caps are TS's caps on exactly that: ≤16 tokens, ≤6 definitions each
+/// (`maps/mcp-context.md` §10). Those are the right limits for a query and the wrong ones for a
+/// **gathered subgraph**, which is what the fallback path actually has.
+///
+/// Measured: asked *"how does an unresolved reference become a graph edge"* with the roots
+/// finally correct, the fallback still rendered **no Flow**. It was handing 147 subgraph nodes
+/// over as *names*, `MAX_NAMES` kept the first 16, and the chain's own sinks — `create_edges`,
+/// `resolve_all`, `insert_edges` — fell outside the cut. With `MAX_BRIDGE = 1` the walk then
+/// died one hop out of the root.
+///
+/// Two further reasons never to make that round-trip: `find_all_symbols` matches names
+/// **case-sensitively** (so a subgraph node `Edge` does not match itself through a lowercase
+/// name) and, on zero exact matches, **falls through to an arbitrary top-FTS hit** — which can
+/// seed a chain with a symbol that has nothing to do with the query and render a *confidently
+/// wrong* flow. A node we already resolved cannot be mis-resolved.
+pub async fn build_flow_from_nodes<S: GraphStore>(
+    qm: &QueryManager<S>,
+    nodes: &[Node],
+    concepts: &[Vec<String>],
+) -> Result<Option<Vec<FlowStep>>> {
+    let mut named: IndexMap<String, Node> = IndexMap::new();
+    for n in nodes {
+        named.entry(n.id.clone()).or_insert_with(|| n.clone());
+    }
+    walk_flow(qm, named, concepts).await
+}
+
+/// The BFS itself. `named` is insertion-ordered: the first [`limits::MAX_SEEDS`] entries seed the
+/// walk, and **every** entry is an acceptable sink. `concepts` are the query's term-groups —
+/// they decide, via [`is_better`], which of the many provable chains is the ANSWER.
+async fn walk_flow<S: GraphStore>(
+    qm: &QueryManager<S>,
+    named: IndexMap<String, Node>,
+    concepts: &[Vec<String>],
+) -> Result<Option<Vec<FlowStep>>> {
     if named.len() < 2 {
         return Ok(None);
     }
@@ -201,7 +275,10 @@ pub async fn build_flow_from_named_symbols<S: GraphStore>(
 
                     // A chain is only an ANSWER if it ends on something the caller named —
                     // trailing off into an unnamed callee is where the agent starts reading.
-                    if is_named && steps.len() >= limits::MIN_FLOW_NODES && is_better(&steps, &best)
+                    if is_named
+                        && steps.len() >= limits::MIN_FLOW_NODES
+                        && !SINK_EXCLUDED.contains(&entry.node.kind)
+                        && is_better(&steps, &best, concepts)
                     {
                         best = Some(steps.clone());
                     }
@@ -227,9 +304,82 @@ struct Walk {
 /// Longest chain wins. **The tie-break is a contract** — two chains of equal length must not
 /// swap between runs, because the flow is rendered and a reordering diff is indistinguishable
 /// from a ranking change.
-fn is_better(candidate: &[FlowStep], best: &Option<Vec<FlowStep>>) -> bool {
+/// Does this chain **arrive somewhere the query asked about that it did not start from**?
+///
+/// This is the whole objective, and getting it wrong renders a confidently wrong answer.
+///
+/// *"How does an unresolved reference become a graph edge"* names two poles. The answer is a
+/// chain that **starts at one and ends at the other**. A chain that starts in `resolve` and ends
+/// in `resolve` has explained nothing, however long it is.
+///
+/// Measured, with the roots finally correct and "longest chain wins" still in force:
+///
+/// ```text
+///   1. resolve_and_persist_batched   <- right
+///   2. resolve_all                   <- right
+///   3. resolve_one                   <- right
+///   4. resolve_via_import   5. resolve_import_path   6. is_external_import
+///   7. resolve_workspace_import      8. WorkspacePackages   <- nowhere near "graph edge"
+/// ```
+///
+/// Every hop is a real call edge and the whole thing is off-topic: it walks *deeper into the
+/// resolver* because depth was the objective. Note it cannot be fixed by demanding the chain end
+/// on a query-relevant symbol either — `resolve_workspace_import` **is** query-relevant. The
+/// entire crate is named `resolve_*`. What is missing is that the chain never **arrives** at the
+/// other pole.
+fn concept_gain(steps: &[FlowStep], concepts: &[Vec<String>]) -> bool {
+    if concepts.len() < 2 {
+        return false; // a one-concept query has no second pole to reach; length decides
+    }
+    let (Some(first), Some(last)) = (steps.first(), steps.last()) else {
+        return false;
+    };
+    let start = concepts_of(&first.node.name, concepts);
+    let end = concepts_of(&last.node.name, concepts);
+    !end.is_empty() && !end.is_subset(&start)
+}
+
+/// Which of the query's concepts does this name spell? (Name only — a path says where a symbol
+/// was filed, not what it does.)
+fn concepts_of(name: &str, concepts: &[Vec<String>]) -> std::collections::BTreeSet<usize> {
+    let lower = name.to_lowercase();
+    concepts
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.iter().any(|t| crate::relevance::name_carries(&lower, t)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Rank two candidate spines.
+///
+/// **A chain that reaches the query's other pole beats one that does not, at any length.** Among
+/// chains that do, the *shortest* wins: the tightest route from X to Y is the explanation, and
+/// every extra hop past the arrival is a hop the agent did not ask for. Only when no chain
+/// arrives anywhere new (a single-concept query — the agent named one symbol and wants to see
+/// where control goes) does length decide, which is the original behavior.
+fn is_better(
+    candidate: &[FlowStep],
+    best: &Option<Vec<FlowStep>>,
+    concepts: &[Vec<String>],
+) -> bool {
     let Some(best) = best else { return true };
-    match candidate.len().cmp(&best.len()) {
+
+    let (cg, bg) = (
+        concept_gain(candidate, concepts),
+        concept_gain(best, concepts),
+    );
+    if cg != bg {
+        return cg;
+    }
+
+    // Both arrive, or neither does. Arriving ⇒ tighter is better; otherwise ⇒ longer.
+    let ord = if cg {
+        best.len().cmp(&candidate.len())
+    } else {
+        candidate.len().cmp(&best.len())
+    };
+    match ord {
         std::cmp::Ordering::Greater => true,
         std::cmp::Ordering::Less => false,
         std::cmp::Ordering::Equal => {
@@ -306,6 +456,111 @@ mod tests {
             column: Some(0),
             provenance: Some(prov),
         }
+    }
+
+    fn step(name: &str) -> FlowStep {
+        FlowStep {
+            node: Node {
+                id: name.into(),
+                kind: NodeKind::Function,
+                name: name.into(),
+                qualified_name: name.into(),
+                file_path: "src/lib.rs".into(),
+                language: "rust".into(),
+                start_line: 1,
+                end_line: 2,
+                start_column: 0,
+                end_column: 0,
+                docstring: None,
+                signature: None,
+                visibility: None,
+                is_exported: None,
+                is_async: None,
+                is_static: None,
+                is_abstract: None,
+                decorators: vec![],
+                type_parameters: vec![],
+                return_type: None,
+                route_method: None,
+                route_path: None,
+                framework: None,
+                updated_at: 0,
+            },
+            via: None,
+        }
+    }
+
+    /// **The objective, and the bug it exists to prevent.**
+    ///
+    /// "How does an unresolved reference become a graph edge" names two poles. With "longest
+    /// chain wins", the walk answered it by descending eight hops *deeper into the resolver* and
+    /// stopping at `WorkspacePackages` — every hop a real call edge, the whole spine off-topic.
+    /// Length is not relevance. **Arrival is.**
+    #[test]
+    fn a_chain_that_reaches_the_other_pole_beats_a_longer_one_that_never_arrives() {
+        let concepts = vec![vec!["resolve".to_string()], vec!["edge".to_string()]];
+
+        // The real wander, shortened: starts in `resolve`, ends in `resolve`. Explains nothing.
+        let wander = vec![
+            step("resolve_and_persist_batched"),
+            step("resolve_all"),
+            step("resolve_one"),
+            step("resolve_via_import"),
+            step("resolve_workspace_import"),
+        ];
+        // The answer: starts in `resolve`, ARRIVES in `edge`. Half the length.
+        let arrives = vec![
+            step("resolve_and_persist_batched"),
+            step("insert_edges"),
+            step("Edge"),
+        ];
+
+        assert!(
+            !concept_gain(&wander, &concepts),
+            "resolve → resolve gains nothing"
+        );
+        assert!(
+            concept_gain(&arrives, &concepts),
+            "resolve → edge is the question"
+        );
+
+        // Arrival beats length, in either evaluation order (the BFS may find either first).
+        assert!(is_better(&arrives, &Some(wander.clone()), &concepts));
+        assert!(!is_better(&wander, &Some(arrives.clone()), &concepts));
+
+        // Among chains that BOTH arrive, the tighter one wins: every hop past the arrival is a
+        // hop the agent did not ask for.
+        let long_arrival = vec![
+            step("resolve_and_persist_batched"),
+            step("resolve_all"),
+            step("resolve_one"),
+            step("insert_edges"),
+        ];
+        assert!(concept_gain(&long_arrival, &concepts));
+        assert!(is_better(&arrives, &Some(long_arrival), &concepts));
+    }
+
+    /// A single-concept query ("show me where control goes from X") has no second pole to reach,
+    /// so length decides — the original behavior, deliberately preserved.
+    #[test]
+    fn with_one_concept_there_is_no_pole_to_reach_and_length_decides() {
+        let one = vec![vec!["resolve_and_persist_batched".to_string()]];
+        let short = vec![
+            step("resolve_and_persist_batched"),
+            step("resolve_all"),
+            step("x"),
+        ];
+        let long = vec![
+            step("resolve_and_persist_batched"),
+            step("resolve_all"),
+            step("resolve_one"),
+            step("match_reference"),
+        ];
+        assert!(!concept_gain(&long, &one));
+        assert!(
+            is_better(&long, &Some(short), &one),
+            "longest still wins on a 1-concept query"
+        );
     }
 
     #[test]

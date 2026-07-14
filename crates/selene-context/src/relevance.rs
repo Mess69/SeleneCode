@@ -771,6 +771,11 @@ pub struct RelevantContext {
     pub confidence: Confidence,
     /// The roots the walk started from, best first.
     pub roots: Vec<ScoredNode>,
+    /// The search terms this gather actually ran on — the query's words **plus** the corpus-derived
+    /// stems pass 0 found (`unresolved` ⇒ `resolve`). Carried out so the Flow section can group
+    /// them into the query's concepts without re-deriving them (pass 0 costs a store round-trip
+    /// per term). See [`term_groups`].
+    pub terms: Vec<String>,
 }
 
 /// **Passes 1–11.** The whole gather.
@@ -857,6 +862,18 @@ pub async fn find_relevant_context<S: GraphStore>(
         .take(opts.search_limit * ROOT_POOL_MULTIPLE)
         .cloned()
         .collect();
+
+    // **Pass 14 gets a WIDER universe than the root pool, and it must.** Measured: the root pool
+    // is the top 80 by lexical score, and `resolve_and_persist_batched` — the answer to the
+    // milestone question — scores ≈12 after pass 5's ×0.6 and ranks *below* it. The pass built to
+    // rescue the symbol could not see the symbol. It reached instead for the nearest thing it
+    // could see, the un-batched `resolve_and_persist` (≈15, rank <80), and seated that.
+    //
+    // Corroboration is preserved: this is still only what the lexical passes MATCHED (post
+    // `min_score`), never the repository at large. Topology may re-order the query's own hits;
+    // it may not volunteer a symbol the query never touched.
+    let bridge_universe: Vec<ScoredNode> = scored.iter().take(BRIDGE_UNIVERSE).cloned().collect();
+
     scored.truncate(opts.search_limit * 3);
 
     // **A test may not be a ROOT.** Pass 12 already refuses to *seed* from test files, and the
@@ -890,7 +907,13 @@ pub async fn find_relevant_context<S: GraphStore>(
     // is divided across the roots (pass 11), the extra root *thinned the other three* — the Flow
     // section stopped rendering and a second probe lost a file it had been finding. A wider
     // answer is not a better one when the budget is fixed. See `relevance-report.md`.
-    let roots: Vec<ScoredNode> = pick_diverse_roots(&pool, &terms, opts.search_limit);
+    let mut roots: Vec<ScoredNode> = pick_diverse_roots(&pool, &terms, opts.search_limit);
+
+    // --- pass 14: orchestrator reservation ------------------------------------
+    // The lexical ranking cannot reach the answer to a flow question, and no re-weighting of it
+    // can. See [`reserve_orchestrator_roots`] for the measurement.
+    reserve_orchestrator_roots(qm, &bridge_universe, &terms, &mut roots, opts.search_limit).await?;
+
     if roots.is_empty() {
         // NOT an error. "Nothing relevant" is an answer, and the caller renders guidance.
         return Ok(RelevantContext {
@@ -901,6 +924,7 @@ pub async fn find_relevant_context<S: GraphStore>(
             },
             confidence,
             roots,
+            terms,
         });
     }
 
@@ -996,6 +1020,7 @@ pub async fn find_relevant_context<S: GraphStore>(
         },
         confidence,
         roots,
+        terms,
     })
 }
 
@@ -1268,6 +1293,219 @@ pub async fn apply_graph_connectivity<S: GraphStore>(
         .iter()
         .map(|id| (id.clone(), bridged[id].len()))
         .collect())
+}
+
+/// How many of the `search_limit` root slots pass 14 may take for orchestrators.
+///
+/// **Two, and it replaces rather than appends.** The root budget is fixed for a reason recorded
+/// in [`pick_diverse_roots`]: `max_nodes` is divided across the roots (pass 11), so a root added
+/// is a root *thinned*. These take the two weakest slots.
+const BRIDGE_ROOTS: usize = 2;
+
+/// How deep into the lexically-matched candidates pass 14 may look for an orchestrator.
+///
+/// Wider than the root pool (80) on purpose — the answer to a flow question is *penalized* by
+/// pass 5 for spelling only one of the query's words, so it sits well below the types that spell
+/// two. Bounded all the same: one `outgoing_batch` over this many ids, and only over candidates
+/// the query's own words already matched.
+const BRIDGE_UNIVERSE: usize = 500;
+
+/// Which of the query's concepts does this NAME spell?
+///
+/// **The name only — never the file path.** Pass 5 keys its multiplier on `name + file_path`,
+/// and that is the accident by which `create_edges` earns a second concept: it lives under
+/// `crates/selene-resolve/`, so its path spells *resolve*. A path records where a symbol was
+/// filed, not what it does. `insert_edges` does the same job from `selene-db/` and gets no such
+/// gift. Scoring on the path rewards the directory layout.
+fn concepts_in_name(name: &str, groups: &[Vec<String>]) -> std::collections::BTreeSet<usize> {
+    let lower = name.to_lowercase();
+    groups
+        .iter()
+        .enumerate()
+        .filter(|(_, g)| g.iter().any(|t| name_carries(&lower, t)))
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// Does this (already-lowercased) name carry this term — **folding a plural query word onto the
+/// singular the code declares**?
+///
+/// The agent writes English and the code declares types. Asked *"how are **edges** created"*, the
+/// type is `Edge`, and `"edge".contains("edges")` is **false** — so the one symbol the question is
+/// named after carried none of its concepts, and the flow could not arrive at it. Measured: the
+/// spine for that query walked eight hops into the matcher and ended on `Language`.
+///
+/// TS folds the same way (`segmentLookupVariants`, `maps/db-graph-search.md:77`: *"bare `-s` not
+/// `-ss` → strip1"*). The `-ss` guard is what keeps `class`/`process` from being read as plurals.
+pub(crate) fn name_carries(lower_name: &str, term: &str) -> bool {
+    let t = term.to_lowercase();
+    if lower_name.contains(&t) {
+        return true;
+    }
+    match t.strip_suffix('s') {
+        Some(sing) if !t.ends_with("ss") && sing.len() >= 3 => lower_name.contains(sing),
+        _ => false,
+    }
+}
+
+/// **Pass 14 — orchestrator reservation. The one pass that answers a flow question.**
+///
+/// A question of the shape *"how does X become Y"* names its endpoints as **types**
+/// (`UnresolvedReference`, `Edge`). The lexical passes duly find those types — and that is not
+/// the bug, it is the correct answer to *"what does this question name"*. The bug is that we
+/// then made the types the ROOTS. You cannot call a type, so no chain can run between them, and
+/// the four functions that *are* the answer sit in the pool unreachable:
+///
+/// | symbol | score | why |
+/// |---|---|---|
+/// | `ReferenceResolver` | ≈143 | spells *reference* + *resolve* → pass 5 ×2.0 |
+/// | `UnresolvedReference` | ≈141 | spells both → ×2.0 |
+/// | `resolve_one` | ≈18 | spells one → ×0.6 |
+/// | `resolve_and_persist_batched` | ≈12 | spells one → ×0.6 |
+///
+/// **No re-weighting closes a 12-to-143 gap**, and two attempts to make pass 5 smarter were
+/// measured and reverted (see [`term_groups`]). Pass 12's channel is additive and capped at
+/// `CONNECTIVITY = 30` — a correct verdict there still cannot climb.
+///
+/// # What the answer actually looks like in the graph
+///
+/// ```text
+/// resolve_and_persist_batched --calls--> resolve_all -> resolve_one    (concept: resolve)
+///                             --calls--> create_edges, insert_edges    (concept: edge)
+/// ```
+///
+/// It is not *on a path between* the two poles — `resolve_one` and `create_edges` are siblings
+/// under it, not caller and callee. It is the function whose **own outgoing calls span both of
+/// the query's concepts**. It orchestrates. That is what a flow question is asking for.
+///
+/// # Why this is not the pass-12 mistake, and the control that proves it
+///
+/// The previous attempt let graph evidence amplify pass 5 and it promoted `file_node_id`,
+/// `hash_content`, `node_id` — "the utility layer touches every concept, so a reward for
+/// touching two is a reward for being plumbing". That verdict was right, and it is a verdict
+/// about **undirected** evidence. Pass 12 scores `deg_out + deg_in` and walks both ways, so it
+/// cannot tell a driver from a utility.
+///
+/// Direction separates them, and it separates them completely. Measured over all 1 460 non-test
+/// callables in this repo, ranked by concepts spanned through **outgoing calls**:
+///
+/// ```text
+///   #2  resolve_and_persist_batched  {EDGE, RESOLVE}  out=29 in=6     <- the answer
+///   #3  resolve_one                  {REFER,RESOLVE}  out=24 in=27
+///
+///   control — the same repo ranked by RAW DEGREE (what an undirected score rewards):
+///       collect  out=15 in=527 · get_node_text out=0 in=205 · as_str out=0 in=177
+///       get_child_by_field out=0 in=202 · default out=0 in=95
+/// ```
+///
+/// Every symbol that sank the previous attempt has **`out=0` and a huge `in`**. A utility is
+/// *called by* everything; an orchestrator *calls* everything. Restricting the span to outgoing
+/// calls does not down-weight plumbing — it makes plumbing **structurally ineligible**, because
+/// a function that calls nothing spans nothing. No damping term required.
+///
+/// It is also immune to the failure recorded in [`pick_diverse_roots`] (reserving a root per
+/// concept promoted a local variable literally named `edge`): a variable is not callable and has
+/// no outgoing calls, so it can never be a bridge.
+///
+/// # Topology still does not win on its own
+///
+/// A bridge must span ≥2 concepts that the query's own words matched **by name**, it must be
+/// callable, non-test, and already in the lexical pool — and it may take only [`BRIDGE_ROOTS`]
+/// of the slots. That is the corroboration discipline TS holds everywhere ("central" requires a
+/// term hit; the relevance gate requires mass OR ≥2 term hits). The force-keep channel itself is
+/// TS's too — its change-surface rescue force-keeps what ranking would bury
+/// (`maps/mcp-context.md` §7).
+async fn reserve_orchestrator_roots<S: GraphStore>(
+    qm: &QueryManager<S>,
+    pool: &[ScoredNode],
+    terms: &[String],
+    roots: &mut Vec<ScoredNode>,
+    search_limit: usize,
+) -> Result<()> {
+    let groups = term_groups(terms);
+    if groups.len() < 2 || roots.is_empty() {
+        return Ok(()); // nothing to bridge between
+    }
+
+    // Only a callable can orchestrate. (And a test never explains how the product works —
+    // same reason the root pool excludes them above.)
+    let cands: Vec<&ScoredNode> = pool
+        .iter()
+        .filter(|s| CALLABLE_KINDS.contains(&s.node.kind) && !is_test_file(&s.node.file_path))
+        .collect();
+    if cands.is_empty() {
+        return Ok(());
+    }
+
+    let ids: Vec<String> = cands.iter().map(|s| s.node.id.clone()).collect();
+    let out = qm
+        .store()
+        .outgoing_batch(&ids, &[EdgeKind::Calls])
+        .await
+        .map_err(selene_graph::GraphError::from)?;
+
+    // `bearers` = how many of its callees carry a concept. It breaks ties toward the function
+    // that actually drives the concept-bearing work, not one that merely mentions it once.
+    let mut bridges: Vec<(usize, usize, f64, String, ScoredNode)> = Vec::new();
+    for s in &cands {
+        let mut spans = concepts_in_name(&s.node.name, &groups);
+        let mut bearers = 0usize;
+        for e in out.get(&s.node.id).map(Vec::as_slice).unwrap_or(&[]) {
+            let c = concepts_in_name(&e.node.name, &groups);
+            if !c.is_empty() {
+                bearers += 1;
+                spans.extend(c);
+            }
+        }
+        if spans.len() >= 2 {
+            bridges.push((
+                spans.len(),
+                bearers,
+                s.score,
+                s.node.name.clone(),
+                (*s).clone(),
+            ));
+        }
+    }
+    if bridges.is_empty() {
+        return Ok(());
+    }
+
+    // Deterministic: concepts, then concept-bearing callees, then lexical score, then name.
+    bridges.sort_by(|a, b| {
+        b.0.cmp(&a.0)
+            .then_with(|| b.1.cmp(&a.1))
+            .then_with(|| b.2.partial_cmp(&a.2).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| a.3.cmp(&b.3))
+    });
+
+    let winners: Vec<ScoredNode> = bridges
+        .into_iter()
+        .map(|b| b.4)
+        .filter(|w| {
+            !roots
+                .iter()
+                .any(|r| r.node.name.eq_ignore_ascii_case(&w.node.name))
+        })
+        .take(BRIDGE_ROOTS)
+        .collect();
+
+    // **Seat them where a root STEERS.** They were first seated at the tail, to disturb the
+    // lexical ranking as little as possible. Measured: `resolve_and_persist_batched` became
+    // root 7 of 8 — and `batch.rs` was *still* not rendered. The file sections never reach that
+    // far down. A root that does not steer is not a root; it is a name in a list.
+    //
+    // So: root 1 stays whatever ranking said it was — the query's strongest literal match is
+    // never displaced — and the orchestrators take the slots directly behind it. The weakest
+    // lexical roots fall off the end, which keeps the budget fixed (pass 11 divides `max_nodes`
+    // across the roots, so an *added* root thins every other one — the failure recorded in
+    // [`pick_diverse_roots`]).
+    for (i, w) in winners.into_iter().enumerate() {
+        let at = (1 + i).min(roots.len());
+        roots.insert(at, w);
+    }
+    roots.truncate(search_limit);
+    Ok(())
 }
 
 /// **Pass 13 — root diversity.** Pick `limit` roots, **never two with the same name**.
@@ -1608,6 +1846,52 @@ fn trim_nodes(nodes: &mut IndexMap<String, Node>, roots: &[String], opts: &FindO
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The agent writes English; the code declares types. `"edge".contains("edges")` is false, so
+    /// asked *"how are **edges** created"* the `Edge` type carried none of the query's concepts —
+    /// and the flow could not arrive at the one symbol the question is named after.
+    #[test]
+    fn a_plural_query_word_carries_onto_the_singular_the_code_declares() {
+        assert!(
+            name_carries("edge", "edges"),
+            "`Edge` is what `edges` means"
+        );
+        assert!(
+            name_carries("insert_edges", "edges"),
+            "the exact form still matches"
+        );
+        assert!(name_carries("unresolvedref", "refs"));
+
+        // …and the `-ss` guard, or `class` reads as a plural of `clas`.
+        assert!(!name_carries("clas", "class"));
+        assert!(!name_carries("proces", "process"));
+        // A 2-char stem is a spelling accident, not a word.
+        assert!(!name_carries("i", "is"));
+        // Still no false friends.
+        assert!(!name_carries("resolve_one", "edges"));
+    }
+
+    /// Pass 14's discriminator. A utility is *called by* everything; an orchestrator *calls*
+    /// everything. Only the second spans the query's concepts through its own out-edges.
+    #[test]
+    fn concepts_are_read_from_the_name_never_the_path() {
+        let groups = vec![vec!["resolve".to_string()], vec!["edge".to_string()]];
+        // `create_edges` lives under `crates/selene-resolve/` — pass 5 hands it a free `resolve`
+        // concept for that accident of filing. Pass 14 must not repeat the mistake.
+        assert_eq!(
+            concepts_in_name("create_edges", &groups),
+            [1].into_iter().collect()
+        );
+        assert_eq!(
+            concepts_in_name("resolve_and_persist_batched", &groups),
+            [0].into_iter().collect()
+        );
+        // A name that genuinely spells both spans both.
+        assert_eq!(
+            concepts_in_name("resolve_edge_refs", &groups),
+            [0, 1].into_iter().collect()
+        );
+    }
 
     #[test]
     fn brevity_favors_the_concise_name() {

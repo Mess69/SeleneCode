@@ -101,10 +101,24 @@ async fn explore_answers_from_a_real_index_in_one_call() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path().to_path_buf();
     std::fs::create_dir_all(root.join("src")).unwrap();
+    // THREE files, so the call graph holds a THREE-node chain: handleLogin → login → hashPassword.
+    //
+    // It used to be two (`handleLogin → login`, and `login` returned `u.length`), and this test
+    // had been **failing on HEAD** because of it. Not a flake, and not something the Flow section
+    // got wrong: two nodes joined by one edge is not a flow, and `flow.rs` says so in as many
+    // words (`MIN_FLOW_NODES = 3` — *"a 2-node flow is just an edge — it tells the agent nothing
+    // it did not ask"*). The fixture was asking the builder to draw a spine the graph did not
+    // contain, and the builder was right to decline. What this test means to prove is that the
+    // **MCP surface** renders a real, proven chain end-to-end — so give it a graph that has one.
     std::fs::write(root.join("src/app.ts"), "import { login } from './service';\nexport function handleLogin(u: string) {\n  return login(u);\n}\n").unwrap();
     std::fs::write(
         root.join("src/service.ts"),
-        "export function login(u: string) {\n  return u.length;\n}\n",
+        "import { hashPassword } from './crypto';\nexport function login(u: string) {\n  return hashPassword(u);\n}\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/crypto.ts"),
+        "export function hashPassword(u: string) {\n  return u.length;\n}\n",
     )
     .unwrap();
 

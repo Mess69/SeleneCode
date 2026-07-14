@@ -33,11 +33,25 @@ import sys, json, re
 d = json.load(sys.stdin)
 r = d.get('result', {})
 txt = ''.join(c.get('text', '') for c in r.get('content', []))
+
+# A file is only DELIVERED if its body is rendered under its own section header.
+# Being *named* in the blast-radius list is NOT delivery — it is the worst outcome there is:
+# it points the agent at a file it must then Read, which is precisely the failure the
+# sufficiency/anti-Read invariant forbids. An earlier version of this probe substring-matched
+# the whole response and so scored a blast-radius mention as a hit; it reported the gate
+# question at 2/3 when the truth was 1/3. The instrument must not flatter the product.
+shown_files = set(re.findall(r'(?m)^\*\*\`([^\`]+)\`\*\*', txt))
+def delivered(path): return any(f.endswith(path) for f in shown_files)
+
 s = re.search(r'Starting from: (.*)', txt)
 print('  isError:', r.get('isError'), '| chars:', len(txt))
 print('  seeds:  ', (s.group(1)[:85] if s else '(none)'))
 print('  Flow:   ', '### Flow' in txt, '| steps:', len(re.findall(r'(?m)^\d+\.\s+\`', txt)))
-# The four symbols + two files Task 20 requires for THIS question. The gate's own bar.
-print('  batch.rs:', 'selene-resolve/src/batch.rs' in txt, '| resolve_one:', 'resolve_one' in txt,
-      '| resolve_and_persist_batched:', 'resolve_and_persist_batched' in txt)
+print('  files shown:', ', '.join(sorted(f.split('/')[-1] for f in shown_files)) or '(none)')
+# Task 20's bar for THIS question: the flow's files must be SHOWN and its functions PRESENT.
+b  = delivered('selene-resolve/src/batch.rs')
+r1 = 'resolve_one' in txt
+r2 = 'resolve_and_persist_batched' in txt
+print('  batch.rs SHOWN:', b, '| resolve_one:', r1, '| resolve_and_persist_batched:', r2,
+      '=> %d/3' % sum([b, r1, r2]))
 "
