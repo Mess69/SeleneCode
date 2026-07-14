@@ -171,18 +171,24 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     // hot ladder is cache/query shape; a hot persist is write batching), and one summed number
     // cannot tell you which you have.
     let (mut ms_ladder, mut ms_persist, mut ms_fetch) = (0u128, 0u128, 0u128);
-    let mut offset = 0usize;
     let mut all_failed: Vec<UnresolvedRef> = Vec::new();
-    loop {
-        let t = std::time::Instant::now();
-        let batch = store
-            .unresolved_pending_batch(offset, RESOLVE_BATCH)
-            .await?;
-        ms_fetch += t.elapsed().as_millis();
-        if batch.is_empty() {
-            break;
-        }
 
+    // **Fetched ONCE, not paged.** `LIMIT n START offset` is a SKIP-SCAN: the engine walks the
+    // first `offset` rows only to discard them, so paging 52 358 refs RESOLVE_BATCH at a time costs
+    // O(n²/batch). Measured: it took the fetch from 1.3 s to 2.2 s on django, and it would have
+    // grown quadratically on VS Code (~500 k refs) — a regression the offset walk introduced.
+    //
+    // It does not need to exist. Nothing mutates the queue during the pass any more, so there is
+    // nothing to page AROUND: one query, then iterate in memory.
+    //
+    // ⚠ The order is the store's (`fromNodeId, referenceName, referenceKind, id`) and it is
+    // LOAD-BEARING: batch N resolves against the edges batch N-1 wrote, so the order references are
+    // visited changes the answer. This must stay exactly the order the paged fetch produced.
+    let t = std::time::Instant::now();
+    let pending = store.unresolved_pending_batch(0, usize::MAX).await?;
+    ms_fetch += t.elapsed().as_millis();
+
+    for batch in pending.chunks(RESOLVE_BATCH) {
         // The ladder is sync over an async store — it MUST run off the runtime, and so
         // must `create_edges`, which reads every endpoint's kind through the context.
         // Leaving it outside is a `block_on` inside a runtime worker: an instant panic
@@ -221,7 +227,6 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
 
         merge(&mut stats, &result.stats);
         done += batch.len();
-        offset += batch.len();
         if let Some(cb) = on_progress {
             cb(done.min(total), total);
         }

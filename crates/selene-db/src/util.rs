@@ -10,7 +10,7 @@
 /// Mirrors the TS store's `SQLITE_PARAM_CHUNK_SIZE`, kept here to bound
 /// single-statement / bind-array size rather than for a SQLite-specific
 /// limit.
-pub(crate) const CHUNK: usize = 500;
+pub(crate) const CHUNK: usize = 1000;
 
 /// `usize` → `i64`, saturating at `i64::MAX` — SurrealDB's `LIMIT`/`START`
 /// bind as signed integers, so an (absurd) beyond-`i64` count must clamp,
