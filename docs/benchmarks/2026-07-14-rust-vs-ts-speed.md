@@ -116,3 +116,86 @@ retries) and links tree-sitter natively. That argument is probably *true about e
 irrelevant, because extraction is not the bottleneck. We replaced a fast embedded SQLite with a
 general-purpose multi-model database and paid for it on every write, and nobody noticed for four
 phases **because nobody had ever run the two side by side.**
+
+---
+
+# Follow-up (same day): where the writes actually go — and the "obvious" fix is a 64× regression
+
+Three hypotheses, measured in order. **Two died, and the third contradicts the advice this repo was
+carrying.**
+
+## 1. "RocksDB fsyncs on every commit" — TRUE, and it costs ~12%. Noise.
+
+| sync mode | django-scale bulk insert (19 k nodes + 47 k edges) |
+|---|---|
+| what the SDK gives us today (`every`) | 1.45 s |
+| `datastore_sync=1s` (interval, SQLite-WAL-like) | 1.32 s |
+| `datastore_sync=never` (OS-managed) | **1.28 s** |
+
+**And the knob is unreachable anyway.** The `surrealdb` SDK builds the datastore with
+
+```rust
+Datastore::builder()
+    .with_query_timeout(..).with_transaction_timeout(..).with_auth(..)
+    .build_with_path(endpoint)          // <- .with_config(..) is NEVER called
+```
+
+(`engine/local/native.rs:131`) and `Builder::new()` starts from `ConfigMap::empty()`. So **every
+`SURREAL_*` environment variable is inert in-process** — `SURREAL_DATASTORE_SYNC=never` provably
+changed nothing (the log still printed `Sync mode: every transaction commit`). Those variables only
+work through the `surreal` *server* binary, which builds its own `ConfigMap::from_env()`. Reaching
+the knob would mean abandoning the SDK client for `surrealdb-core`'s `Datastore` directly. **It
+would have bought 12%. We nearly spent a week on it.**
+
+## 2. "SurrealDB/RocksDB is slow at writing" — FALSE, by a factor of 20.
+
+It inserts django-scale data in **1.4 s**. Our persist takes **29.5 s**. *The database is 20×
+faster than what we ask of it.* The engine is not the problem; the query shape is.
+
+## 3. The query shape — and the advice that was wrong
+
+Production emits one statement per resolved reference (52 358 on django), concatenated `CHUNK` at a
+time into a single round trip. The round trips were already batched; the **statements** are not.
+
+`RESUME.md` §3 carried this, unmeasured, as "the remaining lever":
+
+> *"`run_keyed_statements` emits one DELETE query per key (22 462). **One query per chunk would
+> collapse them.**"*
+
+Measured, 4 000 keys, real schema, real composite index, projected to django's 52 358:
+
+| shape | measured | projected at 52 358 refs |
+|---|---|---|
+| **A** — production: one indexed `DELETE ... WHERE f=.. AND n=.. AND k=..` per key | 0.94 s | **12.3 s** |
+| **B** — the recommended batch: `WHERE [f,n,k] IN [...]`, one per chunk | 59.80 s | **782.8 s** |
+| **C** — the 3-tuple **as the record id**: `DELETE unresolved_ref:['f','n','k'], ...` | **0.27 s** | **3.5 s** |
+
+**B — the fix the handoff recommended — is a 64× REGRESSION.** An expression over an array cannot
+use the composite index `(fromNodeId, referenceName, referenceKind)`, so every chunk degrades to a
+full table scan. It is not slower; it is *quadratic*. A first cut of the probe ran B at full django
+scale and was still going after **30 minutes**. Someone would have shipped this in good faith.
+
+**C is the answer, and it is safe.** Making the record id the exact 3-tuple *array* is **not a
+hash**: it is the tuple itself, so incident #760's collision risk (a *concatenated* 2-field key
+matching the wrong row) does not apply. Deletes become primary-key lookups and batch trivially.
+Both `delete_resolved` and `mark_failed` go through `run_keyed_statements`, so both benefit.
+
+### What C actually buys, honestly
+
+Persist ≈ 29.5 s ≈ 1 s (edge INSERTs) + ~12 s (`delete_resolved`) + ~16 s (`mark_failed`, same
+shape). C takes the keyed writes from ~28 s to ~7 s ⇒ **persist ~29.5 s → ~8 s, django total ~61 s →
+~40 s.**
+
+**That is still ~7× slower than the TS build (5.7 s). C is necessary and not sufficient.** The next
+targets, in size order, are extraction (~18 s of the run — and the probe shows inserting the 19 k
+nodes it produces costs only 0.4 s, so the time is in the *parse*, which is exactly where the native
+tree-sitter port was supposed to WIN) and the ladder (8.4 s). Neither has been investigated.
+
+## The meta-lesson, again
+
+The repo was carrying a confident, plausible, **unmeasured** optimisation that would have made things
+**64× worse**, filed under "optional". Today the probe lied twice more before it told the truth: it
+first clocked 66 000 rows in 0.16 s (412 k rows/s, against a Phase-1 benchmark of 706 nodes/s)
+because `Datastore::execute` reports per-statement errors *inside* the responses and the INSERTs were
+failing on a missing namespace; and its first design printed nothing until the end, so 30 minutes of
+running produced zero numbers. **Assert the write landed. Print as you go.**
