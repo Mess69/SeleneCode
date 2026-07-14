@@ -88,20 +88,12 @@ measurement that contradicts it, and it must be re-argued rather than inherited.
 
 ---
 
-## Next experiments, cheapest first — do these before touching architecture
+## Next experiments — ⚠ SUPERSEDED, all three were run the same day. See the follow-up below.
 
-1. **Turn off fsync-per-commit for the bulk load.** `Sync mode: every transaction commit` is the
-   single loudest line in the log. If SurrealDB exposes it (env/config), a bulk-import path that
-   relaxes durability *during indexing only* is the obvious first probe. Indexing is
-   reconstructible from source — a crash mid-index costs a re-index, not data.
-2. **Collapse the per-key DELETE storm.** `run_keyed_statements` emits **one DELETE query per key**
-   (22 462 on SeleneCode). One query per chunk would collapse them.
-   ⚠ The key must stay the **exact 3-field tuple** `(fromNodeId, referenceName, referenceKind)`. A
-   concatenated/hashed key can **collide**, and this project has **already lost data** to a
-   keyed-delete that matched the wrong row (incident #760, a 2-field key). Do not take that
-   shortcut.
-3. **Only then** re-open the backend question — with a spike that costs the WRITE path, which the
-   original decision never did.
+This section originally proposed (1) disabling fsync-per-commit, (2) "collapsing the per-key DELETE
+storm" into one query per chunk, and (3) reopening the backend question. **They were measured, and
+two of the three were wrong** — (2) in particular is a **64× regression**. The section is kept only
+so the reasoning is visible; **do not act on it. Read the follow-up.**
 
 ⛔ **Do NOT parallelize the resolve ladder.** It is 8.4 s of a 61 s run. Perfect parallelism buys
 almost nothing. (This was written into a commit message once *before* being measured, and it was

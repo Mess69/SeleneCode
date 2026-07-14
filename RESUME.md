@@ -265,12 +265,40 @@ paie **à chaque écriture**.
    `(fromNodeId, referenceName, referenceKind)` — **aucun index ne la couvrait**
    (`referenceKind` n'en avait aucun). Un `DEFINE INDEX` composite : **42,8 s → 11,0 s**.
 
-**Levier restant (NON fait, optionnel) :** persist est encore ~54 %, car
-`run_keyed_statements` émet **une requête DELETE par clé** (22 462 requêtes). Une seule requête
-par chunk les effondrerait.
-⚠ **MAIS** : la clé doit rester le **tuple exact à 3 champs**. Une clé concaténée/hashée peut
-**collisionner**, et ce projet a **déjà perdu des données** à cause d'un delete par clé qui matchait
-la mauvaise ligne (l'incident #760, clé à 2 champs). Ne prends pas ce raccourci.
+### ⛔ Le « levier restant » que ce fichier recommandait est une RÉGRESSION DE 64× (mesuré)
+
+Ce fichier disait : *« `run_keyed_statements` émet une requête DELETE par clé (22 462). **Une seule
+requête par chunk les effondrerait.** »* **C'est faux, et ça n'avait jamais été mesuré.**
+
+Une seule requête par chunk (`WHERE [f,n,k] IN [...]`) **défait l'index composite** — une expression
+sur tableau ne peut pas s'y adosser, donc chaque chunk dégénère en **scan complet de table**. Ce
+n'est pas « plus lent », c'est **quadratique**. Mesuré, 4 000 clés, schéma et index réels, projeté
+aux 52 358 refs de django :
+
+| forme | mesuré | projeté à 52 358 refs |
+|---|---|---|
+| **A** — la prod : 1 `DELETE ... WHERE f=.. AND n=.. AND k=..` par clé | 0,94 s | **12,3 s** |
+| **B** — le « levier » recommandé : `WHERE [f,n,k] IN [...]` par chunk | 59,80 s | **782,8 s** ⛔ |
+| **C** — le tuple **EST le record-id** : `DELETE unresolved_ref:['f','n','k'], …` | **0,27 s** | **3,5 s** ✅ |
+
+**C est la bonne réponse, et elle est sûre :** un record-id **tableau n'est pas un hash** — c'est le
+tuple lui-même. Le risque de collision de l'incident #760 (une clé *concaténée* à 2 champs qui
+matchait la mauvaise ligne) **ne s'applique pas**. Le DELETE devient un accès par clé primaire.
+`delete_resolved` ET `mark_failed` passent tous deux par `run_keyed_statements` : les deux en
+profitent.
+
+**Comptabilité honnête :** C fait passer persist de ~29,5 s à ~8 s, et django de ~61 s à ~40 s.
+**C'est toujours ~7× derrière TS (5,7 s). C est nécessaire et PAS suffisant.** Restent, jamais
+examinés : l'**extraction** (~18 s du run — or insérer les 19 k nœuds qu'elle produit ne coûte que
+0,4 s, donc le temps est dans le **parse**, exactement là où le port natif tree-sitter était censé
+GAGNER) et le ladder (8,4 s).
+
+⚠ **Et le fsync n'est pas le levier non plus** : ~12 % (bruit), **et le bouton est inaccessible** —
+le SDK `surrealdb` construit le datastore sans jamais appeler `.with_config(..)`, donc **toutes les
+variables `SURREAL_*` sont INERTES en embarqué**. `SURREAL_DATASTORE_SYNC=never` ne change
+strictement rien (vérifié : le log affiche toujours `every`).
+
+Détail complet : `docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`.
 
 ⛔ **Ne parallélise PAS le resolve ladder.** J'avais écrit ça dans un commit avant de mesurer :
 c'est **faux**, le ladder fait 2,6 s. Le paralléliser parfaitement ne gagnerait presque rien.
