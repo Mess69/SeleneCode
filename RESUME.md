@@ -191,35 +191,58 @@ fichier qu'il doit ensuite ouvrir. La sonde teste maintenant les **sections de f
    `references`. Déclarés dans l'enum, jamais peuplés : exactement la forme du « seam inerte » que
    ce projet paie en boucle (§9). À trancher : les peupler, ou les consigner comme déviation.
 
-## 3. Perf — deux régressions à NOUS, corrigées. **Zéro comparaison avec TS.**
+## 3. Perf — ⛔ **ON EST 8 À 11× PLUS LENTS QUE LE BUILD TS.** (mesuré le 2026-07-14)
 
-### ⚠ Lis ça avant de citer le moindre chiffre
+### Le benchmark a été fait. Le résultat est mauvais.
+
+| corpus | fichiers | **selene (Rust)** | **codegraph (TS)** | écart | nœuds S / TS | arêtes S / TS |
+|---|---:|---:|---:|---|---|---|
+| codegraph/src (TS) | 162 | 18,4 s | **2,4 s** | **TS 7,7×** | 3 803 / 3 803 | 14 081 / 14 078 |
+| SeleneCode/crates (Rust) | 328 | 22,8 s | **2,8 s** | **TS 8,2×** | 5 086 / 5 090 | 17 192 / 17 255 |
+| django (Python) | 931 | 61,1 s | **5,7 s** | **TS 10,7×** | 19 061 / 19 063 | 46 942 / 46 488 |
+
+**Le graphe produit est le MÊME** (nœuds à 4 près, arêtes à ~1 %). Donc « plus rapide » ne veut
+**pas** dire « en fait moins » : TS fait le même travail, en un dixième du temps. **Et l'écart se
+creuse avec la taille** (7,7× → 10,7×) : on ne part pas seulement derrière, on **scale moins bien**.
+
+**Ce n'est PAS Rust qui est lent — c'est LA BASE.** Sur django (61 s) :
+
+```
+    ladder (le VRAI travail de résolution)    8,4 s   ← 14 %
+    persist (l'écriture)                     29,5 s   ← ~48 % du TOTAL
+```
+```
+    log RocksDB : « Sync mode: every transaction commit »   ← fsync à CHAQUE commit
+                  inline-blocking granted = 2 464 643
+```
+
+CodeGraph écrit dans **`node-sqlite` en mode WAL** (qui groupe et ne fsync pas par transaction).
+Nous, dans **SurrealDB/RocksDB qui fsync à chaque commit**. Le ladder que tout le monde croyait cher
+fait **14 %** du temps. La base possède les cinq sixièmes restants.
+
+⚠ **Ça contredit la décision d'archi centrale du projet** (« SurrealQL-max », PRD §5.2/§5.4) : elle a
+été prise sur des arguments de **lecture** (traversée récursive dans le moteur) et n'a **jamais été
+chiffrée côté ÉCRITURE** — or c'est là que le produit passe son temps. Le gate DB Phase 1 qui a l'air
+d'avoir tranché comparait **SurrealKV à RocksDB**, *deux backends à nous*. Jamais SurrealDB à SQLite.
+Ça ne veut pas dire « arrache SurrealDB » : ça veut dire que la décision **repose désormais sur une
+mesure qui la contredit** et doit être ré-argumentée, pas héritée.
+
+**Détail complet, méthode et prochaines expériences :
+`docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`.**
+
+### Les deux régressions à NOUS, corrigées (contexte, ne pas refaire)
 
 `selene index` sur codegraph (162 fichiers) : **52,4 s → 20,6 s**. Sur SeleneCode : **8 m 52 s →
 1 m 29 s**. Sortie **identique** à chaque fois (aucune arête perdue), gates Phase 3 verts.
 
-**Ces chiffres sont Rust contre SON PROPRE PASSÉ.** On a corrigé deux bugs à nous. Ils ne disent
-**rien** sur CodeGraph TS. `8 m 52 s → 1 m 29 s` veut dire *« on était mauvais, on l'est moins »* —
-**pas** *« on bat CodeGraph »*.
+**Ces chiffres sont Rust contre SON PROPRE PASSÉ** — on a corrigé deux bugs à nous. Ils ne disaient
+rien sur TS, et on le sait maintenant : *« on était mauvais, on l'est moins, et on reste 8× derrière »*.
 
-> **Il n'existe AUCUN benchmark de vitesse Rust vs TS.** Les trois docs de `docs/benchmarks/`
-> comparent la **justesse**, pas le temps : parité d'extraction (identité des nœuds/arêtes,
-> tolérance 0), parité de résolution (303 arêtes, tolérance 0), et le gate DB Phase 1 — qui oppose
-> **SurrealKV à RocksDB**, deux backends *à nous*. Aucun ne chronomètre le build TS.
-
-**L'argument** (ce n'est **pas** une mesure) : le port supprime des coûts que TS payait — la couche
-WASM (pool de workers, resets de parser, retries OOM) est **supprimée, pas portée**, et les
-grammaires tree-sitter sont **liées nativement**. Bonnes raisons d'être devant. Ce projet a déjà été
-puni exactement pour ce genre de raisonnement (le binaire a tourné **trois phases** sur un backend
-que son propre benchmark avait rejeté, parce que personne ne l'avait **lancé**).
-
-**Contre-indice à ne pas balayer :** le persist fait encore **~54 %** du temps, et `resolve_all`
-tourne sur **un seul cœur** (9 inactifs). VS Code extrapole à **~54 min**. Ce n'est pas un profil de
-gagnant évident.
-
-**À faire, c'est une demi-heure :** `../codegraph` **est là**. Indexer le **même dépôt** avec les
-deux, même machine, chronomètre — et comparer **aussi le nombre de nœuds/arêtes produits**, sinon
-« plus rapide » peut simplement vouloir dire « il en fait moins ».
+**L'argument qu'on se racontait** (et qui était faux) : le port supprime la couche WASM (pool de
+workers, resets de parser, retries OOM) et lie tree-sitter nativement, donc il doit être devant.
+C'est probablement **vrai pour l'extraction** — et **hors sujet**, parce que l'extraction n'est pas
+le goulot. On a remplacé un SQLite embarqué rapide par une base multi-modèle généraliste, et on le
+paie **à chaque écriture**.
 
 **Deux bugs, tous deux instructifs :**
 

@@ -370,3 +370,44 @@ Aucun code changé. Deux questions simples ont révélé que la doc mentait par 
 toujours un test — ici c'était **le titre d'une section**. « Perf — RÉGLÉ » était vrai (nos bugs sont
 réglés) et trompeur (ça ne dit rien de la comparaison qui compte). Écris ce que la mesure prouve,
 pas ce qu'elle suggère.
+
+=== 2026-07-14 — LE BENCHMARK QU'ON N'AVAIT JAMAIS FAIT. On est 8 à 11× PLUS LENTS que TS. ===
+
+| corpus | selene | codegraph-ts | écart | nœuds S/TS | arêtes S/TS |
+|---|---|---|---|---|---|
+| codegraph/src (162 f., TS) | 18,4 s | **2,4 s** | TS **7,7×** | 3803/3803 | 14081/14078 |
+| SeleneCode/crates (328 f., Rust) | 22,8 s | **2,8 s** | TS **8,2×** | 5086/5090 | 17192/17255 |
+| django (931 f., Python) | 61,1 s | **5,7 s** | TS **10,7×** | 19061/19063 | 46942/46488 |
+
+**Le graphe est le MÊME** (nœuds à 4 près, arêtes à ~1 %) — donc « plus rapide » ne veut PAS dire
+« en fait moins ». Ce contrôle est tout l'intérêt du benchmark et c'est celui que ce projet dit de ne
+jamais sauter. **Et l'écart se creuse avec la taille** : on scale moins bien.
+
+**Ce n'est pas Rust, c'est la BASE.** django, 61 s :
+    ladder (le vrai travail)   8,4 s  ← 14 %
+    persist (l'écriture)      29,5 s  ← ~48 % du TOTAL
+    log RocksDB : « Sync mode: every transaction commit » ; inline-blocking granted = 2 464 643
+CodeGraph écrit dans node-sqlite en **WAL** (groupé, pas de fsync par transaction). Nous, dans
+SurrealDB/RocksDB qui **fsync à chaque commit**.
+
+⚠ **Ça contredit la décision d'archi centrale** (« SurrealQL-max », PRD §5.2/§5.4). Elle a été
+argumentée côté LECTURE (traversée récursive dans le moteur) et **jamais chiffrée côté ÉCRITURE** —
+là où le produit passe son temps. Le gate DB Phase 1 qui a l'air d'avoir tranché opposait
+**SurrealKV à RocksDB**, *deux backends à nous* : jamais SurrealDB à SQLite. La décision repose
+désormais sur une mesure qui la contredit. **La ré-argumenter, pas l'hériter.**
+
+**Deux pièges rencontrés pendant la mesure elle-même** (encore l'instrument qui ment) :
+1. `codegraph index <path>` exige un `init` préalable — **et sort avec le code 0 quand il refuse**.
+   Avec `-q`, il a « fini » en **0,09 s** en n'indexant rien, et mon premier tableau annonçait une
+   victoire écrasante de TS. **Un gagnant à 0,09 s n'est pas un gagnant, c'est un échec.** Le runner
+   vérifie maintenant que le répertoire d'index EXISTE avant de rapporter un temps.
+2. Corpus source-only obligatoire (pas de `node_modules/`, `target/`, `dist/`, `.wasm`) — sinon un
+   outil indexe du code généré que l'autre ignore et le « gagnant » est un artefact du corpus.
+
+Prochaines expériences, de la moins chère à la plus chère (détail dans
+`docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`) : (1) désactiver le fsync-par-commit pendant le
+bulk load — l'indexation est reconstructible depuis les sources, un crash coûte une réindexation,
+pas des données ; (2) effondrer la tempête de DELETE par clé (22 462 requêtes) — ⚠ la clé doit
+rester le tuple EXACT à 3 champs (incident #760 : on a déjà perdu des données avec une clé à 2
+champs) ; (3) SEULEMENT ensuite, rouvrir la question du backend.
+⛔ Ne parallélise PAS le ladder : 8,4 s sur 61 s. Une parallélisation parfaite ne gagnerait presque rien.
