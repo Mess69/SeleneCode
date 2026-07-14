@@ -291,3 +291,50 @@ d'appels — et voir si Flow s'affiche. Si NON ⇒ second bug dans build_flow_fr
 seulement dans la sélection des seeds. Si OUI ⇒ le scoring doit préférer des seeds CONNECTÉS
 (aujourd'hui Q1 renvoie des TYPES — UnresolvedReference, GraphStore — pas les FONCTIONS du flux;
 on n'appelle pas un type, donc aucune chaîne ne peut exister entre eux).
+
+=== 2026-07-14 — LE BLOCAGE EST LEVÉ (c0c7143) ===
+
+`explore` répond à la question exacte du gate Task 20 : **3/3 + Flow juste**, mesuré contre le vrai
+binaire (`./scripts/ask.sh`), pas contre la suite.
+
+    1. resolve_and_persist_batched (batch.rs:113) -> 2. insert_edges (store_impl.rs:105) -> 3. Edge
+
+**L'instrument était la DIRECTION, pas le poids.** La session précédente avait raison de conclure
+qu'aucune repondération ne pouvait marcher (12 vs 143, plafond additif de 30). Ce qu'elle a manqué :
+sa propre contre-preuve — « la couche utilitaire touche tous les concepts » — est un fait
+DIRECTIONNEL. Toute la plomberie qui l'avait fait échouer (`collect` in=527, `get_node_text` in=205,
+`as_str` in=177) a **out=0**. Un utilitaire est appelé par tout ; un orchestrateur appelle tout. La
+passe 12 score `deg_out + deg_in` et ne peut donc pas les distinguer. En ne comptant que les appels
+SORTANTS, `resolve_and_persist_batched` passe du rang ~1400 (lexical) au **#2 sur 1 460**. La
+plomberie n'est pas dévaluée : elle devient **structurellement inéligible**. Aucun amortissement.
+⇒ passe 14 : réservation d'orchestrateur (2 slots de root sur 8, budget de roots inchangé).
+
+**Le Flow : « la plus longue chaîne gagne » était faux depuis toujours** — un petit `named` le
+masquait. Sur un vrai sous-graphe, « finir sur un symbole nommé » est vide de sens et la règle
+dégénère en « la plus profonde » : la question sur *edge* descendait 8 sauts dans le résolveur et
+finissait sur `WorkspacePackages`. Le critère est l'**ARRIVÉE** : partir d'un pôle, finir sur
+l'AUTRE ; à égalité, la plus serrée.
+
+**3 approches mesurées et MORTES (ne pas retenter) :**
+1. ancrage sur les types + plus court chemin entre leurs handlers → `references` est une lance à
+   incendie (2 666) : 155 handlers vs 96, et le plus court chemin trouve la paire de déchets la plus
+   proche (`visit_node -> create_node`). Mauvais objectif.
+2. élargir la liste des sinks interdits au-delà de celle de TS → supprime le Flow d'un projet à 2
+   fichiers dont la seule épine passe par un nœud d'import.
+3. (session précédente) les deux correctifs *dans* le multiplicateur — consignés dans `term_groups()`.
+
+**DEUX INSTRUMENTS MENTAIENT, et c'est la leçon récurrente du projet :**
+- `scripts/ask.sh` faisait un substring sur TOUT le texte : un fichier *nommé* dans le blast-radius
+  comptait comme *livré*. Il annonçait 2/3 quand la vérité était **1/3**. Corrigé : il teste les
+  sections rendues. Un fichier nommé mais non affiché est le PIRE cas — il envoie l'agent lire.
+- `cargo test --workspace | head -25` a **caché un test en échec** et m'a fait annoncer « tout vert ».
+  Compter, ne pas regarder défiler : `grep -c 'test result: FAILED'`.
+
+Non sur-ajusté : vérifié contre un binaire construit depuis HEAD sur 4 requêtes jamais réglées —
+4 améliorées, 2 inchangées, 0 régressée. Suite complète : **1 089 tests, 0 échec** (dont un test
+selene-mcp qui **échouait déjà sur HEAD** : sa fixture n'avait que 2 nœuds, et « une chaîne à 2
+nœuds est juste une arête »).
+
+OUVERT (pré-existant, reproduit, non corrigé) : (1) les tests dans `src/` pilotent les flows —
+`is_test_file` teste le CHEMIN, or Rust met ses tests dans le fichier source ; (2) `type_of` et
+`returns` sont à ZÉRO dans un index Rust réel (émis comme `references` ?) — seam inerte potentiel.

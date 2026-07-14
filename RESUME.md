@@ -1,7 +1,7 @@
 # RESUME — reprendre SeleneCode après un redémarrage
 
-**Écrit le 2026-07-13.** Ce fichier est la **seule chose à lire** pour repartir. Il suppose que
-tu as tout oublié — c'est voulu.
+**Écrit le 2026-07-13, mis à jour le 2026-07-14 (`c0c7143` — le blocage est levé).** Ce fichier est
+la **seule chose à lire** pour repartir. Il suppose que tu as tout oublié — c'est voulu.
 
 ---
 
@@ -15,141 +15,139 @@ Tout le reste de ce fichier est là pour que cette phrase suffise.
 
 ## 1. Où on en est, en une phrase
 
-**Le binaire tourne, indexe un vrai dépôt, sert du MCP — mais `explore` ne répond pas encore
-correctement aux questions de flux.** C'est le seul vrai blocage. Tout le reste (perf, plans,
-infra) est réglé ou planifié.
+**`explore` RÉPOND.** Le blocage unique de la session précédente — *« le produit tourne et ne
+répond pas »* — est **levé et mesuré contre le vrai binaire** (`c0c7143`). La question exacte du
+gate Task 20 renvoie maintenant **3/3** avec une section Flow juste. Ce qui reste est du travail
+planifié, plus un blocage.
 
 | | état |
 |---|---|
 | Phases 1, 2, 3 (db, extract, resolve) | ✅ **mergées sur `main`** (`ba29336`), gates verts |
-| Phase 4 (graph + context) | ✅ code fini, gate vert — **mais le gate ment, voir §4** |
-| Phase 5 (MCP + binaire) | 🟡 écrit et commité, **jamais testé/finalisé** (Tasks 19–20 restent) |
+| Phase 4 (graph + context) | ✅ code fini — **et `explore` répond enfin** (§2) |
+| Phase 5 (MCP + binaire) | 🟡 écrit et commité, **Tasks 19–20 restent** |
 | Perf | ✅ **6× + 2,5×** — voir §3 |
-| Phases 6, 7 (CLI/daemon, installer) | ✅ **plans écrits et arbitrés**, 35 tâches prêtes à exécuter |
+| Phases 6, 7 (CLI/daemon, installer) | ✅ **plans écrits et arbitrés**, 35 tâches prêtes |
 | Phases 8, 9 (langages wave-2, parité, v1) | ⬜ roadmap seulement |
 
 **Branche de travail : `feat/phase45-graph-context-mcp`** (PAS mergée).
 `main` est à `ba29336` (fin de Phase 3).
 
+**Toute la suite : 1 089 tests, 0 échec.** Parity 6/6, dispatch 5/5, phase4 7/7.
+
 ---
 
-## 2. LE BLOCAGE — à attaquer en premier
+## 2. LE BLOCAGE EST LEVÉ (`c0c7143`) — lire ceci avant de retoucher la pertinence
 
-### Le produit tourne et ne répond pas
+### Ce que fait `explore` maintenant
 
-J'ai lancé le vrai binaire, sur du vrai MCP, contre un vrai dépôt (SeleneCode : 328 fichiers,
-5 035 nœuds, 17 216 arêtes, 11 875 références résolues — **le graphe est bon, ce n'est PAS un bug
-d'extraction ni de résolution**).
+`./scripts/ask.sh "how does an unresolved reference become a graph edge"` — la question **exacte**
+du gate Task 20 :
 
-Question posée (exactement celle du gate final Task 20) :
+```
+  batch.rs SHOWN: True | resolve_one: True | resolve_and_persist_batched: True  => 3/3
+  Flow: True (3 étapes)
 
-> **« how does an unresolved reference become a graph edge »**
+    1. resolve_and_persist_batched  (selene-resolve/src/batch.rs:113)
+    2. insert_edges                 (selene-db/src/store_impl.rs:105)
+    3. Edge                         (selene-core/src/lib.rs:346)
+```
 
-Réponse : **9 737 caractères de contexte confiant, bien formaté, et FAUX.**
-- symboles de départ : `graph_outcome`, `match_reference`, `unresolved_content`
-  — `graph_outcome` est un **helper d'erreur MCP**. Il sort parce que la requête contient les
-  mots « graph » et « unresolved ».
-- **0 des 4** symboles requis (`resolve_and_persist_batched`, `resolve_one`, `create_edges`,
-  `insert_edges`)
-- **0 des 2** fichiers requis (`crates/selene-resolve/src/batch.rs`, `resolver.rs`)
-- **aucune section Flow**
+Avant : **0/3, aucun Flow**, et des seeds (`ReferenceResolver`, `UnresolvedReference`) qui sont des
+**types** — on n'appelle pas un type.
 
-Un agent recevrait `handlers.rs`, n'apprendrait rien, et ouvrirait `batch.rs` — **exactement le
-Read que ce produit existe pour empêcher** (invariant « sufficiency / anti-Read », CLAUDE.md).
+### L'instrument était la DIRECTION, pas le poids. Ne recommence pas par les poids.
 
-### Les 3 sondes qui localisent le bug
+La session précédente avait prouvé qu'**aucun repondération ne pouvait marcher**, et elle avait
+raison : la réponse score ≈12 après le ×0,6 de la passe 5, `ReferenceResolver` score ≈143 pour avoir
+*épelé* deux mots de la requête, et la passe 12 est additive et plafonnée à 30. On ne monte pas de
+12 à 143. Deux correctifs *dans* le multiplicateur ont été mesurés et annulés (ils sont consignés
+dans `term_groups()` — **ne les retente pas**).
 
-Reproduire : `/tmp/ask.sh "<requête>"` (script recréé en §6 s'il a disparu ; il pilote le vrai
-binaire release en MCP contre `/tmp/dogfood-selene`).
+Ce qu'elle a manqué : **sa propre contre-preuve était directionnelle.** Injecter la connectivité
+dans le score promouvait `file_node_id`, `hash_content`, `node_id` — *« la couche utilitaire touche
+tous les concepts »*. Vrai. Et le signe distinctif est dans les degrés :
 
-| requête | symboles de départ | Flow ? | trouve batch.rs ? |
-|---|---|---|---|
-| « how does an unresolved reference become a graph edge » | graph_outcome, match_reference, unresolved_content | ❌ | ❌ |
-| « resolve_and_persist_batched » (nom exact) | resolve_project, index_and_drive, **resolve_and_persist_batched** | ❌ | ✅ |
-| « how are edges created during resolution » | insert_edges, insert_edges, insert_edges | ❌ | ❌ |
+```
+  classement des 1 460 callables non-test par concepts couverts via les appels SORTANTS :
+    #2  resolve_and_persist_batched  {EDGE, RESOLVE}  out=29 in=6     <- la réponse
+    #3  resolve_one                  {REFER,RESOLVE}  out=24 in=27
 
-Ce que ça prouve :
-1. **Le graphe a la donnée** — nommer le symbole le trouve. Ne cherche pas un bug de store.
-2. **La pertinence fait du matching lexical** mot-de-requête ↔ nom-de-symbole. Elle n'a aucune
-   notion qu'une question de *flux* veut une *chaîne connectée*.
-3. **Ligne 3 : le même symbole 3 fois** → bug de dédup des seeds.
-4. **La section Flow ne s'affiche JAMAIS** — même ligne 2, où le bon symbole était pourtant là.
+  témoin — le MÊME dépôt classé par DEGRÉ BRUT (ce que récompense un score non orienté) :
+    collect out=15 in=527 · get_node_text out=0 in=205 · as_str out=0 in=177 · default out=0 in=95
+```
 
-### Diagnostic (à vérifier, pas à croire sur parole)
+**Toute la plomberie qui avait fait échouer la tentative précédente a `out=0` et un `in` énorme.**
+Un utilitaire est *appelé par* tout ; un orchestrateur *appelle* tout. La passe 12 score
+`deg_out + deg_in` : elle ne peut pas distinguer un pilote d'un utilitaire. Restreindre aux appels
+sortants ne *dévalue* pas la plomberie — elle la rend **structurellement inéligible** (une fonction
+qui n'appelle rien ne couvre rien). Aucun amortissement nécessaire.
 
-`ContextBuilder::render_flow_section` (`crates/selene-context/src/builder.rs:111-133`) est
-**correctement câblé** — il EST appelé en prod, et il refuse honnêtement d'inventer une chaîne
-qu'il ne peut pas prouver (*« A fabricated spine is worse than none »*). **Garde cet instinct.**
+⇒ **passe 14 — réservation d'orchestrateur** (`relevance.rs`). Un callable dont les appels sortants
+couvrent ≥2 concepts de la requête prend 1 des 2 slots de root, **derrière le root 1**, en
+remplaçant les plus faibles (le budget de roots reste fixe — la passe 11 divise `max_nodes` entre
+les roots, donc un root *ajouté* amincit tous les autres : c'est l'échec consigné dans
+`pick_diverse_roots`).
 
-Il échoue à cause de ce qu'on lui **donne à manger** :
-- chemin 1 : besoin de `extract_search_terms(query).len() >= 2` — pour une question en prose, les
-  « termes » sont des mots anglais, pas des symboles → aucune chaîne.
-- chemin 2 : repli sur `ctx.roots` — mais les roots sont les symboles lexicalement proches
-  ci-dessus, **non connectés entre eux** → `build_flow_from_named_symbols` renvoie `None`, à juste
-  titre.
+### Le Flow : « la plus longue chaîne gagne » était faux depuis toujours
 
-⇒ **La cause racine est la sélection des seeds (relevance). Flow est la victime.** Si les roots
-étaient `resolve_and_persist_batched → resolve_one → create_edges → insert_edges`, la chaîne
-existe et Flow s'affiche tout seul.
+Un petit ensemble `named` le masquait. Sur un vrai sous-graphe, « finit sur un symbole nommé »
+devient **vide de sens** (tout est nommé) et « la plus longue » dégénère en « la plus profonde » :
 
-**Piste la plus probable** (à confirmer contre `docs/reference/from-codegraph/maps/mcp-context.md`,
-qui est l'autorité — le build TS a résolu ce problème) : on score la **similarité de nom** mais pas
-la **connectivité dans le graphe**. Un ensemble de seeds qui forment une **chaîne d'appels
-connectée** doit écraser trois correspondances lexicales isolées.
+```
+  1. resolve_and_persist_batched  2. resolve_all  3. resolve_one     <- juste
+  4. resolve_via_import ... 8. WorkspacePackages                     <- rien à voir avec « edge »
+```
 
-### ⚠ Le piège : le gate de la Phase 4 PASSE pendant que c'est cassé
+Chaque saut est une vraie arête d'appel, et l'ensemble est **hors-sujet**. Exiger « finir sur
+quelque chose de pertinent » ne suffit pas non plus : `resolve_workspace_import` **est** pertinent —
+tout le crate s'appelle `resolve_*`. Ce qui manquait, c'est **l'ARRIVÉE** : *« comment X devient
+Y »* se répond par une chaîne qui **part d'un pôle et finit sur l'AUTRE**. Une chaîne de `resolve`
+à `resolve` n'explique rien, quelle que soit sa longueur. Parmi celles qui arrivent, **la plus
+serrée gagne**.
 
-`crates/selene-context/tests/phase4_gate.rs` est vert (7/7). Il passe parce qu'il tourne sur de
-**petites fixtures plantées** (2 projets, tous deux de forme TypeScript). Sur un vrai dépôt de
-328 fichiers, la pertinence s'effondre.
+### ⚠ Ce qu'il ne faut PAS refaire (mesuré, dans cette session)
 
-**Son succès est la chose dont il faut se méfier, pas celle à laquelle se fier.** Le reviewer
-`rev13` l'avait dit (« le corpus du gate fait 2 projets, pas les ≥6 spécifiés ») — c'est maintenant
-prouvé dans le produit, pas argumenté dans une revue. **Il avait raison.**
+- **Ancrer sur les types et chercher un plus court chemin entre leurs « handlers ».** Testé :
+  `references` est une lance à incendie (2 666 arêtes) → 155 handlers d'un côté, 96 de l'autre →
+  le plus court chemin entre deux ensembles aussi gros trouve la paire de **déchets** la plus
+  proche (`visit_node → create_node`). Le plus-court-chemin est le mauvais objectif.
+- **Élargir la liste des kinds interdits en sink** au-delà de celle de TS
+  (`{constant, variable, field, property}`). Ajouter import/export/parameter *paraît* raisonnable
+  et **supprime le Flow** d'un projet à 2 fichiers dont la seule épine à 3 nœuds passe par un nœud
+  d'import.
 
-### État EXACT à la pause — MESURÉ contre le vrai binaire (commit `e879fba`)
+### Non sur-ajusté — vérifié contre un binaire construit depuis HEAD, sur 4 requêtes jamais réglées
 
-Un agent (`relevance`) a produit ~750 lignes, commitées en WIP (`faf9b54` + `e879fba`). **Ça
-compile, et je l'ai TESTÉ** — pas une promesse, des chiffres. Reproduis-les en une commande :
-`./scripts/ask.sh "<requête>"` (script versionné dans le repo).
-
-| requête | AVANT (début de session) | **MAINTENANT (`e879fba`)** |
+| requête | avant | après |
 |---|---|---|
-| **Q1 — celle du gate** | `graph_outcome`(!), match_reference, unresolved_content · Flow ❌ · symboles requis 0/4 | seeds `UnresolvedReference`, `unresolved`, `GraphStore` · **Flow ✅ (4 étapes)** · **symboles requis 0/4 ❌** |
-| Q2 — nom exact | resolve_project, index_and_drive, resolve_and_persist_batched · Flow ❌ | **`resolve_and_persist_batched` en 1er** ✅ · **Flow ✅ (4 étapes)** · batch.rs ✅ |
-| Q3 — prose | **insert_edges ×3** (bug dédup) · Flow ❌ · batch.rs ❌ | dédup **corrigé** ✅ · batch.rs ✅ · resolve_one ✅ · Flow ❌ |
+| how does a file get indexed | `… → pool → build_pool → build → map` | `index → index_all → run_pipeline → get_file` |
+| how are nodes stored | `fresh_mem`(un **bench**) `→ in_memory → DATABASE`(une **const**) | `bulk_load → load → Node` |
+| what happens when a file is deleted | *(inchangé)* | *(inchangé)* |
+| how does the mcp server handle a tool call | *(inchangé)* | *(inchangé)* |
 
-**Acquis (réels) :** bug de déduplication **corrigé** ; seeds nettement meilleurs ; **la section
-Flow s'affiche maintenant** (elle ne s'affichait sur *aucune* requête au début).
+**4 améliorées, 2 inchangées, 0 régressée.**
 
-### ✅ Question tranchée : il n'y a PAS de second bug dans `build_flow_from_named_symbols`
+### ⚠ La sonde elle-même mentait
 
-J'avais prévu une expérience pour le déterminer. **Elle n'est plus nécessaire** : Flow s'affiche
-parfaitement (Q1, Q2) dès qu'on lui donne des seeds connectés. **Le flow builder marche.**
-
-### ⚠ LE BUG RESTANT, isolé : la sélection des seeds sur une question en prose
-
-Sur **Q1 — la question exacte du gate** — `explore` renvoie encore **0 des 4 symboles requis** et
-**0 des 2 fichiers requis**. La cause est maintenant nette :
-
-> **Les seeds sont des TYPES, pas des FONCTIONS.** `UnresolvedReference`, `GraphStore` sont des
-> types. **On n'appelle pas un type** — donc aucune chaîne d'appels ne peut relier ces seeds au
-> vrai flux (`resolve_and_persist_batched → resolve_one → create_edges → insert_edges`). Le Flow
-> qui s'affiche est un flux **plausible mais hors-sujet**, ce qui est *dangereux* : c'est un
-> contexte confiant et faux, exactement ce que l'invariant anti-Read interdit.
-
-**Piste :** le scoring doit préférer des seeds qui (a) sont des **fonctions/méthodes** quand la
-question est une question de *flux* (« how does X become Y »), et (b) forment une **chaîne
-connectée** dans le graphe — pas trois symboles pertinents pris isolément. L'autorité est
-`docs/reference/from-codegraph/maps/mcp-context.md` : **le build TS a résolu ce problème** —
-regarder ce qu'il fait qu'on ne fait pas.
-
-**Critère de réussite, non négociable :** `./scripts/ask.sh "how does an unresolved reference
-become a graph edge"` doit afficher `batch.rs: True | resolve_one: True |
-resolve_and_persist_batched: True`. **Pas un test unitaire** — `phase4_gate.rs` est vert (7/7)
-pendant que tout ceci est cassé.
+`scripts/ask.sh` faisait un `in` sur **tout** le texte : un fichier simplement **nommé** dans la
+liste du blast-radius comptait comme un succès. Il annonçait 2/3 alors que la vérité était **1/3**.
+Un fichier *nommé mais non affiché* est le **pire** résultat possible : il désigne à l'agent un
+fichier qu'il doit ensuite ouvrir. La sonde teste maintenant les **sections de fichier rendues**.
 
 ---
+
+## 2 bis. CE QUI RESTE OUVERT sur `explore` (pré-existant, reproduit, NON corrigé)
+
+1. **Les tests dans `src/` pilotent les flows.** `is_test_file` teste le **chemin**, or Rust met ses
+   tests unitaires dans `#[cfg(test)] mod tests` **à l'intérieur du fichier source** — donc
+   `explore_is_the_only_default_visible_tool` **amorce un flow**. La règle « un test ne peut pas
+   être un ROOT » existe déjà ; c'est son implémentation qui suppose la convention TS
+   (`.test.ts` séparés). Piste : le `qualified_name` commence par `tests::`.
+2. **5 `EdgeKind` sont à ZÉRO dans un vrai index Rust** : `type_of`, `returns`, `overrides`,
+   `decorates`, `exports`. `decorates`/`exports` : normal sur du Rust. **`type_of` et `returns` :
+   PAS normal** — Rust est plein de paramètres typés et de types de retour. Ils semblent émis comme
+   `references`. Déclarés dans l'enum, jamais peuplés : exactement la forme du « seam inerte » que
+   ce projet paie en boucle (§9). À trancher : les peupler, ou les consigner comme déviation.
 
 ## 3. Perf — RÉGLÉ (garder le contexte, ne pas refaire)
 
@@ -194,8 +192,15 @@ c'est **faux**, le ladder fait 2,6 s. Le paralléliser parfaitement ne gagnerait
 | gate | état | à savoir |
 |---|---|---|
 | `selene-resolve` parity + dispatch | ✅ 11/11 | **Fiables.** Comparent l'*identité* des arêtes vs le build TS, tolérance 0. |
-| `selene-context/tests/phase4_gate.rs` | ✅ 7/7 | ⚠ **MENT** — voir §2. Corpus = 2 projets TS plantés. |
-| Task 20 (le gate du jalon) | ⬜ **pas écrit** | C'est LUI qui prouve le produit. §5. |
+| `scripts/ask.sh` (le vrai binaire) | ✅ 3/3 | **LE seul qui prouve `explore`.** Vrai MCP, vrai dépôt. La sonde a été corrigée (§2) — elle mentait. |
+| `selene-context/tests/phase4_gate.rs` | ✅ 7/7 | ⚠ Corpus = **2 projets, tous TS**. Il était vert pendant que `explore` ne répondait pas : ne t'y fie **jamais** seul. |
+| Task 20 (le gate du jalon) | ⬜ **pas écrit** | C'est LUI qui prouve le produit de bout en bout. §5. |
+
+⚠ **`cargo test --workspace | head` t'a déjà menti dans cette session** : la troncature a caché un
+test en échec et j'ai annoncé « tout vert » à tort. **Compte les échecs, ne les regarde pas défiler :**
+```bash
+cargo test --workspace 2>&1 | grep -c 'test result: FAILED'   # doit afficher 0
+```
 
 **À faire aussi (findings du reviewer `rev13`, non traités) :**
 - élargir le corpus du gate Phase 4 à **≥6 projets** couvrant TS/React, **Python/Django, Go, Rust,
@@ -209,8 +214,14 @@ c'est **faux**, le ladder fait 2,6 s. Le paralléliser parfaitement ne gagnerait
 
 ## 5. Ce qui reste — dans l'ordre
 
-### A. Débloquer `explore` (§2) ← **PRIORITÉ ABSOLUE**
-Sans ça, rien d'autre n'a de valeur.
+### A. ~~Débloquer `explore`~~ ✅ **FAIT** (`c0c7143`, §2)
+La question du gate renvoie 3/3 avec un Flow juste. **Avant de retoucher la pertinence, lis §2** —
+en particulier la liste « ce qu'il ne faut PAS refaire » : trois approches y sont déjà mesurées et
+mortes.
+
+### A bis. Les deux défauts pré-existants d'`explore` (§2 bis)
+Ni l'un ni l'autre ne bloque Task 20, mais le premier laisse un **test piloter une réponse** :
+tests dans `src/` (Rust met ses tests DANS le fichier) ; et `type_of`/`returns` à zéro dans l'index.
 
 ### B. Finir la Phase 5
 - **Task 19 — la discipline `isError`.** Le piège est documenté par le spike du projet lui-même :
