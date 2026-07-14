@@ -32,10 +32,24 @@ question and **223 s** (3.7 minutes) for a longer one, vs **1.2–1.4 s** on the
 Instrumented (`selene::explore` spans), the 35.6 s splits as:
 
 ```
-dominant_file             6.0 s   ← one aggregation query, O(edges), no index
-find_relevant_context    25.5 s   ← the relevance gather: LIKE `CONTAINS` scans, no index, per term
-flow + boundaries + files 0.3 s
+dominant_file                  5.9 s   aggregation over 1.6M edges, no index
+pass0  derive_corpus_terms    10.0 s   hundreds of prefix lookups per query term, no prefix index
+pass1-4 score_candidates       2.3 s   FTS (index-backed) — the ONE fast pass
+pass6-7 LIKE (CONTAINS)        4.4 s   substring scan, CONTAINS never uses an index (SurrealDB docs)
+pass12 graph connectivity      8.9 s   neighbor walk over a 349k-node graph
+flow + boundaries + files      0.3 s
 ```
+
+**Four passes, each O(graph size), each an unindexed scan.** The one fast pass (2.3 s) is
+`score_candidates`, which goes through the **FTS index we already have**. The SurrealDB docs are
+explicit: `CONTAINS` never uses an index (it is a substring scan); fast text lookup needs the
+full-text index. The fix is to route the pipeline through FTS and bound/skip the O(graph) passes on
+large repos:
+- `dominant_file` — skip above an edge threshold (it is a marginal scoring boost, not correctness).
+- `pass0` — the prefix lookups aren't index-backed at scale; bound the candidate substrings, or cap
+  pass0 on large corpora (its whole job is a nice-to-have stem widening).
+- `pass6-7` — replace the `CONTAINS` scan with an FTS-backed candidate query.
+- `pass12` — tighten the hub-degree cap and seed count on large graphs.
 
 **31.5 s of 35.6 s is two unindexed scans that grow with the graph.** `dominant_file` is a single
 SurrealQL aggregation over 1.6M edges; the relevance gather's `search_name_like` does a `CONTAINS`

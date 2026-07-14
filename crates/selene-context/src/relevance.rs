@@ -802,14 +802,20 @@ pub async fn find_relevant_context<S: GraphStore>(
     // candidate set it exists to widen has already been scored, cut and ranked without it.
     //
     // Empty on most queries, and that is correct — see [`derive_corpus_terms`].
+    let __t = std::time::Instant::now();
     let derived = derive_corpus_terms(qm, &literal).await?;
+    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass0 derive_corpus_terms");
     let terms: Vec<String> = literal.iter().cloned().chain(derived).collect();
 
     // Passes 1–4.
+    let __t = std::time::Instant::now();
     let scored = score_candidates_with_terms(qm, query, &terms, opts, dominant).await?;
+    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass1-4 score_candidates");
 
     // --- passes 6 & 7: LIKE matches -------------------------------------------
+    let __t = std::time::Instant::now();
     let like = like_passes_pub(qm, &terms, opts).await?;
+    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass6-7 LIKE (CONTAINS)");
     let mut by_id: IndexMap<String, ScoredNode> = IndexMap::new();
     for s in scored.into_iter().chain(like) {
         match by_id.get_mut(&s.node.id) {
@@ -845,7 +851,9 @@ pub async fn find_relevant_context<S: GraphStore>(
     // found AND admits what they could not. Running it after the cut would let the cut throw the
     // answer away first.
     sort_candidates(&mut scored); // seed order = lexical rank
+    let __t = std::time::Instant::now();
     apply_graph_connectivity(qm, &mut scored, &terms, opts).await?;
+    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass12 graph connectivity");
 
     // --- pass 8: sort → slice → min-score → cap roots --------------------------
     sort_candidates(&mut scored);
@@ -912,7 +920,9 @@ pub async fn find_relevant_context<S: GraphStore>(
     // --- pass 14: orchestrator reservation ------------------------------------
     // The lexical ranking cannot reach the answer to a flow question, and no re-weighting of it
     // can. See [`reserve_orchestrator_roots`] for the measurement.
+    let __t = std::time::Instant::now();
     reserve_orchestrator_roots(qm, &bridge_universe, &terms, &mut roots, opts.search_limit).await?;
+    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass14 orchestrator");
 
     if roots.is_empty() {
         // NOT an error. "Nothing relevant" is an answer, and the caller renders guidance.
