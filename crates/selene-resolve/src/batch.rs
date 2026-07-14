@@ -145,14 +145,39 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
     let mut remaining_before = usize::MAX;
     let mut done = 0usize;
 
-    // --- (3) the batch loop, at offset 0 --------------------------------------
-    // Ladder time and persist time get separate clocks on purpose: they have completely
-    // different fixes (a hot ladder is cache/query shape; a hot persist is write batching),
-    // and one summed number cannot tell you which you have.
+    // --- (3) the batch walk, paged by OFFSET; the queue is rewritten ONCE at the end ---------
+    //
+    // This loop used to run at **offset 0 forever** and rely on `persist` to DRAIN the queue: each
+    // batch deleted its resolved rows and marked its failed ones, so the next `offset 0` fetch
+    // returned the next rows. That is what forced the writes to be keyed and per-row, and it cost
+    // (django, measured):
+    //
+    //     delete_resolved  28 176 keys -> 17.3 s
+    //     mark_failed      24 178 keys ->  6.7 s
+    //     + one unresolved_pending_count() query PER BATCH, purely to police the drain
+    //
+    // 24 seconds to empty a hand-off buffer between two phases of the same process.
+    //
+    // `unresolved_pending_batch` already takes a `START offset`. Walking it instead of draining it
+    // means the queue is not mutated during the pass — so it only has to reach its FINAL state,
+    // once, and that state is expressible in two statements
+    // ([`GraphStore::replace_pending_with_failed`]): drop every pending row, re-insert the failed
+    // ones as failed.
+    //
+    // The two changes are one change: paging without rewriting would re-resolve the same rows, and
+    // rewriting without paging would break the drain the old loop needs to advance.
+    //
+    // Ladder time and persist time keep separate clocks: they have completely different fixes (a
+    // hot ladder is cache/query shape; a hot persist is write batching), and one summed number
+    // cannot tell you which you have.
     let (mut ms_ladder, mut ms_persist, mut ms_fetch) = (0u128, 0u128, 0u128);
+    let mut offset = 0usize;
+    let mut all_failed: Vec<UnresolvedRef> = Vec::new();
     loop {
         let t = std::time::Instant::now();
-        let batch = store.unresolved_pending_batch(0, RESOLVE_BATCH).await?;
+        let batch = store
+            .unresolved_pending_batch(offset, RESOLVE_BATCH)
+            .await?;
         ms_fetch += t.elapsed().as_millis();
         if batch.is_empty() {
             break;
@@ -171,34 +196,61 @@ pub async fn resolve_and_persist_batched<S: GraphStore + Clone>(
         });
         ms_ladder += t.elapsed().as_millis();
 
+        // **The edges go in NOW, per batch — and that is not an optimisation miss, it is a
+        // DEPENDENCY.** Deferring every insert to the end and writing them in one call was tried:
+        // it ran 3 s faster and produced **46 937 edges instead of 46 942**. Five edges vanished.
+        //
+        // The ladder READS THE GRAPH THAT EARLIER BATCHES WROTE — `create_edges` resolves endpoint
+        // kinds through the context, and the chain/dispatch resolvers walk edges that previous
+        // batches created. Batch N sees batch N-1's work. Hoisting the writes out of the loop cuts
+        // that feedback path and silently changes the answer.
+        //
+        // It also costs almost nothing to keep: `insert_edges` is **2.4 s** of the 27.7 s persist.
+        // The 24 s was never the edges — it was DRAINING THE QUEUE.
         let t = std::time::Instant::now();
-        persist(store, &edges, &result).await?;
+        for chunk in edges.chunks(PERSIST_CHUNK) {
+            store.insert_edges(chunk).await?;
+        }
         ms_persist += t.elapsed().as_millis();
+
+        // ⚠ **The STORED rows, unmutated** (#760). They are what gets re-inserted as failed; a
+        // resolver that mutated `reference_name` would re-key them. The old drain loop turned that
+        // bug into an infinite loop (5M edges / 1.4 GB in the TS build); the offset walk cannot
+        // hang, so the guard below is now an ASSERTION on the data rather than a brake on the loop.
+        all_failed.extend(result.unresolved.iter().cloned());
 
         merge(&mut stats, &result.stats);
         done += batch.len();
+        offset += batch.len();
         if let Some(cb) = on_progress {
             cb(done.min(total), total);
         }
+    }
 
-        // --- the non-progress guard (see the module docs, and the 1.4 GB) -----
-        let remaining = store.unresolved_pending_count().await? as usize;
-        if remaining >= remaining_before {
-            tracing::error!(
-                remaining,
-                remaining_before,
-                "resolution made NO progress across a batch — breaking. A resolver \
-                 returned a MUTATED `original.reference_name`, so the keyed delete \
-                 matched nothing, the rows stayed pending, and this loop would re-resolve \
-                 them forever (5M edges / 1.4 GB in the TS build). `ResolvedRef.original` \
-                 must be the STORED row (#760)."
-            );
-            stats
-                .by_method
-                .insert("non-progress-guard-tripped".to_string(), 1);
-            break;
-        }
-        remaining_before = remaining;
+    // --- (3b) the queue reaches its final state ONCE ------------------------------------------
+    // The edges were written per batch above (they have to be — see the note there). What is
+    // deferred is the QUEUE, which nothing reads during the pass: two statements instead of
+    // 52 354 keyed writes.
+    let t = std::time::Instant::now();
+    store.replace_pending_with_failed(&all_failed).await?;
+    ms_persist += t.elapsed().as_millis();
+
+    // --- the #760 invariant, now checkable instead of merely survivable -----------------------
+    // Every pending row must have been decided exactly once: resolved (⇒ an edge) or failed. If a
+    // resolver mutated `original`, the counts still add up but the re-inserted keys are wrong — so
+    // we check the count, which is the part that used to hang the loop, and leave the key contract
+    // to the parity gate that compares edge IDENTITY against the TS build at tolerance 0.
+    let decided = stats.resolved + stats.unresolved;
+    if decided != total {
+        tracing::error!(
+            decided,
+            total,
+            "resolution decided a different number of references than were pending. Every \
+             pending row must be resolved or failed exactly once (#760)."
+        );
+        stats
+            .by_method
+            .insert("decided-count-mismatch".to_string(), 1);
     }
 
     tracing::info!(
@@ -303,12 +355,15 @@ async fn persist<S: GraphStore>(
     edges: &[Edge],
     result: &ResolutionResult,
 ) -> Result<()> {
+    let t = std::time::Instant::now();
     for chunk in edges.chunks(PERSIST_CHUNK) {
         store.insert_edges(chunk).await?;
     }
+    let ms_edges = t.elapsed().as_millis();
 
     // ⚠ The key is built from `original` — the STORED row, unmutated. A synthetic name
     // here no-ops the delete and the offset-0 loop spins forever (#760).
+    let t = std::time::Instant::now();
     let resolved_keys: Vec<UnresolvedKey> = result
         .resolved
         .iter()
@@ -317,11 +372,20 @@ async fn persist<S: GraphStore>(
     for chunk in resolved_keys.chunks(PERSIST_CHUNK) {
         store.delete_resolved(chunk).await?;
     }
+    let ms_delete = t.elapsed().as_millis();
 
+    let t = std::time::Instant::now();
     let failed_keys: Vec<UnresolvedKey> = result.unresolved.iter().map(key_of).collect();
     for chunk in failed_keys.chunks(PERSIST_CHUNK) {
         store.mark_failed(chunk).await?;
     }
+    let ms_failed = t.elapsed().as_millis();
+
+    tracing::info!(target: "selene::index",
+        edges = edges.len(), ms_edges,
+        deleted = resolved_keys.len(), ms_delete,
+        failed = failed_keys.len(), ms_failed,
+        "persist: per call");
     Ok(())
 }
 

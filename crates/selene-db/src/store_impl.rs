@@ -226,6 +226,10 @@ impl GraphStore for SurrealStore {
         SurrealStore::delete_resolved(self, keys).await
     }
 
+    async fn replace_pending_with_failed(&self, failed: &[UnresolvedRef]) -> Result<()> {
+        SurrealStore::replace_pending_with_failed(self, failed).await
+    }
+
     async fn mark_failed(&self, keys: &[crate::UnresolvedKey]) -> Result<()> {
         SurrealStore::mark_failed(self, keys).await
     }

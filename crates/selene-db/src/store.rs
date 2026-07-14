@@ -554,6 +554,15 @@ pub trait GraphStore: Send + Sync {
     /// Flip refs matching [`UnresolvedKey`] keys to `Failed` (kept for the
     /// bounded retry pipeline rather than deleted; `#1240`). Kind-scoped for
     /// the same reason as [`GraphStore::delete_resolved`].
+    /// Bring the pending queue to its post-resolve state in TWO statements: drop every pending
+    /// row, re-insert the failed ones as failed. Replaces per-key `delete_resolved` +
+    /// `mark_failed` (24 s on django) — valid only when every pending row was processed in the
+    /// pass, which the offset walk guarantees.
+    fn replace_pending_with_failed(
+        &self,
+        failed: &[UnresolvedRef],
+    ) -> impl Future<Output = Result<()>> + Send;
+
     fn mark_failed(&self, keys: &[UnresolvedKey]) -> impl Future<Output = Result<()>> + Send;
 
     /// `Failed` refs whose `reference_name` is in `names`, capped at

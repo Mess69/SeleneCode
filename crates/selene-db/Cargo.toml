@@ -25,11 +25,6 @@ surrealdb = { workspace = true }
 tokio = { workspace = true }
 
 [dev-dependencies]
-# EXPERIMENT ONLY (2026-07-14): the SDK never calls Builder::with_config(), so every
-# SURREAL_* knob is inert in-process. This lets the probe reach the knob and PROVE the
-# payoff before we consider refactoring off the SDK client. Remove if the probe says no.
-surrealdb-core = { version = "3.2", default-features = false, features = ["kv-rocksdb"] }
-surrealdb-types = "3.2"
 tokio = { workspace = true }
 tempfile = { workspace = true }
 # Bench harness (PRD §5.3 gate — `benches/bulk_and_traverse.rs`). Default

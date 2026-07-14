@@ -112,8 +112,11 @@ impl SurrealStore {
                 .iter()
                 .map(unresolved_content)
                 .collect::<Result<Vec<_>>>()?;
+            // **`INSERT INTO t $rows`, not `FOR $r IN $rows { CREATE ... }`.** The FOR form runs
+            // one CREATE per row inside the engine; on django's 52 358 refs it measured 3.9 s. A
+            // single INSERT hands the engine the whole chunk. Same rows, same order.
             self.db()
-                .query("FOR $r IN $rows { CREATE unresolved_ref CONTENT $r; };")
+                .query("INSERT INTO unresolved_ref $rows;")
                 .bind(("rows", rows))
                 .await?
                 .check()?;
@@ -194,6 +197,45 @@ impl SurrealStore {
     ///
     /// The `referenceKind` predicate is what keeps a resolved `calls` row from
     /// deleting its `function_ref` twin — see [`crate::UnresolvedKey`].
+    /// **Rewrite the whole pending queue in two statements**, replacing 52 358 keyed writes.
+    ///
+    /// After a resolve pass, every row that was `Pending` has been decided: it either produced an
+    /// edge (and must go) or it did not (and must be marked failed, so the next pass does not
+    /// retry it). The old shape asked the database to reach that state one key at a time —
+    /// `delete_resolved` (28 176 keys, **17.3 s**) plus `mark_failed` (24 178 keys, **6.7 s**) —
+    /// because the batch loop *drained* the queue to advance, so each batch had to mutate it.
+    ///
+    /// Once the loop pages by `START offset` instead of draining, the queue only has to reach its
+    /// final state ONCE, and its final state is expressible directly: **drop every pending row,
+    /// re-insert the failed ones as failed.** Two statements.
+    ///
+    /// ⚠ **This is only equivalent if every pending row was processed in this pass** — which is
+    /// what the offset walk guarantees, and why the two must land together. Rows already marked
+    /// `failed` by an earlier pass are not `Pending`, so the DELETE does not touch them.
+    ///
+    /// ⚠ **#760 lives here.** `failed` must carry the rows as STORED. A resolver that mutated
+    /// `reference_name` used to make the keyed delete match nothing and the drain loop spin
+    /// forever (5M edges / 1.4 GB in the TS build). It can no longer hang — the DELETE is
+    /// unconditional — but a mutated row would be re-inserted under the wrong key, so the
+    /// invariant is unchanged: **pass the stored rows.**
+    pub async fn replace_pending_with_failed(&self, failed: &[UnresolvedRef]) -> Result<()> {
+        self.db()
+            .query("DELETE unresolved_ref WHERE status = $status;")
+            .bind(("status", RefStatus::Pending.as_str()))
+            .await?
+            .check()?;
+
+        let marked: Vec<UnresolvedRef> = failed
+            .iter()
+            .map(|r| {
+                let mut r = r.clone();
+                r.status = RefStatus::Failed;
+                r
+            })
+            .collect();
+        self.insert_unresolved(&marked).await
+    }
+
     pub async fn delete_resolved(&self, keys: &[crate::UnresolvedKey]) -> Result<()> {
         self.run_keyed_statements(
             keys,

@@ -3838,8 +3838,6 @@ dependencies = [
  "serde",
  "serde_json",
  "surrealdb",
- "surrealdb-core",
- "surrealdb-types",
  "tempfile",
  "thiserror",
  "tokio",
