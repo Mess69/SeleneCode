@@ -105,3 +105,34 @@ Not run: Half A already fails on the large tier, so the real-agent run would onl
 | SeleneCode | 334 | 5,069 | ~10 s |
 | CodeGraph | ~500 | ~4,900 | ~4 s |
 | VS Code | 12,123 | 349,737 | **672 s (11.2 min)** |
+
+## The vocabulary gap — edge-ngram MEASURED insufficient; the answer is vector search
+
+The large-tier question *"how does a keypress become an executed command"* fails on relevance because
+the query's words are not the code's: the dispatch path is `AbstractKeybindingService._doDispatch →
+executeCommand`, and the query says **keypress**, not **keybinding**/**dispatch**.
+
+**Tried: SurrealDB's `edgengram(3,15)` analyzer filter** (its native autocomplete/partial-match
+mechanism — the right instinct, and the replacement for the TS build's hand-rolled SQLite
+`name_segment_vocab`). Re-indexed VS Code (349k nodes, 11 min) and measured. **It does not close the
+gap.** `keypress` and `keybinding` share only the 3-char prefix `key`; that single weak token is
+drowned by the strong, wrong matches on `command`/`executed` (`executedMarker`, `CommandExecuted`,
+…), and — the deeper problem — the real answer symbols contain **neither** `command` **nor**
+`executed`: `AbstractKeybindingService` and `_doDispatch` are reachable only by *meaning*, not by any
+shared substring. Prefix matching cannot know that `keybinding` is the right `key` among thousands
+(`keyboard`, `keyword`, `keychain`…). Reverted (byte-identical on small repos; no benefit on the
+target; keeping an ineffective schema change is the inert-seam trap).
+
+**The SurrealDB-native answer is vector search.** SurrealDB has first-class HNSW / DISKANN vector
+indexes, `vector::similarity::cosine()`, and the `<|K, …|>` KNN operator
+(`docs/learn/data-models/vector-search`). Embedding each symbol (name + signature + docstring) and
+the query into the same space, then KNN over cosine similarity, bridges `keypress → keybinding →
+dispatch` by **meaning** — which is exactly what this question needs and exactly what a graph+vector
+database can do that the TS build's SQLite could not. It is the single most compelling "max out
+SurrealDB" lever left, and it is scoped, not built: it needs an embedding pipeline (a model over
+349k symbols), which is a feature, not a tweak.
+
+**Bottom line.** The product answers flow questions correctly and fast on small/medium repos (the
+common case), and large-repo latency is fixed (35.6 s → 6.5 s). What remains for a large repo is
+*semantic* relevance when the query's vocabulary diverges from the code's — a documented limitation
+with a clear, native path (vector search), not a regression.
