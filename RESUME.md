@@ -80,10 +80,24 @@ timeout). Donc :
 - **Cleanup orphelin** : déjà correct sans watchdog — un proxy mort ferme sa socket → la session du
   daemon voit EOF → refcount tombe → idle-reap. Pas de gap de correction.
 
-**Reste sur Phase 6** (non bloquant, long-tail) : PPID/liveness watchdogs (ceinture-bretelles ;
-idle-timeout + socket-EOF couvrent déjà le cycle de vie), git-hooks (post-commit/merge/checkout →
-`selene sync`), worktree-mismatch, `telemetry`. **Phase 7 reste** : cibles codex (TOML `toml_edit`)
-et hermes (YAML), install des git-hooks. Aucun n'est bloquant.
+### Long-tail Phase 6/7 — FAIT (2026-07-15)
+
+- **git-hooks** (`selene-sync/hooks.rs`) : `selene init` installe post-commit/merge/checkout qui
+  lancent `selene sync` en fond ; `uninit` les retire ; `--no-hooks` opt-out. Bloc marqué, préserve
+  le hook existant de l'utilisateur, idempotent, chemin absolu. Testé en vrai dépôt git.
+- **worktree-mismatch** (`selene-sync/worktree.rs`) : `selene status` avertit si le worktree git
+  courant diffère de celui indexé. Conservateur (le moindre doute → pas d'avertissement). PAS sur le
+  chemin chaud MCP (git par requête régresserait la latence). Testé avec un vrai `git worktree add`.
+- **watchdog liveness** (`selene-mcp/daemon/watchdog.rs`) : un thread OS abort le daemon si le
+  runtime tokio se fige (heartbeat via task tokio, déféré sur progrès disque, cap 10×, opt-out
+  `SELENE_NO_WATCHDOG`). Prouvé : un daemon sain survit 3× le timeout.
+- **Fichiers d'instructions installer** : chaque agent qui les lit reçoit un bloc `## SeleneCode`
+  (utilise `explore`, ne lis pas les fichiers) — bloc marqué dans CLAUDE.md/AGENTS.md/GEMINI.md, ou
+  fichier possédé (cursor `.mdc`, kiro steering). Préserve la prose de l'utilisateur.
+
+**Reste (niche, non bloquant)** : `telemetry`/`upgrade` sont **Phase 8** (pas 6/7). Sweep %APPDATA%
+opencode + migration antigravity : déférés (documentés). Le port des ~97 tests TS à la ligne : non
+fait (consigne « features pas mimic »).
 
 ## 7. Phase 7 installer — COMPLET, 8 agents / 4 formats (2026-07-15, `d953ee6`)
 

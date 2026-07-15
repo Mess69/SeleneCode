@@ -256,10 +256,8 @@ async fn status_inner(root: &Path, json: bool) -> Result<()> {
     }
 
     // Warn if the caller's git worktree differs from the one this index was built for.
-    if let Ok(cwd) = std::env::current_dir() {
-        if let Some(m) = selene_sync::worktree::detect(&cwd, root) {
-            println!("\n{}", m.status_warning());
-        }
+    if let Some(m) = std::env::current_dir().ok().and_then(|cwd| selene_sync::worktree::detect(&cwd, root)) {
+        println!("\n{}", m.status_warning());
     }
     Ok(())
 }

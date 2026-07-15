@@ -139,6 +139,7 @@ fn dir_fingerprint(dir: &Path) -> (u64, u128) {
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used)]
 mod tests {
     use super::*;
 
