@@ -5,13 +5,14 @@
 //! tool*, not ours. Paths are pure functions of an injected [`Ctx`] (home, cwd, env) so the whole
 //! thing is testable without touching the developer's real `$HOME`.
 //!
-//! # Scope note
+//! # Two files per target
 //!
-//! This registers selene as an MCP **server** in each agent — the load-bearing feature. The
-//! secondary files CodeGraph also writes (per-agent `AGENTS.md`/`CLAUDE.md`/`GEMINI.md` instruction
-//! blocks, `.cursor/rules` and kiro steering cleanup, opencode's `%APPDATA%` legacy sweep,
-//! antigravity's unified/legacy migration) are **not** ported here; they are polish around the same
-//! MCP entry, and are tracked as deferred in the crate docs.
+//! Each target gets the MCP **server** entry (the load-bearing feature) and, where the agent reads
+//! one, an **instructions** file telling it to use the `explore` tool instead of reading source:
+//! a marker-fenced block in a shared markdown file (`CLAUDE.md`/`AGENTS.md`/`GEMINI.md`, via
+//! [`Instruction::Block`]) or a file selene fully owns (cursor `.mdc`, kiro steering, via
+//! [`Instruction::Owned`]). Still not ported (niche, documented deferrals): opencode's `%APPDATA%`
+//! legacy sweep and antigravity's unified/legacy migration.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -261,6 +262,41 @@ impl Target {
         }
     }
 
+    /// The agent-instructions file for this target, if any. `Block` = upsert a marker-fenced block
+    /// into a shared markdown file the agent reads; `Owned` = a file selene fully owns.
+    fn instruction(&self, ctx: &Ctx, location: Location) -> Option<Instruction> {
+        if location == Location::Local && self.global_only {
+            return None;
+        }
+        let home = &ctx.home;
+        let cwd = &ctx.cwd;
+        Some(match (self.id, location) {
+            ("claude", Location::Local) => Instruction::Block(cwd.join("CLAUDE.md")),
+            ("claude", Location::Global) => Instruction::Block(home.join(".claude").join("CLAUDE.md")),
+            ("gemini", Location::Local) => Instruction::Block(cwd.join("GEMINI.md")),
+            ("gemini", Location::Global) => Instruction::Block(home.join(".gemini").join("GEMINI.md")),
+            ("codex", _) => Instruction::Block(home.join(".codex").join("AGENTS.md")),
+            ("opencode", Location::Local) => Instruction::Block(cwd.join("AGENTS.md")),
+            ("opencode", Location::Global) => {
+                let base = ctx
+                    .env("XDG_CONFIG_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".config"));
+                Instruction::Block(base.join("opencode").join("AGENTS.md"))
+            }
+            ("cursor", Location::Local) => {
+                Instruction::Owned(cwd.join(".cursor").join("rules").join("selene.mdc"))
+            }
+            ("kiro", Location::Local) => {
+                Instruction::Owned(cwd.join(".kiro").join("steering").join("selene.md"))
+            }
+            ("kiro", Location::Global) => {
+                Instruction::Owned(home.join(".kiro").join("steering").join("selene.md"))
+            }
+            _ => return None, // cursor global, hermes, antigravity: no instruction file
+        })
+    }
+
     /// Does this target's format round-trip the given text? (The refuse-to-clobber guard.)
     fn round_trips(&self, text: &str) -> bool {
         match self.kind {
@@ -281,79 +317,178 @@ fn opencode_file(dir: &Path) -> PathBuf {
     }
 }
 
+/// An agent-instructions destination: a marker-fenced block in a shared markdown file, or a file
+/// selene fully owns (created on install, deleted on uninstall).
+enum Instruction {
+    Block(PathBuf),
+    Owned(PathBuf),
+}
+
 // --- the install/uninstall drivers --------------------------------------------------------------
 
-/// Install selene into `ids` at `location`. Errors on one target never abort the others.
-pub fn install(
-    ids: &[String],
-    location: Location,
-    binary: &Path,
-    ctx: &Ctx,
-) -> Vec<TargetResult> {
-    drive(ids, location, ctx, |t, path, ctx| {
-        let existed = path.exists();
-        let text = read_or_note(path)?;
-        if !text.trim().is_empty() && !t.round_trips(&text) {
-            return Ok((Action::Kept, Some("refused: file does not round-trip losslessly".into())));
-        }
-        match t.install_edit(&text, binary, ctx, location)? {
-            Edit::Unchanged => Ok((Action::Unchanged, None)),
-            Edit::Write(out) => {
-                write_atomic(path, &out)?;
-                Ok((if existed { Action::Updated } else { Action::Created }, None))
-            }
-        }
-    })
-}
-
-/// Remove selene from `ids` at `location`.
-pub fn uninstall(ids: &[String], location: Location, ctx: &Ctx) -> Vec<TargetResult> {
-    drive(ids, location, ctx, |t, path, _ctx| {
-        if !path.exists() {
-            return Ok((Action::NotFound, None));
-        }
-        let text = read_or_note(path)?;
-        if !text.trim().is_empty() && !t.round_trips(&text) {
-            return Ok((Action::Kept, Some("refused: file does not round-trip losslessly".into())));
-        }
-        match t.uninstall_edit(&text)? {
-            Edit::Unchanged => Ok((Action::Kept, None)),
-            Edit::Write(out) => {
-                write_atomic(path, &out)?;
-                Ok((Action::Removed, None))
-            }
-        }
-    })
-}
-
-/// The shared per-target loop: resolve the path, run `op`, collect a result (never throw across
-/// targets — an error on one becomes that target's note, the rest proceed).
-fn drive<F>(ids: &[String], location: Location, ctx: &Ctx, op: F) -> Vec<TargetResult>
-where
-    F: Fn(&Target, &Path, &Ctx) -> Result<(Action, Option<String>)>,
-{
+/// Install selene into `ids` at `location`. Errors on one target never abort the others. Each target
+/// yields a config-file result and (where it has one) an instructions-file result.
+pub fn install(ids: &[String], location: Location, binary: &Path, ctx: &Ctx) -> Vec<TargetResult> {
     let reg = registry();
     let mut out = Vec::new();
     for id in ids {
         let Some(t) = reg.iter().find(|t| t.id == id.as_str()) else {
-            continue; // resolve_target_flag already rejected unknown ids
-        };
-        let Some(path) = t.config_path(ctx, location) else {
-            out.push(TargetResult {
-                id: t.id.to_string(),
-                path: None,
-                action: Action::Unsupported,
-                note: Some("not supported at this location (global-only)".into()),
-            });
             continue;
         };
-        let (action, note) = match op(t, &path, ctx) {
-            Ok(v) => v,
-            Err(e) => (Action::Kept, Some(format!("error: {e:#}"))),
+        let Some(path) = t.config_path(ctx, location) else {
+            out.push(unsupported(t.id));
+            continue;
         };
-        out.push(TargetResult { id: t.id.to_string(), path: Some(path), action, note });
+        out.push(finish(t.id, Some(path.clone()), install_config(t, &path, binary, ctx, location)));
+        if let Some(instr) = t.instruction(ctx, location) {
+            let (p, res) = install_instruction(instr);
+            out.push(finish(t.id, Some(p), res));
+        }
     }
     out
+}
+
+/// Remove selene from `ids` at `location`.
+pub fn uninstall(ids: &[String], location: Location, ctx: &Ctx) -> Vec<TargetResult> {
+    let reg = registry();
+    let mut out = Vec::new();
+    for id in ids {
+        let Some(t) = reg.iter().find(|t| t.id == id.as_str()) else {
+            continue;
+        };
+        let Some(path) = t.config_path(ctx, location) else {
+            out.push(unsupported(t.id));
+            continue;
+        };
+        out.push(finish(t.id, Some(path.clone()), uninstall_config(t, &path)));
+        if let Some(instr) = t.instruction(ctx, location) {
+            let (p, res) = uninstall_instruction(instr);
+            out.push(finish(t.id, Some(p), res));
+        }
+    }
+    out
+}
+
+fn install_config(
+    t: &Target,
+    path: &Path,
+    binary: &Path,
+    ctx: &Ctx,
+    location: Location,
+) -> Result<(Action, Option<String>)> {
+    let existed = path.exists();
+    let text = read_or_note(path)?;
+    if !text.trim().is_empty() && !t.round_trips(&text) {
+        return Ok((Action::Kept, Some("refused: file does not round-trip losslessly".into())));
+    }
+    match t.install_edit(&text, binary, ctx, location)? {
+        Edit::Unchanged => Ok((Action::Unchanged, None)),
+        Edit::Write(out) => {
+            write_atomic(path, &out)?;
+            Ok((if existed { Action::Updated } else { Action::Created }, None))
+        }
+    }
+}
+
+fn uninstall_config(t: &Target, path: &Path) -> Result<(Action, Option<String>)> {
+    if !path.exists() {
+        return Ok((Action::NotFound, None));
+    }
+    let text = read_or_note(path)?;
+    if !text.trim().is_empty() && !t.round_trips(&text) {
+        return Ok((Action::Kept, Some("refused: file does not round-trip losslessly".into())));
+    }
+    match t.uninstall_edit(&text)? {
+        Edit::Unchanged => Ok((Action::Kept, None)),
+        Edit::Write(out) => {
+            write_atomic(path, &out)?;
+            Ok((Action::Removed, None))
+        }
+    }
+}
+
+/// Upsert the instructions block (or write the owned file). Returns the path it touched + outcome.
+fn install_instruction(instr: Instruction) -> (PathBuf, Result<(Action, Option<String>)>) {
+    match instr {
+        Instruction::Block(path) => {
+            let res = (|| {
+                let existed = path.exists();
+                let text = read_or_note(&path)?;
+                match format::markdown::upsert(&text) {
+                    Edit::Unchanged => Ok((Action::Unchanged, None)),
+                    Edit::Write(out) => {
+                        write_atomic(&path, &out)?;
+                        Ok((if existed { Action::Updated } else { Action::Created }, None))
+                    }
+                }
+            })();
+            (path, res)
+        }
+        Instruction::Owned(path) => {
+            let content = format!("{}\n", format::markdown::block());
+            let res = (|| {
+                let existed = path.exists();
+                if read_or_note(&path)? == content {
+                    return Ok((Action::Unchanged, None));
+                }
+                write_atomic(&path, &content)?;
+                Ok((if existed { Action::Updated } else { Action::Created }, None))
+            })();
+            (path, res)
+        }
+    }
+}
+
+fn uninstall_instruction(instr: Instruction) -> (PathBuf, Result<(Action, Option<String>)>) {
+    match instr {
+        Instruction::Block(path) => {
+            let res = (|| {
+                if !path.exists() {
+                    return Ok((Action::NotFound, None));
+                }
+                let text = read_or_note(&path)?;
+                let (edit, delete) = format::markdown::remove(&text);
+                if delete {
+                    std::fs::remove_file(&path)?;
+                    return Ok((Action::Removed, None));
+                }
+                match edit {
+                    Edit::Unchanged => Ok((Action::Kept, None)),
+                    Edit::Write(out) => {
+                        write_atomic(&path, &out)?;
+                        Ok((Action::Removed, None))
+                    }
+                }
+            })();
+            (path, res)
+        }
+        Instruction::Owned(path) => {
+            let res = (|| {
+                if path.exists() {
+                    std::fs::remove_file(&path)?;
+                    Ok((Action::Removed, None))
+                } else {
+                    Ok((Action::NotFound, None))
+                }
+            })();
+            (path, res)
+        }
+    }
+}
+
+fn unsupported(id: &str) -> TargetResult {
+    TargetResult {
+        id: id.to_string(),
+        path: None,
+        action: Action::Unsupported,
+        note: Some("not supported at this location (global-only)".into()),
+    }
+}
+
+/// Wrap a per-file outcome (or a collected error) into a `TargetResult`.
+fn finish(id: &str, path: Option<PathBuf>, res: Result<(Action, Option<String>)>) -> TargetResult {
+    let (action, note) = res.unwrap_or_else(|e| (Action::Kept, Some(format!("error: {e:#}"))));
+    TargetResult { id: id.to_string(), path, action, note }
 }
 
 /// Read a file, or `""` if absent. An unreadable/existing file backs itself up and is treated as

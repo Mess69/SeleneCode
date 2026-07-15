@@ -129,6 +129,37 @@ fn global_only_targets_are_unsupported_locally() {
 }
 
 #[test]
+fn install_writes_instruction_files_and_uninstall_removes_them() {
+    let home = tempfile::tempdir().unwrap();
+    let cwd = tempfile::tempdir().unwrap();
+    let c = ctx(home.path(), cwd.path());
+
+    // claude → a CLAUDE.md block; cursor → an owned .cursor/rules/selene.mdc.
+    let r = install(&["claude".into(), "cursor".into()], Location::Local, &bin(), &c);
+    assert!(r.iter().any(|x| x.action == Action::Created), "something was created: {r:?}");
+
+    let claude_md = cwd.path().join("CLAUDE.md");
+    assert!(claude_md.exists(), "claude instruction block written");
+    let md = std::fs::read_to_string(&claude_md).unwrap();
+    assert!(md.contains("## SeleneCode") && md.contains("explore"), "instructions present");
+
+    let mdc = cwd.path().join(".cursor/rules/selene.mdc");
+    assert!(mdc.exists(), "cursor owns a rules file");
+
+    // A user's own CLAUDE.md prose must survive an install.
+    std::fs::write(&claude_md, format!("# Mine\n\n{}", std::fs::read_to_string(&claude_md).unwrap())).unwrap();
+    install(&["claude".into()], Location::Local, &bin(), &c);
+    assert!(std::fs::read_to_string(&claude_md).unwrap().contains("# Mine"), "user's prose kept");
+
+    // Uninstall removes our block (CLAUDE.md kept for the user's prose) and deletes the owned file.
+    uninstall(&["claude".into(), "cursor".into()], Location::Local, &c);
+    let md = std::fs::read_to_string(&claude_md).unwrap();
+    assert!(md.contains("# Mine"), "user's prose survives uninstall");
+    assert!(!md.contains("## SeleneCode"), "our block gone");
+    assert!(!mdc.exists(), "owned cursor file deleted");
+}
+
+#[test]
 fn target_flag_resolution() {
     let home = tempfile::tempdir().unwrap();
     let cwd = tempfile::tempdir().unwrap();

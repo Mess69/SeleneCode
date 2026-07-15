@@ -390,6 +390,71 @@ pub mod yaml {
     }
 }
 
+// ------------------------------------------------------------------------------------------------
+// Markdown — a marker-fenced instructions block in a shared file (CLAUDE.md / AGENTS.md / GEMINI.md).
+// ------------------------------------------------------------------------------------------------
+
+pub mod markdown {
+    use super::*;
+
+    pub const MARKER_BEGIN: &str = "<!-- SELENE_START -->";
+    pub const MARKER_END: &str = "<!-- SELENE_END -->";
+
+    /// The instructions agents read: use the MCP tools instead of reading files.
+    pub fn block() -> String {
+        format!(
+            "{MARKER_BEGIN}\n\
+             ## SeleneCode\n\n\
+             This project is indexed by SeleneCode. For structural or flow questions — who calls X, \
+             what breaks if Y changes, how Z flows — use the `explore` MCP tool (and \
+             `node`/`callers`/`callees`/`impact`) **instead of reading files**: one call returns the \
+             relevant source, the call path, and the blast radius. Re-index after big changes with \
+             `selene sync` (git hooks do this automatically).\n\
+             {MARKER_END}"
+        )
+    }
+
+    fn strip(text: &str) -> String {
+        let Some(begin) = text.find(MARKER_BEGIN) else {
+            return text.trim_end().to_string();
+        };
+        let after = match text[begin..].find(MARKER_END) {
+            Some(rel) => begin + rel + MARKER_END.len(),
+            None => text.len(),
+        };
+        let mut end = after;
+        if text[end..].starts_with('\n') {
+            end += 1;
+        }
+        format!("{}{}", &text[..begin], &text[end..]).trim_end().to_string()
+    }
+
+    /// Upsert the selene instructions block into `text` (or a fresh file), touching nothing else.
+    pub fn upsert(text: &str) -> Edit {
+        let base = strip(text);
+        let out = if base.trim().is_empty() {
+            format!("{}\n", block())
+        } else {
+            format!("{base}\n\n{}\n", block())
+        };
+        if out == text { Edit::Unchanged } else { Edit::Write(out) }
+    }
+
+    /// Remove the selene block. Returns whether the file should be **deleted** (nothing else left).
+    pub fn remove(text: &str) -> (Edit, bool) {
+        if !text.contains(MARKER_BEGIN) {
+            return (Edit::Unchanged, false);
+        }
+        let base = strip(text);
+        if base.trim().is_empty() {
+            (Edit::Unchanged, true) // caller deletes the file
+        } else {
+            let out = format!("{base}\n");
+            (if out == text { Edit::Unchanged } else { Edit::Write(out) }, false)
+        }
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -507,5 +572,32 @@ mod tests {
         assert!(out.contains("  other:"), "neighbor kept: {out}");
         assert!(!out.contains("selene"), "selene removed");
         assert_eq!(yaml::remove(&out).unwrap(), Edit::Unchanged, "idempotent");
+    }
+
+    #[test]
+    fn markdown_upsert_preserves_the_users_prose_and_is_idempotent() {
+        let src = "# My project\n\nSome notes.\n";
+        let Edit::Write(out) = markdown::upsert(src) else {
+            panic!("expected a write");
+        };
+        assert!(out.contains("# My project"), "user's heading kept");
+        assert!(out.contains("Some notes."), "user's prose kept");
+        assert!(out.contains(markdown::MARKER_BEGIN), "block added");
+        assert_eq!(markdown::upsert(&out), Edit::Unchanged, "re-upsert is a no-op");
+    }
+
+    #[test]
+    fn markdown_remove_deletes_a_file_that_was_only_our_block() {
+        let only_ours = format!("{}\n", markdown::block());
+        let (edit, delete) = markdown::remove(&only_ours);
+        assert_eq!(edit, Edit::Unchanged);
+        assert!(delete, "a file that was only our block should be deleted");
+
+        // A file with the user's prose is rewritten, not deleted.
+        let mixed = format!("# Mine\n\n{}\n", markdown::block());
+        let (edit, delete) = markdown::remove(&mixed);
+        assert!(!delete, "keep a file with other content");
+        let Edit::Write(out) = edit else { panic!("expected a rewrite") };
+        assert!(out.contains("# Mine") && !out.contains(markdown::MARKER_BEGIN));
     }
 }
