@@ -25,6 +25,7 @@ pub mod proc;
 pub mod registry;
 mod serve;
 mod watch;
+mod watchdog;
 
 pub use control::{ControlReply, route_to_daemon};
 pub use registry::{DaemonRecord, list as list_daemons};

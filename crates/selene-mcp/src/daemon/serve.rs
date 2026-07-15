@@ -252,10 +252,25 @@ async fn run_daemon(root: PathBuf) -> Result<()> {
     // the daemon's life; aborted when the accept loop returns.
     let watcher = tokio::spawn(super::watch::watch_and_sync(root.clone()));
 
+    // Liveness watchdog: an OS thread aborts the process if the runtime wedges. A tokio task beats
+    // the heartbeat while the runtime is healthy (opt out with SELENE_NO_WATCHDOG).
+    let beater = super::watchdog::spawn(&paths::data_dir(&root)).map(|hb| {
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_millis(500));
+            loop {
+                tick.tick().await;
+                hb.beat();
+            }
+        })
+    });
+
     let outcome = accept_loop(listener, root.clone(), idle_ms).await;
 
     // --- shutdown ------------------------------------------------------------------------------
     watcher.abort();
+    if let Some(b) = beater {
+        b.abort();
+    }
     registry::deregister(&root);
     let _ = std::fs::remove_file(&sock);
     lock::release(&pid_path, own_pid());
