@@ -18,11 +18,13 @@
 //! The serve loop, the launcher/proxy, and the registry build on these. Windows named pipes are a
 //! later port (map §Rust port notes); the POSIX path is the one we integration-test.
 
+pub mod control;
 pub mod lock;
 pub mod paths;
 pub mod proc;
 pub mod registry;
 mod serve;
 
+pub use control::{ControlReply, route_to_daemon};
 pub use registry::{DaemonRecord, list as list_daemons};
 pub use serve::launch;

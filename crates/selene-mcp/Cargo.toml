@@ -17,6 +17,9 @@ selene-core = { path = "../selene-core" }
 selene-db = { path = "../selene-db", default-features = false, features = ["kv-rocksdb"] }
 selene-graph = { path = "../selene-graph" }
 selene-context = { path = "../selene-context" }
+# Daemon-routed writes: the daemon owns the exclusive lock, so `sync` runs through it (against the
+# warm store) rather than fighting for the lock. No cycle — selene-sync does not depend on us.
+selene-sync = { path = "../selene-sync" }
 # Task 1 (spike): the SDK the whole of Phase 5 rides on. Features pinned to what a
 # stdio server needs — `server` (ServerHandler), `macros` (#[tool_router]/#[tool]),
 # `transport-io` (stdio). NOT the http/sse transports: Phase 5 is stdio-only.

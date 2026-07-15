@@ -39,6 +39,8 @@ impl SyncStats {
 }
 
 /// Sync the index at `root`'s `.selene/` to the current file tree. `root` must already be indexed.
+///
+/// Opens the store itself — the CLI path, used when **no** daemon holds the exclusive lock.
 pub async fn sync_project(root: &Path) -> Result<SyncStats> {
     let dir = root.join(".selene");
     anyhow::ensure!(
@@ -46,10 +48,16 @@ pub async fn sync_project(root: &Path) -> Result<SyncStats> {
         "not indexed: {} has no .selene/",
         root.display()
     );
-
     let store = SurrealStore::open(&dir).await.context("open index")?;
     store.apply_schema().await.context("apply schema")?;
+    sync_project_with_store(root, store).await
+}
 
+/// Sync using an **already-open** store — the daemon path. The daemon holds the exclusive RocksDB
+/// lock, so a second `SurrealStore::open` in any process (even this one) would deadlock on it;
+/// instead the daemon hands its warm handle straight in. Because that handle is the very one the
+/// query cache serves from, the re-index is visible to subsequent tool calls the instant it lands.
+pub async fn sync_project_with_store(root: &Path, store: SurrealStore) -> Result<SyncStats> {
     // The graph's current view: path -> content hash.
     let indexed: HashMap<String, String> = store
         .all_files()

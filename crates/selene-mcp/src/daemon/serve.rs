@@ -301,15 +301,97 @@ async fn accept_loop(listener: UnixListener, root: PathBuf, idle_ms: u64) -> Res
     }
 }
 
-/// Run one MCP session over an accepted socket, backed by the daemon's warm store.
+/// Serve one accepted connection. The first line decides: a control frame (`selene sync` routed
+/// here) is handled and the connection closes; anything else is the MCP `initialize` request, which
+/// is replayed into a full MCP session over the warm store.
 async fn serve_connection(stream: UnixStream, root: PathBuf) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+
+    let (rh, wh) = stream.into_split();
+    let mut reader = BufReader::new(rh);
+    let mut first = String::new();
+    reader.read_line(&mut first).await.context("read first line")?;
+
+    if let Some(req) = super::control::parse_request(&first) {
+        return handle_control(req, root, wh).await;
+    }
+
+    // MCP: replay the first line — plus any bytes BufReader read past it — ahead of the rest.
     use rmcp::ServiceExt;
+    let buffered = reader.buffer().to_vec();
+    let tail = reader.into_inner();
+    let mut head = first.into_bytes();
+    head.extend_from_slice(&buffered);
+    let replay = Prefixed { head, pos: 0, tail };
+
     let service = crate::SeleneMcp::new(Some(root))
-        .serve(stream)
+        .serve((replay, wh))
         .await
         .context("MCP handshake over socket")?;
     service.waiting().await.context("session")?;
     Ok(())
+}
+
+/// Handle a control request against the daemon's warm store, then reply one line and close.
+async fn handle_control(
+    req: super::control::ControlRequest,
+    root: PathBuf,
+    mut wh: tokio::net::unix::OwnedWriteHalf,
+) -> Result<()> {
+    use tokio::io::AsyncWriteExt;
+
+    let reply = match req.selene_control.as_str() {
+        "sync" => run_sync(&root).await,
+        other => super::control::ControlReply::failure(format!("unknown control verb '{other}'")),
+    };
+    let mut line = serde_json::to_string(&reply).unwrap_or_default();
+    line.push('\n');
+    let _ = wh.write_all(line.as_bytes()).await;
+    let _ = wh.flush().await;
+    Ok(())
+}
+
+/// Run an incremental sync against the daemon's warm store — no second `open`, so no lock fight.
+async fn run_sync(root: &std::path::Path) -> super::control::ControlReply {
+    let store = match crate::handlers::warm_store_for_root(root).await {
+        Ok(s) => s,
+        Err(e) => return super::control::ControlReply::failure(e),
+    };
+    match selene_sync::sync_project_with_store(root, store).await {
+        Ok(stats) => super::control::ControlReply {
+            ok: true,
+            changed: stats.changed,
+            removed: stats.removed,
+            unchanged: stats.unchanged,
+            error: None,
+        },
+        Err(e) => super::control::ControlReply::failure(format!("{e:#}")),
+    }
+}
+
+/// An `AsyncRead` that yields owned `head` bytes first, then delegates to `tail`. Lets the daemon
+/// peek the first line and still hand a *complete* stream (initialize included) to rmcp.
+struct Prefixed<R> {
+    head: Vec<u8>,
+    pos: usize,
+    tail: R,
+}
+
+impl<R: tokio::io::AsyncRead + Unpin> tokio::io::AsyncRead for Prefixed<R> {
+    fn poll_read(
+        mut self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        if self.pos < self.head.len() {
+            let remaining = &self.head[self.pos..];
+            let n = remaining.len().min(buf.remaining());
+            buf.put_slice(&remaining[..n]);
+            self.pos += n;
+            return std::task::Poll::Ready(Ok(()));
+        }
+        std::pin::Pin::new(&mut self.tail).poll_read(cx, buf)
+    }
 }
 
 fn set_mode_0600(path: &std::path::Path) -> std::io::Result<()> {

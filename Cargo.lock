@@ -3978,6 +3978,7 @@ dependencies = [
  "selene-extract",
  "selene-graph",
  "selene-resolve",
+ "selene-sync",
  "serde",
  "serde_json",
  "sha2",

@@ -60,6 +60,17 @@ pub async fn prewarm(root: &Path) {
     }
 }
 
+/// The daemon's warm store for `root`, opening (and caching) it if needed. This is the **one** open
+/// handle the daemon holds; daemon-routed writes (sync) run through it rather than opening a second
+/// one, which the exclusive RocksDB lock would refuse. Errors as a string (the daemon logs it).
+pub async fn warm_store_for_root(root: &Path) -> Result<SurrealStore, String> {
+    let db = root.join(".selene");
+    if !db.exists() {
+        return Err(format!("not indexed: {} has no .selene/", root.display()));
+    }
+    warm_store(&db).await.map_err(|o| o.text().to_string())
+}
+
 /// Open the graph for a project root.
 ///
 /// **Every failure here is guidance, not an error.** No `.selene/`, an unreadable database, a

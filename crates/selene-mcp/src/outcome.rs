@@ -58,6 +58,13 @@ impl ToolOutcome {
         Self::Failed(format!("{err}"))
     }
 
+    /// The message, whichever variant this is.
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Ok(t) | Self::Failed(t) => t,
+        }
+    }
+
     /// To the wire. **Never `Err`** — see the module docs: an `Err` here is a transport
     /// failure, not a failed call.
     pub fn to_call_result(self) -> CallToolResult {

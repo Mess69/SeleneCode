@@ -134,6 +134,43 @@ async fn two_launchers_share_one_daemon() {
     let _ = client_b.cancel().await;
 }
 
+/// `selene sync` routes through a running daemon (which holds the exclusive lock) instead of
+/// fighting it for the lock — and the re-index is instantly visible to a query on the warm store.
+#[tokio::test(flavor = "multi_thread")]
+async fn sync_routes_through_a_running_daemon() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    index_tiny_project(root);
+
+    // Bring up the daemon by connecting a client; keep it connected so it stays live.
+    let client = connect(root, home.path()).await;
+    let _ = client.list_tools(Default::default()).await.unwrap();
+    assert!(daemon_pid(root).is_some(), "a daemon is holding the lock");
+
+    // Add a new symbol on disk; advance mtime so the sync notices it.
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    std::fs::write(root.join("src/c.ts"), "export function gamma(){ return 2 }\n").unwrap();
+
+    // `selene sync` must succeed WHILE the daemon holds the lock — i.e. route through it.
+    let out = std::process::Command::new(bin())
+        .arg("sync")
+        .arg(root)
+        .env("HOME", home.path())
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "sync succeeds via the daemon, not a lock error");
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(stderr.contains("via daemon"), "sync was daemon-routed; stderr: {stderr}");
+
+    // The new symbol is queryable through the SAME warm daemon right away.
+    let (is_err, text) = call(&client, "explore", serde_json::json!({ "query": "gamma" })).await;
+    assert!(!is_err, "gamma resolves after a daemon-routed sync; text: {text}");
+    assert!(text.contains("gamma"), "the fresh symbol is in the warm store; got: {text}");
+
+    let _ = client.cancel().await;
+}
+
 /// `SELENE_NO_DAEMON=1` serves in-process and spawns NO daemon.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_daemon_env_serves_in_process() {

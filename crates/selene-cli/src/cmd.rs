@@ -334,6 +334,42 @@ pub async fn sync(path: PathBuf, quiet: bool) -> Outcome {
         Ok(r) => r,
         Err(o) => return o,
     };
+
+    // A daemon holds the exclusive lock, so if one is up we route the sync THROUGH it (it re-indexes
+    // against its warm store and the change is instantly visible to the next query). Only when there
+    // is no daemon do we open the store directly.
+    match selene_mcp::daemon::route_to_daemon(&root, "sync").await {
+        Ok(Some(reply)) => {
+            if reply.ok {
+                if !quiet {
+                    if reply.changed == 0 && reply.removed == 0 {
+                        eprintln!("up to date ({} files unchanged) [via daemon]", reply.unchanged);
+                    } else {
+                        eprintln!(
+                            "synced: {} changed, {} removed, {} unchanged [via daemon]",
+                            reply.changed, reply.removed, reply.unchanged
+                        );
+                    }
+                }
+                return Outcome::Ok;
+            }
+            if !quiet {
+                eprintln!(
+                    "selene sync: {}",
+                    reply.error.as_deref().unwrap_or("daemon reported failure")
+                );
+            }
+            return Outcome::Failure;
+        }
+        // No daemon (or connect failed) — fall through to the direct path.
+        Ok(None) => {}
+        Err(e) => {
+            if !quiet {
+                eprintln!("selene sync: could not reach the daemon ({e}); syncing directly");
+            }
+        }
+    }
+
     match selene_sync::sync_project(&root).await {
         Ok(stats) => {
             if !quiet {
