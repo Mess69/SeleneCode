@@ -35,6 +35,20 @@ planifié, plus un blocage.
 
 **Toute la suite : ~1 100 tests, 0 échec.** Parity 6/6, dispatch 5/5, phase4 7/7.
 
+## 5ter. Phase 6 daemon — le spike Task 1 est TRANCHÉ (2026-07-15) : le daemon EST nécessaire
+
+Le plan disait : *« Task 1's spike must RATIFY the premise. If concurrent reads work, the
+daemon-as-arbiter ruling is VOID and Phase 6 shrinks by ~5 tasks. »* **Mesuré : les lectures
+concurrentes ne marchent PAS.** Deux process qui tentent de tenir le même store RocksDB embarqué en
+même temps : le second **bloque** (verrou exclusif ; `connect_disk_with_lock_retry` boucle jusqu'au
+timeout). Donc :
+- **On ne peut pas cacher le store ouvert dans `serve`** sans bloquer un `selene status`/`index`
+  concurrent. L'ouverture par appel actuelle est CORRECTE.
+- **Le daemon-as-arbiter n'est pas annulé — il est confirmé.** C'est lui (un seul process tient le
+  store, les autres lui parlent par socket) qui permettra à la fois le store chaud (warm-up une seule
+  fois, latence 1er appel gros-dépôt ~9s → ~0) ET l'accès concurrent CLI. **Pas de raccourci de ~5
+  tâches ; construire le daemon.**
+
 ## 5bis. Task 20 — le gate du jalon : ce qu'il a RÉVÉLÉ (2026-07-15)
 
 Le gate est construit (`crates/selene-mcp/tests/dogfood_gate.rs`, `#[ignore]`) + `scripts/dogfood.sh`
