@@ -28,3 +28,16 @@ mod serve;
 pub use control::{ControlReply, route_to_daemon};
 pub use registry::{DaemonRecord, list as list_daemons};
 pub use serve::launch;
+
+use std::path::Path;
+
+/// The pid of the live daemon holding `root`, if one is running. Lets a write command (`index`)
+/// detect that the exclusive lock is taken and give guidance instead of a cryptic lock error.
+pub fn running_pid(root: &Path) -> Option<i32> {
+    let rec = lock::read(&paths::pid_path(root))?;
+    if proc::is_alive(rec.pid) {
+        Some(rec.pid)
+    } else {
+        None
+    }
+}

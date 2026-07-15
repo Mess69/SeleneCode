@@ -75,6 +75,17 @@ pub async fn index(path: PathBuf) -> Outcome {
 
 async fn index_inner(path: PathBuf) -> Result<()> {
     let root = resolve(&path)?;
+
+    // A running daemon holds the exclusive lock. A full re-index can't open the store past it, so
+    // rather than surface a cryptic RocksDB lock error, point the user at the two real options.
+    if let Some(pid) = selene_mcp::daemon::running_pid(&root) {
+        anyhow::bail!(
+            "a SeleneCode daemon is serving this project (pid {pid}).\n  \
+             • for incremental updates, use `selene sync` (it re-indexes through the daemon)\n  \
+             • to fully re-index, stop the daemon first: `kill {pid}`"
+        );
+    }
+
     let dir = root.join(".selene");
     std::fs::create_dir_all(&dir).context("could not create .selene/")?;
 
