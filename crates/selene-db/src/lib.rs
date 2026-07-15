@@ -79,6 +79,7 @@ mod meta;
 mod nodes;
 mod schema;
 mod search;
+mod semantic;
 mod store;
 mod store_impl;
 mod surreal;
@@ -96,4 +97,5 @@ pub use store::{
     Direction, GraphStats, GraphStore, NeighborEntry, ReplaceStats, SearchCandidate, Subgraph,
     TraversalOptions, UnresolvedKey,
 };
+pub use semantic::embedding_text;
 pub use surreal::{DATABASE_DIRNAME, SurrealStore};

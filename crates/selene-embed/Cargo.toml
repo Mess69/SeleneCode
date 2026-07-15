@@ -1,0 +1,16 @@
+[package]
+name = "selene-embed"
+description = "Local text embeddings for SeleneCode's optional semantic search (fastembed/ONNX, offline)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# The native ONNX embedder. This crate exists ONLY to isolate that heavy dependency behind the
+# `semantic-search` feature of the consumers — a default SeleneCode build never compiles it.
+fastembed = { workspace = true }
+anyhow = { workspace = true }
+
+[lints]
+workspace = true

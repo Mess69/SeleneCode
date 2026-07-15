@@ -299,7 +299,42 @@ pub async fn query(search: String, path: Option<PathBuf>) -> Outcome {
         Ok(r) => r,
         Err(o) => return o,
     };
+    // If this index has embeddings (a `selene embed` was run) and this binary can generate a query
+    // vector, use HYBRID search — it bridges the vocabulary gap that lexical BM25 cannot.
+    #[cfg(feature = "semantic-search")]
+    if let Some(outcome) = semantic_query(&root, &search).await {
+        return outcome;
+    }
     render(handlers::search(Some(root), &search).await)
+}
+
+/// Hybrid (lexical + vector) search. `None` when the index has no embeddings or the query cannot be
+/// embedded — the caller then falls back to lexical. Loads the model per call (the daemon holds it
+/// warm; a one-shot CLI query pays the load, which is the trade for `selene query` from a shell).
+#[cfg(feature = "semantic-search")]
+async fn semantic_query(root: &Path, query: &str) -> Option<Outcome> {
+    let store = SurrealStore::open(&root.join(".selene")).await.ok()?;
+    if !store.has_embeddings().await.unwrap_or(false) {
+        return None; // lexical-only index — nothing to fuse
+    }
+    let mut embedder = selene_embed::Embedder::load().ok()?;
+    let qvec = embedder.embed_query(query).ok()?;
+    let cands = store.hybrid_search(query, &qvec, &[], &[], 20).await.ok()?;
+
+    let mut out = format!("## Symbols matching `{query}` (hybrid: semantic + lexical)\n\n");
+    if cands.is_empty() {
+        out.push_str("_No matches._\n");
+    }
+    for c in &cands {
+        out.push_str(&format!(
+            "- `{}` — {} ({}:{})\n",
+            c.node.name,
+            c.node.kind.as_str(),
+            c.node.file_path,
+            c.node.start_line
+        ));
+    }
+    Some(render(ToolOutcome::guidance(out)))
 }
 
 pub async fn callers(symbol: String, path: Option<PathBuf>) -> Outcome {
@@ -443,6 +478,101 @@ pub async fn sync(path: PathBuf, quiet: bool) -> Outcome {
             Outcome::Failure
         }
     }
+}
+
+/// `selene embed` — add semantic (vector) search to an existing index. Embeds every searchable
+/// symbol locally (no API) and builds the HNSW index, so a later search fuses meaning with tokens.
+#[cfg(feature = "semantic-search")]
+pub async fn embed(path: PathBuf) -> Outcome {
+    use selene_core::NodeKind;
+    let root = match query_root(Some(path)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let store = match SurrealStore::open(&root.join(".selene")).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("selene embed: {e:#}");
+            return Outcome::Failure;
+        }
+    };
+    let nodes = match store.all_nodes().await {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("selene embed: {e:#}");
+            return Outcome::Failure;
+        }
+    };
+    // Skip the non-searchable noise — you never search for a file node, an import, or a parameter.
+    let searchable = |k: NodeKind| {
+        !matches!(
+            k,
+            NodeKind::File | NodeKind::Import | NodeKind::Export | NodeKind::Parameter
+        )
+    };
+    let targets: Vec<&selene_core::Node> = nodes.iter().filter(|n| searchable(n.kind)).collect();
+    if targets.is_empty() {
+        eprintln!("selene embed: nothing to embed (empty index?)");
+        return Outcome::ExpectedNoOp;
+    }
+
+    if let Err(e) = store.define_embedding_field().await {
+        eprintln!("selene embed: {e:#}");
+        return Outcome::Failure;
+    }
+    eprintln!(
+        "embedding {} symbols locally (first run downloads the ~30MB model once) …",
+        targets.len()
+    );
+    let mut embedder = match selene_embed::Embedder::load() {
+        Ok(e) => e,
+        Err(e) => {
+            eprintln!("selene embed: could not load the model: {e:#}");
+            return Outcome::Failure;
+        }
+    };
+    let t = std::time::Instant::now();
+    const BATCH: usize = 512;
+    let mut done = 0usize;
+    for chunk in targets.chunks(BATCH) {
+        let texts: Vec<String> = chunk.iter().map(|n| selene_db::embedding_text(n)).collect();
+        let vecs = match embedder.embed_documents(&texts) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("\nselene embed: {e:#}");
+                return Outcome::Failure;
+            }
+        };
+        let rows: Vec<(String, Vec<f32>)> =
+            chunk.iter().zip(vecs).map(|(n, v)| (n.id.clone(), v)).collect();
+        if let Err(e) = store.store_embeddings(&rows).await {
+            eprintln!("\nselene embed: {e:#}");
+            return Outcome::Failure;
+        }
+        done += rows.len();
+        eprint!("\r  {done}/{} embedded", targets.len());
+    }
+    eprintln!();
+    eprintln!("building the HNSW vector index …");
+    if let Err(e) = store.define_embedding_index(selene_embed::EMBED_DIM).await {
+        eprintln!("selene embed: index build failed: {e:#}");
+        return Outcome::Failure;
+    }
+    eprintln!(
+        "done: {done} symbols embedded + HNSW index built in {:.1}s. Semantic search is on.",
+        t.elapsed().as_secs_f64()
+    );
+    Outcome::Ok
+}
+
+/// Without the `semantic-search` feature, `embed` explains how to get it.
+#[cfg(not(feature = "semantic-search"))]
+pub async fn embed(_path: PathBuf) -> Outcome {
+    eprintln!(
+        "selene embed: this binary was built without semantic search.\n  \
+         Rebuild with: cargo build --release -p selene --features semantic-search"
+    );
+    Outcome::Failure
 }
 
 /// `selene affected` — the files whose graph depends on the given files, BFS to `depth`.

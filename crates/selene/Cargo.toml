@@ -31,6 +31,11 @@ anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 
+[features]
+# `cargo build -p selene --features semantic-search` builds the semantic-capable binary (local ONNX
+# embedder + hybrid vector search). The default build omits it entirely — lean, offline static binary.
+semantic-search = ["selene-cli/semantic-search"]
+
 [lints]
 workspace = true
 

@@ -288,7 +288,7 @@ impl SurrealStore {
 }
 
 /// [`NodeKind`] wire strings for an `IN`-list bind.
-fn kind_strings(kinds: &[NodeKind]) -> Vec<String> {
+pub(crate) fn kind_strings(kinds: &[NodeKind]) -> Vec<String> {
     kinds.iter().map(|k| k.as_str().to_string()).collect()
 }
 

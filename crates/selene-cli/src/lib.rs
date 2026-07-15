@@ -23,6 +23,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Uninit { path, force } => cmd::uninit(path, force),
         Command::Index { path, .. } => cmd::index(path).await,
         Command::Sync { path, quiet } => cmd::sync(path, quiet).await,
+        Command::Embed { path } => cmd::embed(path).await,
         Command::Status { path, json } => cmd::status(path, json).await,
 
         // -- query-class (reuse the MCP handlers) --

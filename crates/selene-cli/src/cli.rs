@@ -60,6 +60,13 @@ pub enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
+    /// Add semantic (vector) search to an existing index — embeds every symbol locally so a query
+    /// finds meaning, not just tokens (e.g. `keypress` reaches `keybinding`). Needs the
+    /// `semantic-search` build feature. Optional; the lexical index works without it.
+    Embed {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
     /// Show index status and statistics.
     Status {
         #[arg(default_value = ".")]

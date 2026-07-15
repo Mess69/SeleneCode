@@ -14,12 +14,19 @@ selene-resolve = { path = "../selene-resolve" }
 selene-sync = { path = "../selene-sync" }
 selene-installer = { path = "../selene-installer" }
 selene-mcp = { path = "../selene-mcp" }
+# The local embedder — behind `semantic-search`, so a default build never compiles the ONNX runtime.
+selene-embed = { workspace = true, optional = true }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
+
+[features]
+# Optional semantic (vector) search: pulls the local ONNX embedder. Off by default so the shipped
+# static binary stays lean and fully offline. `selene embed` + hybrid search light up when it's on.
+semantic-search = ["dep:selene-embed"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

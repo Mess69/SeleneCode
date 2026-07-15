@@ -43,6 +43,11 @@ sha2         = "0.10"
 # POSIX pid liveness (`kill(pid, 0)`) and `getppid()` for the daemon lifecycle. std has
 # `process::id()` but no liveness check or parent pid. Tiny, ubiquitous, no build cost.
 libc         = "0.2"
+# Local text embeddings for OPTIONAL semantic search (feature `semantic-search`, off by default).
+# Pulls the native ONNX runtime (`ort`) + downloads a small model once — so it is behind a feature
+# to keep the default build a lean static binary. BGE-small-en-v1.5 = 384-d, runs offline on CPU.
+fastembed    = "5"
+selene-embed = { path = "crates/selene-embed" }
 # Ordered map: preserves traversal/visit order (e.g. `Subgraph.nodes`) where a
 # plain HashMap would not — the Rust analog of the CodeGraph TS traverser's
 # reliance on `Map` insertion order (see
