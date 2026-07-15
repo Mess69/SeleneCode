@@ -503,3 +503,57 @@ synthesis 2.8s, persist ~2s, ladder 1.9s. No single item dominates, and the FTS 
 ~25 fields and 9 indexes — or synthesis (2.8s, single-threaded) has to be revisited. That is a
 data-model change, not tuning, and it is the only lever left that is worth more than a fraction of a
 second.
+
+---
+
+# Follow-up 6 (2026-07-15): SeleneCode now BEATS CodeGraph on 2 of 3 corpora
+
+| corpus | files | session start | **now** | codegraph TS | verdict |
+|---|---:|---:|---:|---:|---|
+| codegraph/src (TS) | 162 | 3272 ms | **1645 ms** | 2370 ms | **0.69× — SELENE 1.4× FASTER** |
+| SeleneCode/crates (Rust) | 344 | 4109 ms | **1085 ms** | 2931 ms | **0.37× — SELENE 2.7× FASTER** |
+| django (Python) | 931 | 10010 ms | **6374 ms** | 5788 ms | 1.10× — FTS-floored |
+
+Best of 5, source-only, cold, sequential, same machine (`scripts/bench-vs-codegraph.sh`).
+Every change graph-byte-identical and deterministic; parity gate tolerance-0 7/7, dispatch 6/6.
+
+## What moved, largest first (all in the resolve/index path, none the DB engine)
+
+1. **Parallelized the ladder (2087 → 656 ms on django).** Within a batch every reference resolves
+   independently — the edges are created only after the whole batch resolves — so `resolve_one`
+   became a pure `&self` `classify(ref) → (hit, Defer)` (deferrals returned, not pushed) and
+   `resolve_all` runs it under rayon `par_iter().collect()`, which preserves reference order so the
+   result is identical.
+2. **Spawned the FTS build instead of `tokio::join!` (hid it behind resolve on small repos).** The
+   ladder runs in `block_in_place`; on a join'd task that stalled the FTS branch, so the FTS leaked
+   past resolve. A spawned task runs on another worker and overlaps the ladder's blocking sections.
+   This is what took selene-crates 2158 → 1085 ms and codegraph/src 2236 → 1645 ms.
+3. **Persist 3957 → 1502 ms.** (a) Stopped writing ~24 k `status = failed` rows nothing reads
+   (`retryable_failed`/`unresolved_by_files` have zero callers; sync reads `pending`). (b) A batch's
+   edge chunks insert concurrently (`try_join_all`) — disjoint slices, awaited before the next batch.
+4. **Parallelized the 4 synthesis passes (1814 → 742 ms on django)** — read-only correlations, ctx
+   is `Send + Sync`, `join_all` preserves the merge order.
+5. **Skip the second `StoreContext` build when the framework pass added no nodes** (~250–470 ms) —
+   most repos, and even Django (its ORM adds edges via synthesis, not nodes).
+6. **Dropped `HIGHLIGHTS` from the FTS indexes** (~200 ms) — nothing calls `search::highlight`; BM25
+   scoring does not need it.
+
+## Where django's remaining 6.4 s goes — and why it is the DB, honestly
+
+```
+index (scan+parse+bulk write)  ~1.9 s
+resolve TOTAL                   ~3.3 s   ← overlapped with ↓
+FTS build (bulk_load_finish)    ~4.5 s   ← the floor: max(resolve, fts) = fts
+```
+
+The FTS build of 4 FULLTEXT indexes over django's 19 061 nodes takes ~4.5 s **concurrently**
+(measured: a blocking serial build is ~8.8 s, so CONCURRENTLY is already the fast path). It runs
+fully overlapped with the resolve, so django's phase cost is `max(resolve 3.3, fts 4.5) = 4.5 s` —
+the FTS is the critical path, and it is SurrealDB's FULLTEXT build speed against SQLite's FTS5. This
+is exactly the DB-choice cost this document predicted in follow-up 5 ("to go under, the write volume
+or the FTS has to change — a data-model decision, not tuning"). On the TS and Rust corpora the FTS is
+small enough to hide entirely behind the resolve, which is why they are now decisively faster.
+
+**Verdict: SeleneCode beats CodeGraph outright on the TS and Rust corpora (1.4× and 2.7×) and is
+within ~10 % on the large Python one, where SurrealDB's FTS build is the last floor.** The whole
+session moved django 10.0 s → 6.4 s and both smaller repos from ~1.3× *slower* to 0.37–0.69× (faster).

@@ -27,7 +27,7 @@ planifié, plus un blocage.
 | Phase 4 (graph + context) | ✅ code fini — **et `explore` répond enfin** (§2) |
 | Phase 5 (MCP + binaire) | ✅ **Task 19 faite**, **Task 20 gate construit + lancé** (§5bis), latence gros-dépôt fixée |
 | Binaire | ✅ `index` · `serve --mcp` · **`status`** (nouveau) · README réécrit, quick-start vérifiée |
-| Perf | ✅ **~5,6× vs ce matin, 1,4–1,9× de TS** — voir §3 |
+| Perf | ✅ **SeleneCode BAT CodeGraph sur 2/3 dépôts** : TS 0,69× · Rust 0,37× (plus rapide) · django 1,10× (plancher FTS). Voir `docs/benchmarks/2026-07-14-rust-vs-ts-speed.md` §Follow-up 6 |
 | Phase 6 (CLI + daemon + sync) | ✅ **CLI 22 cmds · daemon warm-store + proxy · sync incrémental · sync routé par le daemon** — testés contre le vrai binaire (§5ter) |
 | Phase 7 (installer) | ✅ **`install`/`uninstall` pour les 5 agents JSON** (claude/cursor/gemini/kiro/antigravity), écriture chirurgicale, chemin absolu (§7) |
 | Phases 8, 9 (langages wave-2, parité, v1) | ⬜ roadmap seulement |
