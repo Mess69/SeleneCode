@@ -69,11 +69,21 @@ timeout). Donc :
   (`{"selene_control":"sync"}`) au daemon, qui ré-indexe sur SON store chaud → pas de bagarre de
   verrou, et le symbole ajouté est **immédiatement** interrogeable (mesuré). `index` complet pendant
   un daemon vivant → guidage propre (`kill <pid>` ou `selene sync`), plus d'erreur cryptique.
+- **FileWatcher** (`watch.rs`, `1a85978`) : le daemon auto-sync sur changement de fichier (`notify`
+  récursif, debounce 2 s, ré-index sur le store chaud). **Piège = la boucle de rétroaction** : un
+  sync ÉCRIT dans `.selene/`, donc ces events relanceraient un sync à l'infini. Deux gardes,
+  mesurées : `relevant()` jette tout event sous `.selene/`/`.git/` (un sync ne peut jamais *démarrer*
+  un burst), et le debounce est à *deadline* (seul un event pertinent l'étend). Vérifié : 1 seul
+  auto-sync par changement, CPU retombe à 0 % (une version antérieure à reset-sur-tout-event
+  tournait en boucle). Opt-out `SELENE_NO_WATCH=1`.
 - **`selene daemon`** liste les daemons vivants (registre `~/.selene/daemons/`, records morts élagués).
+- **Cleanup orphelin** : déjà correct sans watchdog — un proxy mort ferme sa socket → la session du
+  daemon voit EOF → refcount tombe → idle-reap. Pas de gap de correction.
 
-**Reste sur Phase 6** (non bloquant — le daemon marche sans) : FileWatcher (auto-sync du daemon),
-PPID/liveness watchdogs, git-hooks, worktree-mismatch. **Phase 7 reste** : cibles codex (TOML) et
-hermes (YAML), install des git-hooks.
+**Reste sur Phase 6** (non bloquant, long-tail) : PPID/liveness watchdogs (ceinture-bretelles ;
+idle-timeout + socket-EOF couvrent déjà le cycle de vie), git-hooks (post-commit/merge/checkout →
+`selene sync`), worktree-mismatch, `telemetry`. **Phase 7 reste** : cibles codex (TOML `toml_edit`)
+et hermes (YAML), install des git-hooks. Aucun n'est bloquant.
 
 ## 7. Phase 7 installer — CONSTRUIT (2026-07-15, `b3f3f00`)
 
