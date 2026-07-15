@@ -3,7 +3,7 @@
 
 use std::path::Path;
 
-use selene_db::{GraphStore, SurrealStore};
+use selene_db::SurrealStore;
 use selene_extract::Indexer;
 
 async fn index(root: &Path) {
