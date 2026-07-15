@@ -54,6 +54,44 @@ async fn connect(root: &Path, home: &Path) -> rmcp::service::RunningService<rmcp
         .expect("MCP handshake through the proxy")
 }
 
+/// Like [`connect`], but exposes the full tool set (not just `explore`) so a test can call
+/// `node`/`callers` to verify individual symbols and edges.
+async fn connect_all_tools(
+    root: &Path,
+    home: &Path,
+) -> rmcp::service::RunningService<rmcp::RoleClient, ()> {
+    let mut cmd = tokio::process::Command::new(bin());
+    cmd.arg("serve")
+        .arg("--mcp")
+        .arg("--path")
+        .arg(root)
+        .env("SELENE_DAEMON_IDLE_TIMEOUT_MS", "2000")
+        .env("SELENE_MCP_TOOLS", "explore,node,search,callers,callees,impact,files")
+        .env("HOME", home)
+        .stderr(Stdio::null());
+    ().serve(TokioChildProcess::new(cmd).unwrap())
+        .await
+        .expect("MCP handshake through the proxy")
+}
+
+/// Poll a tool call until its answer contains `needle` (auto-sync is debounced ~2s + a re-index).
+async fn poll_until(
+    client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
+    tool: &str,
+    args: serde_json::Value,
+    needle: &str,
+    tries: usize,
+) -> bool {
+    for _ in 0..tries {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let (is_err, text) = call(client, tool, args.clone()).await;
+        if !is_err && text.contains(needle) {
+            return true;
+        }
+    }
+    false
+}
+
 async fn call(
     client: &rmcp::service::RunningService<rmcp::RoleClient, ()>,
     tool: &str,
@@ -201,6 +239,77 @@ async fn daemon_auto_syncs_on_a_file_change() {
     assert!(found, "the daemon auto-synced the new file and the symbol resolves");
 
     let _ = client.cancel().await;
+}
+
+/// The full ClaudeCode-style loop, end to end: the MCP server is up, "the agent" writes a new
+/// CLASS with METHODS that calls an existing symbol, MODIFIES it, then DELETES it — and every change
+/// is reflected in the graph automatically (FileWatcher auto-sync), verified both through the live
+/// MCP client AND, after the daemon stops, directly in the on-disk database.
+#[tokio::test(flavor = "multi_thread")]
+async fn e2e_new_class_methods_edits_and_deletes_auto_reflect_in_the_graph() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    index_tiny_project(root); // src/a.ts (alpha->beta), src/b.ts (beta)
+
+    let client = connect_all_tools(root, home.path()).await;
+    let _ = client.list_tools(Default::default()).await.unwrap();
+
+    // --- 1. a NEW class with methods, one of which calls the existing `beta` ---------------------
+    // Poll on the EDGE (`callers beta` gaining `create`), not on a `node` text match: the not-found
+    // guidance echoes the queried symbol name, so a `node` poll would false-positive before the sync
+    // lands. A caller only appears once the class, the method, AND the resolved call edge all exist —
+    // so this single assertion proves the whole update round-tripped.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::write(
+        root.join("src/service.ts"),
+        "export class UserService {\n  create() { return beta() }\n  remove() { return 0 }\n}\n",
+    )
+    .unwrap();
+    assert!(
+        poll_until(&client, "callers", serde_json::json!({ "symbol": "beta" }), "create", 30).await,
+        "the new class's create() auto-appeared AS A CALLER of beta (class + method + call edge)"
+    );
+    // And the method's callee resolves back the other way.
+    let (_e, callees) = call(&client, "callees", serde_json::json!({ "symbol": "create" })).await;
+    assert!(callees.contains("beta"), "create()'s callee is beta: {callees}");
+
+    // --- 2. MODIFY the class: create() now calls a brand-new gamma() instead ---------------------
+    tokio::time::sleep(Duration::from_millis(1100)).await; // advance mtime past the debounce window
+    std::fs::write(root.join("src/gamma.ts"), "export function gamma(){ return 7 }\n").unwrap();
+    std::fs::write(
+        root.join("src/service.ts"),
+        "export class UserService {\n  create() { return gamma() }\n  remove() { return 0 }\n}\n",
+    )
+    .unwrap();
+    assert!(
+        poll_until(&client, "callers", serde_json::json!({ "symbol": "gamma" }), "create", 30).await,
+        "after the edit, create() now calls gamma()"
+    );
+
+    // --- 3. DELETE the class file: its symbols leave the graph -----------------------------------
+    tokio::time::sleep(Duration::from_millis(1100)).await;
+    std::fs::remove_file(root.join("src/service.ts")).unwrap();
+    // Give the watcher its debounce + re-index a beat; the authoritative absence check is step 4.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+
+    // --- 4. Confirm the FINAL state directly in the on-disk DB (daemon stopped first) ------------
+    let _ = client.cancel().await;
+    // Wait for the daemon to release the exclusive lock (idle timeout 2s), then open the store.
+    tokio::time::sleep(Duration::from_millis(3500)).await;
+    let store = selene_db::SurrealStore::open(&root.join(".selene")).await.unwrap();
+    assert!(
+        !store.get_nodes_by_name("gamma").await.unwrap().is_empty(),
+        "gamma (added by the edit) persisted in the database"
+    );
+    assert!(
+        store.get_nodes_by_name("UserService").await.unwrap().is_empty(),
+        "UserService is absent from the database after its file was deleted"
+    );
+    assert!(
+        store.get_nodes_by_name("create").await.unwrap().is_empty(),
+        "the method create() went with its class"
+    );
 }
 
 /// `SELENE_NO_DAEMON=1` serves in-process and spawns NO daemon.

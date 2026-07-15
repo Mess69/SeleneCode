@@ -60,9 +60,20 @@ async fn sync_reindexes_only_what_changed_and_handles_add_and_delete() {
 
     // The new symbol is in the graph.
     let store = SurrealStore::open(&root.join(".selene")).await.unwrap();
+    let gamma = store.get_nodes_by_name("gamma").await.unwrap();
+    assert!(!gamma.is_empty(), "gamma is indexed");
+
+    // ...and so is the CROSS-FILE EDGE alpha→gamma. a.ts was edited to call gamma(), which lives in
+    // the newly-added c.ts. A new file goes through the bulk path (unresolved refs in memory, not the
+    // store), so a store-only resolve after sync used to bind the NODE but drop the CALL edge — the
+    // graph looked updated but wasn't. Assert the edge, not just the node.
+    let callers = store
+        .incoming(&gamma[0].id, &[selene_core::EdgeKind::Calls])
+        .await
+        .unwrap();
     assert!(
-        !store.get_nodes_by_name("gamma").await.unwrap().is_empty(),
-        "gamma is indexed"
+        !callers.is_empty(),
+        "the cross-file call edge alpha→gamma was created on sync (the bug the daemon E2E caught)"
     );
     drop(store);
 

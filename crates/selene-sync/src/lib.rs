@@ -132,17 +132,22 @@ pub async fn sync_project_with_store(root: &Path, store: SurrealStore) -> Result
 
     if !changed.is_empty() {
         let indexer = Indexer::new(root.to_path_buf(), store);
-        indexer.index_files(&changed).await;
+        let result = indexer.index_files(&changed).await;
         let store = indexer.into_store();
-        // Bind the references the re-indexed files produced (they went into the store's pending
-        // queue via `replace_file_extraction`). The store-based resolve path, not the in-memory
-        // one — an incremental sync's refs live in the store, not in a fresh IndexResult.
-        selene_resolve::resolve_and_persist_batched(&store, root, None)
+        // Bind the references the re-indexed files produced. **A NEW file goes through the bulk path,
+        // which carries its unresolved refs home in `IndexResult::unresolved` and does NOT write them
+        // to the store** (orchestrator §"NOT written"); only a CHANGED existing file writes its refs
+        // to the store via `replace_file_extraction`. The store-based `resolve_and_persist_batched`
+        // reads only the store, so it silently dropped every new file's cross-file edges (a class
+        // added by an edit resolved its nodes but never its `calls` edges). The in-memory path takes
+        // the returned refs AND reads the store's pending (framework + changed-file refs), so it
+        // covers both — this is the bug the daemon E2E test caught.
+        selene_resolve::resolve_and_persist_in_memory(&store, root, result.unresolved, None)
             .await
             .context("resolve after sync")?;
     } else if !removed.is_empty() {
-        // Deletions can leave dangling refs too; re-bind.
-        selene_resolve::resolve_and_persist_batched(&store, root, None)
+        // Deletions can leave dangling refs too; re-bind what the store still has pending.
+        selene_resolve::resolve_and_persist_in_memory(&store, root, Vec::new(), None)
             .await
             .context("resolve after deletions")?;
     }
