@@ -14,6 +14,7 @@ selene-resolve = { path = "../selene-resolve" }
 selene-sync = { path = "../selene-sync" }
 selene-installer = { path = "../selene-installer" }
 selene-mcp = { path = "../selene-mcp" }
+serde_json = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true }

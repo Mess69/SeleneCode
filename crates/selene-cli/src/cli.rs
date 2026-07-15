@@ -150,6 +150,23 @@ pub enum Command {
         #[arg(short, long)]
         json: bool,
     },
+    /// Render the code graph as a self-contained interactive HTML "galaxy".
+    Viz {
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        /// Output HTML file. Default: `./selene-graph.html`.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+        /// Cap the rendered node count (most-connected first) so the page stays light.
+        #[arg(long, default_value_t = 2000)]
+        max_nodes: usize,
+        /// Keep low-signal kinds (file/import/variable/parameter) that are dropped by default.
+        #[arg(long)]
+        all_kinds: bool,
+        /// Open the written file in the default browser.
+        #[arg(long)]
+        open: bool,
+    },
     /// List / manage running daemons.
     #[command(alias = "daemons")]
     Daemon,

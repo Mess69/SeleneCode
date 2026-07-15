@@ -115,9 +115,10 @@ async fn index_inner(path: PathBuf) -> Result<()> {
     // join already relied on, now actually overlapped.)
     let store_fts = store.clone();
     let fts_handle = tokio::spawn(async move { store_fts.bulk_load_finish().await });
-    let stats = selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
-        .await
-        .context("resolution failed")?;
+    let stats =
+        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+            .await
+            .context("resolution failed")?;
     fts_handle
         .await
         .context("the FULLTEXT index task panicked")?
@@ -265,7 +266,10 @@ async fn status_inner(root: &Path, json: bool) -> Result<()> {
     }
 
     // Warn if the caller's git worktree differs from the one this index was built for.
-    if let Some(m) = std::env::current_dir().ok().and_then(|cwd| selene_sync::worktree::detect(&cwd, root)) {
+    if let Some(m) = std::env::current_dir()
+        .ok()
+        .and_then(|cwd| selene_sync::worktree::detect(&cwd, root))
+    {
         println!("\n{}", m.status_warning());
     }
     Ok(())
@@ -334,6 +338,86 @@ pub async fn files(path: Option<PathBuf>, filter: Option<String>) -> Outcome {
     render(handlers::files(Some(root), filter.as_deref()).await)
 }
 
+// ---- viz (self-contained interactive graph) ------------------------------------------------
+
+/// `selene viz` — export the whole graph to ONE self-contained interactive HTML
+/// page (a dark "galaxy"). Opens the store like every other query command, reads
+/// all nodes + edges, caps/filters them (see [`crate::viz`]), and writes the file.
+/// The written path goes to **stdout** (so a script can capture it); the summary
+/// and any browser-open go to stderr.
+pub async fn viz(
+    path: Option<PathBuf>,
+    out: Option<PathBuf>,
+    max_nodes: usize,
+    all_kinds: bool,
+    open: bool,
+) -> Outcome {
+    let root = match query_root(path) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    match viz_inner(&root, out, max_nodes, all_kinds).await {
+        Ok((dest, doc)) => {
+            eprintln!(
+                "selene viz: {} of {} nodes, {} of {} edges",
+                doc.shown_nodes, doc.total_nodes, doc.shown_edges, doc.total_edges
+            );
+            println!("{}", dest.display());
+            if open {
+                open_in_browser(&dest);
+            }
+            Outcome::Ok
+        }
+        Err(e) => {
+            eprintln!("selene viz: {e:#}");
+            Outcome::Failure
+        }
+    }
+}
+
+async fn viz_inner(
+    root: &Path,
+    out: Option<PathBuf>,
+    max_nodes: usize,
+    all_kinds: bool,
+) -> Result<(PathBuf, crate::viz::VizDoc)> {
+    let store = SurrealStore::open(&root.join(".selene"))
+        .await
+        .context("could not open the index")?;
+    let nodes = store.all_nodes().await.context("read nodes")?;
+    let edges = store.all_edges().await.context("read edges")?;
+
+    let opts = crate::viz::VizOptions {
+        max_nodes,
+        all_kinds,
+        root_label: root.display().to_string(),
+    };
+    let doc = crate::viz::build_html(&nodes, &edges, &opts);
+
+    let dest = out.unwrap_or_else(|| root.join("selene-graph.html"));
+    std::fs::write(&dest, &doc.html)
+        .with_context(|| format!("could not write {}", dest.display()))?;
+    Ok((dest, doc))
+}
+
+/// Best-effort: open `path` in the OS default browser. Never fails the command —
+/// the file is already written and its path was printed.
+fn open_in_browser(path: &Path) {
+    #[cfg(target_os = "macos")]
+    let program = "open";
+    #[cfg(target_os = "windows")]
+    let program = "explorer";
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    let program = "xdg-open";
+
+    if let Err(e) = std::process::Command::new(program).arg(path).spawn() {
+        eprintln!(
+            "selene viz: could not open a browser ({e}); open {} yourself",
+            path.display()
+        );
+    }
+}
+
 // ---- serve (unchanged from the pre-CLI binary) ---------------------------------------------
 
 /// `selene serve --mcp` — stdio, handshake answers before any heavy init (opens the graph lazily).
@@ -395,7 +479,10 @@ pub async fn sync(path: PathBuf, quiet: bool) -> Outcome {
             if reply.ok {
                 if !quiet {
                     if reply.changed == 0 && reply.removed == 0 {
-                        eprintln!("up to date ({} files unchanged) [via daemon]", reply.unchanged);
+                        eprintln!(
+                            "up to date ({} files unchanged) [via daemon]",
+                            reply.unchanged
+                        );
                     } else {
                         eprintln!(
                             "synced: {} changed, {} removed, {} unchanged [via daemon]",
@@ -580,7 +667,11 @@ pub async fn uninstall(targets: Vec<String>, location: String) -> Outcome {
             return Outcome::Failure;
         }
     };
-    let targets = if targets.is_empty() { vec!["all".to_string()] } else { targets };
+    let targets = if targets.is_empty() {
+        vec!["all".to_string()]
+    } else {
+        targets
+    };
     let (loc, ids) = match resolve_targets("uninstall", &targets, &location, &ctx) {
         Ok(v) => v,
         Err(o) => return o,
@@ -603,7 +694,11 @@ fn resolve_targets(
         Outcome::Failure
     })?;
     // Empty → "claude"; a single special word (auto/all/none) passes through; else a CSV of ids.
-    let flag = if targets.is_empty() { "claude".to_string() } else { targets.join(",") };
+    let flag = if targets.is_empty() {
+        "claude".to_string()
+    } else {
+        targets.join(",")
+    };
     let ids = selene_installer::resolve_target_flag(&flag, ctx, loc).map_err(|e| {
         eprintln!("selene {cmd}: {e}");
         Outcome::Failure
@@ -614,8 +709,16 @@ fn resolve_targets(
 /// Print one line per target result.
 fn report_targets(cmd: &str, results: &[selene_installer::TargetResult]) {
     for r in results {
-        let where_ = r.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
-        let note = r.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+        let where_ = r
+            .path
+            .as_ref()
+            .map(|p| p.display().to_string())
+            .unwrap_or_default();
+        let note = r
+            .note
+            .as_deref()
+            .map(|n| format!(" — {n}"))
+            .unwrap_or_default();
         eprintln!("  {:<11} {} {}{}", r.id, r.action.as_str(), where_, note);
     }
     if results.is_empty() {

@@ -645,6 +645,25 @@ impl SurrealStore {
         decode_edges(rows)
     }
 
+    /// **Every edge in the store, across all 12 kind tables, in one query.**
+    /// A whole-graph read for exporters (e.g. `selene viz`) that need the
+    /// complete edge set rather than a frontier-anchored slice. This is a full
+    /// scan of every RELATION table — O(edges), so it is for one-shot exports,
+    /// not a hot query path. The multi-table `FROM` union is safe because
+    /// [`EDGE_FIELDS`] recovers each edge's kind from its own table via
+    /// `record::tb(id)`, exactly as the point-fetch reads do.
+    pub async fn all_edges(&self) -> Result<Vec<Edge>> {
+        let from = EdgeKind::ALL
+            .iter()
+            .map(|k| k.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!("SELECT {EDGE_FIELDS} FROM {from}");
+        let mut resp = self.db().query(sql).await?;
+        let rows: Vec<serde_json::Value> = resp.take(0)?;
+        decode_edges(rows)
+    }
+
     /// Cross-file incoming edges landing on any node under `path`: every edge
     /// of every kind **except** `contains` whose target is a node in this
     /// file and whose source is a node in a *different* file, paired with

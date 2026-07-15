@@ -3934,6 +3934,7 @@ dependencies = [
  "selene-mcp",
  "selene-resolve",
  "selene-sync",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
