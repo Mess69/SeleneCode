@@ -136,6 +136,8 @@ pub enum Command {
     /// Files whose graph depends on the given files (BFS over dependents).
     Affected {
         files: Vec<String>,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
         #[arg(long)]
         stdin: bool,
         #[arg(short, long, default_value_t = 5)]

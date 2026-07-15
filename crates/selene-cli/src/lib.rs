@@ -40,12 +40,18 @@ pub async fn run(cli: Cli) -> ExitCode {
             ..
         } => cmd::impact(symbol, depth, path).await,
         Command::Files { path, filter, .. } => cmd::files(path, filter).await,
-        Command::Affected { .. } => cmd::not_yet("affected", "Phase 6 Task 10"),
+        Command::Affected {
+            files,
+            path,
+            stdin,
+            depth,
+            ..
+        } => cmd::affected(files, stdin, depth, path).await,
 
         // -- serve / daemon / hooks --
         Command::Serve { mcp, path, .. } => cmd::serve(mcp, path).await,
         Command::Daemon => cmd::not_yet("daemon", "Phase 6 Task 17"),
-        Command::Unlock { .. } => cmd::not_yet("unlock", "Phase 6 Task 4"),
+        Command::Unlock { path } => cmd::unlock(path),
         // prompt-hook NEVER breaks the prompt: exit 0 on every path (map §Subcommands).
         Command::PromptHook => Outcome::ExpectedNoOp,
 

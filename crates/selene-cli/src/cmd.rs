@@ -346,6 +346,92 @@ pub async fn sync(path: PathBuf, quiet: bool) -> Outcome {
     }
 }
 
+/// `selene affected` — the files whose graph depends on the given files, BFS to `depth`.
+/// No inputs is an expected no-op (exit 0). Reads dependents from the store.
+pub async fn affected(
+    files: Vec<String>,
+    use_stdin: bool,
+    depth: u32,
+    path: Option<PathBuf>,
+) -> Outcome {
+    let mut seeds = files;
+    if use_stdin {
+        use std::io::BufRead;
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            let l = line.trim();
+            if !l.is_empty() {
+                seeds.push(l.to_string());
+            }
+        }
+    }
+    if seeds.is_empty() {
+        return Outcome::ExpectedNoOp; // nothing to expand — a valid, empty request
+    }
+    let root = match query_root(path) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let store = match SurrealStore::open(&root.join(".selene")).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("selene affected: {e:#}");
+            return Outcome::Failure;
+        }
+    };
+    // BFS over dependents. `seen` is the answer; `frontier` the current ring.
+    let mut seen: std::collections::BTreeSet<String> = seeds.iter().cloned().collect();
+    let mut frontier: Vec<String> = seeds;
+    for _ in 0..depth {
+        let mut next: Vec<String> = Vec::new();
+        for f in &frontier {
+            match store.dependent_file_paths(f).await {
+                Ok(deps) => {
+                    for d in deps {
+                        if seen.insert(d.clone()) {
+                            next.push(d);
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("selene affected: {e:#}");
+                    return Outcome::Failure;
+                }
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        frontier = next;
+    }
+    for f in &seen {
+        println!("{f}");
+    }
+    Outcome::Ok
+}
+
+/// `selene unlock` — remove SeleneCode's own app-level lock marker, NEVER SurrealDB's engine LOCK
+/// (deleting the engine lock under a live holder corrupts the store — map OQ3). No lock is a no-op.
+pub fn unlock(path: PathBuf) -> Outcome {
+    let Ok(root) = path.canonicalize() else {
+        return Outcome::ExpectedNoOp;
+    };
+    let marker = root.join(".selene").join("selene.lock");
+    if !marker.exists() {
+        eprintln!("no selene lock at {}", marker.display());
+        return Outcome::ExpectedNoOp;
+    }
+    match std::fs::remove_file(&marker) {
+        Ok(()) => {
+            eprintln!("removed {}", marker.display());
+            Outcome::Ok
+        }
+        Err(e) => {
+            eprintln!("selene unlock: {e}");
+            Outcome::Failure
+        }
+    }
+}
+
 /// `selene version` — the crate version. Exit 0.
 pub fn version() -> Outcome {
     println!("selene {}", env!("CARGO_PKG_VERSION"));
