@@ -217,6 +217,9 @@ impl SurrealStore {
     /// mode (inline FTS from [`Self::apply_schema`]), is a no-op. A build
     /// failure surfaces as [`Error::IndexBuild`].
     pub async fn bulk_load_finish(&self) -> Result<()> {
+        // CONCURRENTLY, not a blocking build: the four indexes build in parallel in the background
+        // (measured django: ~4.5s concurrent vs ~8.8s if built serially by a blocking DEFINE). The
+        // poll below waits for each to report ready.
         self.db.query(schema::fts_index_ddl(true)).await?.check()?;
         for (name, _) in schema::FTS_INDEXES {
             self.wait_index_ready(name).await?;
