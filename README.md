@@ -28,7 +28,7 @@ radius — enough to answer without opening a file.
 | **Speed** | django (931 files, 19k nodes): **index ~11 s, explore ~1–2 s**. **1.4–1.9× of the CodeGraph TS build** — see [the benchmark](docs/benchmarks/2026-07-14-rust-vs-ts-speed.md) |
 | **`explore`** | answers flow questions correctly on small/medium repos; the milestone gate (`selene-mcp/tests/dogfood_gate.rs`) drives the real binary end-to-end |
 | **Large repos** | VS Code (349k nodes): indexing works, explore latency fixed (35.6 s → 6.5 s). One open limitation — semantic relevance when the query's words diverge from the code's ([details](docs/benchmarks/2026-07-phase5-dogfood.md)) |
-| **Not built yet** | the CLI beyond `index`/`serve` (`status`, `sync`), the file watcher, the daemon, and `selene install` (MCP config is wired by hand today) |
+| **Not built yet** | the CLI beyond `index`/`serve`/`status` (`sync`), the file watcher, the daemon, and `selene install` (MCP config is wired by hand today) |
 
 Honest limitations and the roadmap are in [`RESUME.md`](RESUME.md).
 
@@ -45,6 +45,15 @@ cargo build --release -p selene
 
 #    Per-phase timings on stderr:
 RUST_LOG=selene::index=info ./target/release/selene index /path/to/your/repo
+
+# 3. See what's in the graph
+./target/release/selene status /path/to/your/repo
+#   /path/to/your/repo
+#     files:  931
+#     nodes:  19061
+#     edges:  46946
+#     languages: python (931)
+#     node kinds: function 8402, method 3211, …
 ```
 
 ### Wire it into Claude Code (MCP)
@@ -123,7 +132,7 @@ A Cargo workspace of focused crates (see the PRD, §3):
 | `selene-sync` | file watcher (notify) + git-hook helpers | ⬜ stub |
 | `selene-installer` | multi-agent installer: MCP config writers | ⬜ stub |
 | `selene-cli` | CLI (clap), daemon, telemetry, upgrade | ⬜ stub |
-| `selene` | the single binary (`index`, `serve`) | ✅ |
+| `selene` | the single binary (`index`, `serve`, `status`) | ✅ |
 
 **Decision (2026-07-12):** SurrealQL-max — traversal is pushed into SurrealQL (recursive
 `.{1..n}(->calls->fn)`, shortest-path); the permissive fallback backend was dropped. `selene-db` is

@@ -44,6 +44,12 @@ enum Command {
         #[arg(long)]
         path: Option<PathBuf>,
     },
+    /// Show what's indexed: file / node / edge counts, languages, last-indexed time.
+    Status {
+        /// The project root (defaults to the current directory).
+        #[arg(default_value = ".")]
+        path: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -66,7 +72,62 @@ async fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Index { path } => index(path).await,
         Command::Serve { mcp, path } => serve(mcp, path).await,
+        Command::Status { path } => status(path).await,
     }
+}
+
+/// `selene status` — what the graph holds, read from the store. Not indexed ⇒ guidance + exit 1
+/// (the CLI's not-indexed is a refusal; over MCP the same condition is success-shaped guidance —
+/// the deliberate asymmetry: an agent must not see `isError`, a shell script wants a non-zero exit).
+async fn status(path: PathBuf) -> Result<()> {
+    let root = path
+        .canonicalize()
+        .with_context(|| format!("no such path: {}", path.display()))?;
+    let dir = root.join(".selene");
+    if !dir.exists() {
+        eprintln!(
+            "not indexed: {} has no .selene/. Run `selene index {}` first.",
+            root.display(),
+            root.display()
+        );
+        std::process::exit(1);
+    }
+
+    let store = SurrealStore::open(&dir)
+        .await
+        .context("could not open the index")?;
+    let stats = store.stats().await.context("could not read stats")?;
+    let last = store.last_indexed_at().await.ok().flatten();
+
+    println!("{}", root.display());
+    println!("  files:  {}", stats.files);
+    println!("  nodes:  {}", stats.nodes);
+    println!("  edges:  {}", stats.edges);
+    if let Some(ms) = last {
+        // Seconds since epoch is enough; no chrono dependency for one line.
+        println!("  indexed: {} (unix ms)", ms);
+    }
+    if !stats.languages.is_empty() {
+        let mut langs: Vec<String> = stats
+            .languages
+            .iter()
+            .map(|(l, n)| format!("{l} ({n})"))
+            .collect();
+        langs.sort();
+        println!("  languages: {}", langs.join(", "));
+    }
+    // The kinds that carry the flow, most-common first — a quick shape-of-the-graph read.
+    let mut kinds: Vec<(&String, &u64)> = stats.nodes_by_kind.iter().collect();
+    kinds.sort_by(|a, b| b.1.cmp(a.1));
+    let top: Vec<String> = kinds
+        .iter()
+        .take(6)
+        .map(|(k, n)| format!("{k} {n}"))
+        .collect();
+    if !top.is_empty() {
+        println!("  node kinds: {}", top.join(", "));
+    }
+    Ok(())
 }
 
 /// `selene index` — extract, then resolve. **Both**: an index without resolution is symbols

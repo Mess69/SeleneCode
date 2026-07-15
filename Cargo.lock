@@ -3808,6 +3808,7 @@ dependencies = [
  "selene-extract",
  "selene-mcp",
  "selene-resolve",
+ "tempfile",
  "tokio",
  "tracing",
  "tracing-subscriber",
