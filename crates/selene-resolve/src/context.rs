@@ -43,8 +43,8 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 /// I/O-bound" and it was not: on django the lazy path made **32 524 blocking reads and spent
 /// 4 810 ms — 69% of the ladder — waiting on them**. With the eager index it makes **48**. Keep the
 /// counter: it is the difference between an assertion and a measurement, and it costs two atomics.
-pub static BLOCKING_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-pub static BLOCKING_NANOS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static BLOCKING_CALLS: AtomicU64 = AtomicU64::new(0);
+pub static BLOCKING_NANOS: AtomicU64 = AtomicU64::new(0);
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

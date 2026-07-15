@@ -181,7 +181,6 @@ async fn resolve_pending<S: GraphStore + Clone>(
     };
     let mut stats = ResolutionStats::default();
     let mut resolver = ReferenceResolver::new(ctx);
-    let mut remaining_before = usize::MAX;
     let mut done = 0usize;
 
     // --- (3) the batch walk, paged by OFFSET; the queue is rewritten ONCE at the end ---------
@@ -272,7 +271,7 @@ async fn resolve_pending<S: GraphStore + Clone>(
         // doc says it would.)
         let t = std::time::Instant::now();
         let (result, edges) = tokio::task::block_in_place(|| {
-            let result = resolver.resolve_all(&batch);
+            let result = resolver.resolve_all(batch);
             let edges = resolver.create_edges(&result.resolved);
             (result, edges)
         });

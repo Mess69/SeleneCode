@@ -51,7 +51,6 @@ const LARGE_REPO_FILES: u64 = 3_000;
 /// O(graph size) and made `explore` take 35 s on VS Code (349k nodes); on a repo this large they
 /// are unaffordable, and the FTS index (index-backed) carries candidate generation. Small/medium
 /// repos (django is 931 files) run every pass, byte-identical.
-
 /// The section prefix a file block starts with. **Load-bearing**: truncation cuts on it, so
 /// it must stay unique and greppable (`budgets::FILE_SECTION_PREFIX`).
 const FILE_HEADER: &str = "**`";
