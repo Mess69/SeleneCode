@@ -40,6 +40,15 @@ use crate::types::ResolvedRef;
 /// needs exist, so the second passes can only run against the same resolver
 /// instance that queued them (`maps/resolution.md` §Rust port notes). Preserve
 /// that lifetime coupling.
+/// Whether [`ReferenceResolver::classify`] wants a reference deferred to a later conformance pass —
+/// returned instead of pushed so the ladder stays a pure function and a batch can run in parallel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Defer {
+    None,
+    Chain,
+    ThisMember,
+}
+
 pub struct ReferenceResolver<C: ResolutionContext> {
     pub(crate) ctx: C,
     /// Chain-shaped `calls` refs the first pass could not resolve — drained by
@@ -123,10 +132,26 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     ///
     /// The twelve steps below are `maps/resolution.md` §`resolveOne` pipeline,
     /// in order. **Do not re-order them.**
+    /// Resolve one reference, recording any deferral on `self`. Thin wrapper over [`Self::classify`].
     pub fn resolve_one(&mut self, r: &UnresolvedRef) -> Option<ResolvedRef> {
+        let (hit, defer) = self.classify(r);
+        match defer {
+            Defer::Chain => self.deferred_chain_refs.push(r.clone()),
+            Defer::ThisMember => self.deferred_this_member_refs.push(r.clone()),
+            Defer::None => {}
+        }
+        hit
+    }
+
+    /// The ladder as a PURE function of `(reference, ctx)` — no `&mut self`. Deferrals are RETURNED,
+    /// not pushed, so a whole batch's references can resolve in parallel (`resolve_all` uses rayon)
+    /// and the caller records the deferrals in reference order. **Order is behavior**; parallelism
+    /// must leave the result identical, which the tolerance-0 parity gate proves.
+    pub(crate) fn classify(&self, r: &UnresolvedRef) -> (Option<ResolvedRef>, Defer) {
+        let mut defer = Defer::None;
         // --- step 1: built-in / external filter ------------------------------
         if is_built_in_or_external(r, &self.ctx) {
-            return None;
+            return (None, defer);
         }
 
         // --- step 2: CFML component-path inheritance (#1152) -----------------
@@ -161,7 +186,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                 .iter()
                 .any(|f| f.claims_reference(existence_name))
         {
-            return None;
+            return (None, defer);
         }
         // Wave 2, in this step: ArkTS leading-dot attribute refs (`.titleStyle`)
         // are existence-checked with the dot stripped; Nix path imports bypass
@@ -178,13 +203,13 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
             // `this.<member>` values resolve ONLY against the enclosing class's own
             // members — never a same-named symbol elsewhere.
             if r.reference_name.starts_with("this.") {
-                let (hit, defer) = resolve_this_member_fn_ref(r, &self.ctx);
-                if defer {
+                let (hit, should_defer) = resolve_this_member_fn_ref(r, &self.ctx);
+                if should_defer {
                     // The member may be INHERITED, and the implements/extends edges
                     // do not exist yet (#808) — retry in the supertype pass.
-                    self.deferred_this_member_refs.push(r.clone());
+                    defer = Defer::ThisMember;
                 }
-                return self.gate_language(hit, r);
+                return (self.gate_language(hit, r), defer);
             }
 
             // An imported callback resolves through its import — the most precise
@@ -196,10 +221,10 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                     .node_by_id(&via.target_node_id)
                     .is_some_and(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
             {
-                return Some(via);
+                return (Some(via), defer);
             }
 
-            return self.gate_language(match_function_ref(r, &self.ctx), r);
+            return (self.gate_language(match_function_ref(r, &self.ctx), r), defer);
         }
 
         // --- step 5: JVM FQN imports -----------------------------------------
@@ -207,7 +232,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // `com.example.Bar` import is unambiguous through the qualified-name
         // index even when several `Bar`s exist in different packages (#314).
         if let Some(hit) = resolve_jvm_import(r, &self.ctx) {
-            return Some(hit);
+            return (Some(hit), defer);
         }
 
         // --- step 6: Razor `@using` ------------------------------------------
@@ -230,7 +255,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         for framework in &self.frameworks {
             if let Some(hit) = self.gate_framework_language(framework.resolve(r, &self.ctx), r) {
                 if hit.confidence >= 0.9 {
-                    return Some(hit);
+                    return (Some(hit), defer);
                 }
                 candidates.push(hit);
             }
@@ -240,7 +265,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // ≥ 0.9 returns immediately; anything weaker competes as a candidate.
         if let Some(hit) = self.gate_language(resolve_via_import(r, &self.ctx), r) {
             if hit.confidence >= 0.9 {
-                return Some(hit);
+                return (Some(hit), defer);
             }
             candidates.push(hit);
         }
@@ -251,7 +276,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // mis-connect it to an unrelated `db.php` elsewhere in the tree — and a
         // wrong edge is worse than none (#660).
         if self.is_path_only_ref(r) {
-            return best_candidate(candidates);
+            return (best_candidate(candidates), defer);
         }
 
         // --- step 10: name matching -------------------------------------------
@@ -267,13 +292,13 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
             // yet: the conformance walk follows `implements`/`extends` edges, and
             // this pass is what creates them. Queue it for the second pass (#750).
             if is_deferrable_chain(r) {
-                self.deferred_chain_refs.push(r.clone());
+                defer = Defer::Chain;
             }
-            return None;
+            return (None, defer);
         }
 
         // --- step 12: the highest-confidence candidate, first-wins on ties ----
-        best_candidate(candidates)
+        (best_candidate(candidates), defer)
     }
 
     // =========================================================================

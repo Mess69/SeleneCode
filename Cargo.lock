@@ -4076,6 +4076,7 @@ dependencies = [
  "json5",
  "jsonc-parser",
  "lru",
+ "rayon",
  "regex",
  "selene-core",
  "selene-db",

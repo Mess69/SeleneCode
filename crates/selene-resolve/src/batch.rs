@@ -80,7 +80,7 @@ use crate::context::{ResolutionContext, StoreContext};
 use crate::frameworks::{detect_frameworks, run_framework_extract, run_post_extract};
 use crate::resolver::ReferenceResolver;
 use crate::synth::run_synthesis;
-use crate::types::{ResolutionResult, ResolutionStats};
+use crate::types::{ResolutionResult, ResolutionStats, ResolvedRef};
 
 /// How many pending rows one batch reads.
 pub const RESOLVE_BATCH: usize = 5000;
@@ -95,11 +95,27 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     /// Sync — it must be called from a blocking context (see the module docs on the
     /// async seam).
     pub fn resolve_all(&mut self, refs: &[UnresolvedRef]) -> ResolutionResult {
+        use crate::resolver::Defer;
+        use rayon::prelude::*;
+
+        // Within a batch every reference resolves INDEPENDENTLY — `classify` is a pure function of
+        // `(ref, ctx)` and the edges it will produce are created only AFTER the whole batch resolves
+        // (see the batch loop). So the ladder runs in parallel. `par_iter().collect()` preserves
+        // reference order, so the deferrals (recorded below, in order) and the resolved/unresolved
+        // tally are identical to the sequential run — order is behavior, and this keeps it exact.
+        let classified: Vec<(Option<ResolvedRef>, Defer)> =
+            refs.par_iter().map(|r| self.classify(r)).collect();
+
         let mut out = ResolutionResult::default();
-        for r in refs {
-            match self.resolve_one(r) {
-                Some(hit) => out.push_resolved(hit),
+        for (r, (hit, defer)) in refs.iter().zip(classified) {
+            match hit {
+                Some(h) => out.push_resolved(h),
                 None => out.push_unresolved(r.clone()),
+            }
+            match defer {
+                Defer::Chain => self.deferred_chain_refs.push(r.clone()),
+                Defer::ThisMember => self.deferred_this_member_refs.push(r.clone()),
+                Defer::None => {}
             }
         }
         out

@@ -7,6 +7,9 @@ rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+# The resolution ladder is CPU-bound name-matching; within a batch each reference resolves
+# independently (edges are created only AFTER the batch resolves), so a batch's refs run in parallel.
+rayon.workspace = true
 selene-core = { workspace = true }
 # The GraphStore TRAIT only — the resolver is generic over `S: GraphStore` and
 # never names SurrealStore (Phase 3 Global Constraints). SurrealStore appears
