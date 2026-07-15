@@ -107,12 +107,21 @@ async fn index_inner(path: PathBuf) -> Result<()> {
     );
 
     eprintln!("resolving …");
-    let (stats, fts) = tokio::join!(
-        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None),
-        store.bulk_load_finish(),
-    );
-    fts.context("the FULLTEXT index build failed")?;
-    let stats = stats.context("resolution failed")?;
+    // Build the FULLTEXT index on a SEPARATE task, not `tokio::join!` on this one. The resolve
+    // ladder runs inside `block_in_place`; under `join!` (one task) that blocking section stalls the
+    // FTS branch, so the FTS build leaked ~1.3 s past the resolve instead of hiding behind it. A
+    // spawned task runs on another worker and progresses *during* the ladder's blocking sections.
+    // (SurrealStore is Arc-backed; the clone shares the one database — the same concurrent write the
+    // join already relied on, now actually overlapped.)
+    let store_fts = store.clone();
+    let fts_handle = tokio::spawn(async move { store_fts.bulk_load_finish().await });
+    let stats = selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+        .await
+        .context("resolution failed")?;
+    fts_handle
+        .await
+        .context("the FULLTEXT index task panicked")?
+        .context("the FULLTEXT index build failed")?;
 
     let (nodes, edges) = store.node_edge_count().await.unwrap_or((0, 0));
     eprintln!(
