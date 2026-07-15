@@ -58,12 +58,22 @@ const FILE_HEADER: &str = "**`";
 /// Builds the context string for a query.
 pub struct ContextBuilder<S: GraphStore> {
     qm: QueryManager<S>,
+    /// An optional embedding of the query. Set by a caller that can embed (the MCP server under
+    /// `semantic-search`); threaded into relevance so semantic candidates join the lexical ones.
+    query_vec: Option<Vec<f32>>,
 }
 
 impl<S: GraphStore> ContextBuilder<S> {
     /// Wrap a query manager.
     pub fn new(qm: QueryManager<S>) -> Self {
-        Self { qm }
+        Self { qm, query_vec: None }
+    }
+
+    /// Supply the query's embedding so `explore` fuses semantic candidates with lexical ones. A
+    /// no-op on a lexical-only index (the vector matches nothing).
+    pub fn with_query_vec(mut self, query_vec: Vec<f32>) -> Self {
+        self.query_vec = Some(query_vec);
+        self
     }
 
     /// The query surface, for callers that need it directly.
@@ -109,14 +119,9 @@ impl<S: GraphStore> ContextBuilder<S> {
         tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/1: dominant_file");
         let __t = std::time::Instant::now();
         let large_repo = file_count > LARGE_REPO_FILES;
-        let ctx = find_relevant_context(
-            &self.qm,
-            query,
-            &FindOptions::explore(),
-            dominant.as_ref(),
-            large_repo,
-        )
-        .await?;
+        let mut opts = FindOptions::explore();
+        opts.query_vec = self.query_vec.clone(); // semantic candidates when a query vector was supplied
+        let ctx = find_relevant_context(&self.qm, query, &opts, dominant.as_ref(), large_repo).await?;
         tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), nodes = ctx.subgraph.nodes.len(), "explore/2: find_relevant_context (relevance gather)");
 
         if ctx.subgraph.nodes.is_empty() {

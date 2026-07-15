@@ -664,6 +664,21 @@ pub trait GraphStore: Send + Sync {
         offset: usize,
     ) -> impl Future<Output = Result<Vec<SearchCandidate>>> + Send;
 
+    /// K nearest nodes to `query_vec` (cosine) via the HNSW index — the semantic half of hybrid
+    /// search. **Default: empty**, so a backend or mock without vector support (and any index that
+    /// never ran `selene embed`) simply contributes no semantic candidates. `SurrealStore` overrides
+    /// it with the real KNN query.
+    fn vector_search(
+        &self,
+        query_vec: &[f32],
+        kinds: &[NodeKind],
+        languages: &[String],
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<SearchCandidate>>> + Send {
+        let _ = (query_vec, kinds, languages, limit);
+        async { Ok(Vec::new()) }
+    }
+
     /// LIKE-style fallback candidate fetch (exact/prefix/contains tiers) over
     /// `name`/`qualified_name`, for when [`Self::search_fts`] comes up empty.
     /// `kinds` empty means no filter.

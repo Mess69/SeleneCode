@@ -129,6 +129,11 @@ pub mod weights {
     /// **below** a 2-term compound hit ([`COMPOUND_BASE`] + [`COMPOUND_PER_EXTRA_TERM`] = 30):
     /// matching two of the query's concepts must beat matching one word very well.
     pub const FTS_MAX: f64 = 25.0;
+    /// Semantic (vector) candidates enter scoring at this FRACTION of `FTS_MAX`, normalized among
+    /// themselves. < 1 so a strong lexical hit still leads; > 0 so a symbol the query *means* but
+    /// does not *name* (the vocabulary gap) becomes a seed at all. Only ever applied when the index
+    /// has embeddings and a query vector was supplied — a lexical index is untouched.
+    pub const SEMANTIC_WEIGHT: f64 = 0.8;
 
     // ── Pass 5's rerank. MULTIPLICATIVE — see `rerank_by_term_groups`. ──────────────
     /// Per matched concept, when a node matched ≥2: `×(1 + 0.5n)`.
@@ -382,6 +387,11 @@ pub struct FindOptions {
     pub min_score: f64,
     /// Which kinds to consider.
     pub node_kinds: Vec<NodeKind>,
+    /// An optional embedding of the query, supplied by a caller that can generate one (the MCP
+    /// server under `semantic-search`). When present, semantic (vector) candidates join the lexical
+    /// ones — the vocabulary-gap bridge. `None` (the default, and every lexical-only index) leaves
+    /// scoring exactly as it was.
+    pub query_vec: Option<Vec<f32>>,
 }
 
 impl Default for FindOptions {
@@ -392,6 +402,7 @@ impl Default for FindOptions {
             max_nodes: 20,
             min_score: 0.3,
             node_kinds: HIGH_VALUE_NODE_KINDS.to_vec(),
+            query_vec: None,
         }
     }
 }
@@ -430,6 +441,7 @@ impl FindOptions {
             max_nodes: 200,
             min_score: 0.2,
             node_kinds: HIGH_VALUE_NODE_KINDS.to_vec(),
+            query_vec: None,
         }
     }
 }
@@ -651,6 +663,30 @@ pub async fn score_candidates_with_terms<S: GraphStore>(
             None => weights::FTS_MAX * (c.raw_score / max_raw),
         };
         upsert(&mut by_id, c.node, bonus, 1, distinctive);
+    }
+
+    // --- pass 4½: semantic candidates (the vocabulary-gap bridge) --------------
+    // Only fires when the caller supplied a query embedding (MCP under `semantic-search`) AND the
+    // index has vectors. It ADMITS candidates the lexical passes cannot reach — a query for
+    // `keypress` finds a `keybinding` symbol it shares no token with — scored as a fraction of
+    // `FTS_MAX` (normalized among the vector hits), so a strong lexical match still leads. On a
+    // lexical-only index `query_vec` is `None` and this is a no-op: the tuned ranking is unchanged.
+    if let Some(qvec) = &opts.query_vec
+        && let Ok(vhits) = qm
+            .store()
+            .vector_search(qvec, &opts.node_kinds, &[], opts.search_limit * 4)
+            .await
+    {
+        let vmax = vhits
+            .iter()
+            .map(|c| c.raw_score)
+            .fold(0.0f64, f64::max)
+            .max(f64::EPSILON);
+        for c in vhits {
+            let distinctive = is_distinctive(&c.node.name, &terms);
+            let bonus = weights::FTS_MAX * weights::SEMANTIC_WEIGHT * (c.raw_score / vmax);
+            upsert(&mut by_id, c.node, bonus, 1, distinctive);
+        }
     }
 
     // --- pass 4b: test-file dampen -------------------------------------------

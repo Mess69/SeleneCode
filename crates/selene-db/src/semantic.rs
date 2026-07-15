@@ -101,7 +101,7 @@ impl SurrealStore {
 
     /// K nearest nodes to `query_vec` by cosine distance, via the HNSW index. `raw_score` is a
     /// descending relevance (`1/(1+dist)`), so it composes with the lexical score's polarity.
-    async fn vector_search(
+    pub async fn vector_search(
         &self,
         query_vec: &[f32],
         kinds: &[NodeKind],

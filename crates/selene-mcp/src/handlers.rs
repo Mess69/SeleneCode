@@ -108,7 +108,18 @@ pub async fn explore(root: Option<PathBuf>, query: &str) -> ToolOutcome {
         Err(outcome) => return outcome,
     };
 
-    match ContextBuilder::new(qm).build_context(query).await {
+    // Under `semantic-search`, embed the query (warm model) so explore's seed picking fuses semantic
+    // candidates with lexical ones — bridging the vocabulary gap on the PRIMARY tool. A lexical-only
+    // index ignores the vector, so this is always safe.
+    #[cfg(feature = "semantic-search")]
+    let builder = match crate::semantic::embed_query_for(&qm, query).await {
+        Some(qvec) => ContextBuilder::new(qm).with_query_vec(qvec),
+        None => ContextBuilder::new(qm),
+    };
+    #[cfg(not(feature = "semantic-search"))]
+    let builder = ContextBuilder::new(qm);
+
+    match builder.build_context(query).await {
         Ok(text) => ToolOutcome::guidance(text),
         // The ONLY things that reach here are a store malfunction and a #527 path refusal —
         // `selene-context` returns every recoverable condition as an Ok value, on purpose.

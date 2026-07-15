@@ -294,6 +294,16 @@ impl GraphStore for SurrealStore {
     // Search candidates (src/search.rs)
     // -------------------------------------------------------------------
 
+    async fn vector_search(
+        &self,
+        query_vec: &[f32],
+        kinds: &[NodeKind],
+        languages: &[String],
+        limit: usize,
+    ) -> Result<Vec<SearchCandidate>> {
+        SurrealStore::vector_search(self, query_vec, kinds, languages, limit).await
+    }
+
     async fn search_fts(
         &self,
         terms: &[String],

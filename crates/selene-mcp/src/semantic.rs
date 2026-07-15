@@ -30,6 +30,15 @@ async fn embed_query(query: &str) -> Option<Vec<f32>> {
     guard.as_mut()?.embed_query(query).ok()
 }
 
+/// The query's embedding, but only when `qm`'s index actually has vectors — so `explore` skips the
+/// (cheap, but pointless) embedding on a lexical-only index. `None` means "stay lexical".
+pub async fn embed_query_for(qm: &QueryManager<SurrealStore>, query: &str) -> Option<Vec<f32>> {
+    if !qm.store().has_embeddings().await.unwrap_or(false) {
+        return None;
+    }
+    embed_query(query).await
+}
+
 /// Hybrid (lexical BM25 + vector KNN, RRF-fused) search, as a list of nodes. `None` when the index
 /// carries no embeddings (no `selene embed` was run) or the query can't be embedded — the caller
 /// then uses the lexical path, so this is always safe to try first.
