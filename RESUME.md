@@ -1,7 +1,8 @@
 # RESUME — reprendre SeleneCode après un redémarrage
 
-**Écrit le 2026-07-13, mis à jour le 2026-07-14 (`c0c7143` — le blocage est levé).** Ce fichier est
-la **seule chose à lire** pour repartir. Il suppose que tu as tout oublié — c'est voulu.
+**Écrit le 2026-07-13, mis à jour le 2026-07-15 (`e580537` — Phase 7 installer + Phase 6 daemon
+CONSTRUITS et testés contre le vrai binaire).** Ce fichier est la **seule chose à lire** pour
+repartir. Il suppose que tu as tout oublié — c'est voulu.
 
 ---
 
@@ -27,7 +28,8 @@ planifié, plus un blocage.
 | Phase 5 (MCP + binaire) | ✅ **Task 19 faite**, **Task 20 gate construit + lancé** (§5bis), latence gros-dépôt fixée |
 | Binaire | ✅ `index` · `serve --mcp` · **`status`** (nouveau) · README réécrit, quick-start vérifiée |
 | Perf | ✅ **~5,6× vs ce matin, 1,4–1,9× de TS** — voir §3 |
-| Phases 6, 7 (CLI/daemon, installer) | ✅ **plans écrits et arbitrés**, 35 tâches prêtes |
+| Phase 6 (CLI + daemon + sync) | ✅ **CLI 22 cmds · daemon warm-store + proxy · sync incrémental · sync routé par le daemon** — testés contre le vrai binaire (§5ter) |
+| Phase 7 (installer) | ✅ **`install`/`uninstall` pour les 5 agents JSON** (claude/cursor/gemini/kiro/antigravity), écriture chirurgicale, chemin absolu (§7) |
 | Phases 8, 9 (langages wave-2, parité, v1) | ⬜ roadmap seulement |
 
 **Branche de travail : `feat/phase45-graph-context-mcp`** (PAS mergée).
@@ -45,9 +47,42 @@ timeout). Donc :
 - **On ne peut pas cacher le store ouvert dans `serve`** sans bloquer un `selene status`/`index`
   concurrent. L'ouverture par appel actuelle est CORRECTE.
 - **Le daemon-as-arbiter n'est pas annulé — il est confirmé.** C'est lui (un seul process tient le
-  store, les autres lui parlent par socket) qui permettra à la fois le store chaud (warm-up une seule
-  fois, latence 1er appel gros-dépôt ~9s → ~0) ET l'accès concurrent CLI. **Pas de raccourci de ~5
-  tâches ; construire le daemon.**
+  store, les autres lui parlent par socket) qui permet à la fois le store chaud (warm-up une seule
+  fois) ET l'accès concurrent CLI.
+
+### CONSTRUIT (2026-07-15, `0c28b56`/`e580537`) — testé contre le vrai binaire
+
+`crates/selene-mcp/src/daemon/` (POSIX) + `crates/selene/tests/daemon.rs` (4 tests, vrai binaire) :
+
+- **Élection** : pidfile-comme-verrou par hard-link atomique (`O_EXCL` en fallback), record JSON
+  `{pid,version,socket,started_at}`, nettoyage compare-and-delete d'un cadavre mort (`lock.rs`).
+- **Trois modes de `serve --mcp`** (`serve.rs`) : *direct* (in-process, `SELENE_NO_DAEMON=1`),
+  *daemon* (`SELENE_DAEMON_INTERNAL=1` : élit, bind, store chaud, refcount + idle-timeout, SIGTERM),
+  *proxy* (le cas courant : connecte le daemon vivant même-version et `copy_bidirectional` ; sinon
+  spawn un daemon détaché puis connecte ; sinon fallback direct).
+- **Store chaud** : `handlers::open` consulte un cache process-global par-racine (tokio `OnceCell`,
+  aucun lock tenu à travers un `.await`). AVANT : chaque appel MCP rouvrait RocksDB. **Mesuré** :
+  requête `explore` à froid (CLI one-shot) ~800 ms *à chaque appel* ; en daemon chaud, les appels
+  répétés tombent à ~180–450 ms (**~2–4×**).
+- **Régression corrigée** : le daemon tient le verrou exclusif en continu → `selene sync` échouait
+  (`LOCK: Resource temporarily unavailable`). Fix : `sync` route une frame de contrôle
+  (`{"selene_control":"sync"}`) au daemon, qui ré-indexe sur SON store chaud → pas de bagarre de
+  verrou, et le symbole ajouté est **immédiatement** interrogeable (mesuré). `index` complet pendant
+  un daemon vivant → guidage propre (`kill <pid>` ou `selene sync`), plus d'erreur cryptique.
+- **`selene daemon`** liste les daemons vivants (registre `~/.selene/daemons/`, records morts élagués).
+
+**Reste sur Phase 6** (non bloquant — le daemon marche sans) : FileWatcher (auto-sync du daemon),
+PPID/liveness watchdogs, git-hooks, worktree-mismatch. **Phase 7 reste** : cibles codex (TOML) et
+hermes (YAML), install des git-hooks.
+
+## 7. Phase 7 installer — CONSTRUIT (2026-07-15, `b3f3f00`)
+
+`crates/selene-installer/` + `selene install`/`uninstall`. Édition **chirurgicale** de
+`mcpServers.selene` dans les configs JSON des 5 agents (claude/cursor/gemini/kiro/antigravity),
+local `.mcp.json` ou global. `serde_json` `preserve_order` garde les voisins octet-pour-octet.
+L'entrée nomme le chemin **absolu** de `current_exe()` (un binaire statique n'est pas garanti sur
+`PATH`). Refuse d'écraser un JSON invalide. `--print-config` n'écrit rien. 5 tests unitaires + 2
+tests bout-en-bout (exit codes).
 
 ## 5bis. Task 20 — le gate du jalon : ce qu'il a RÉVÉLÉ (2026-07-15)
 
