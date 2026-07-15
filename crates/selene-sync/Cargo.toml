@@ -1,12 +1,22 @@
 [package]
 name = "selene-sync"
-description = "File watcher (notify) with debounce + filter; git-hook helpers."
+description = "Incremental sync: detect changed files and re-index only those."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+selene-core = { workspace = true }
+selene-db = { path = "../selene-db", default-features = false, features = ["kv-rocksdb"] }
+selene-extract = { path = "../selene-extract" }
+selene-resolve = { path = "../selene-resolve" }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
 
 [lints]
 workspace = true

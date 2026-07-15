@@ -317,6 +317,35 @@ async fn serve_inner(root: Option<PathBuf>) -> Result<()> {
     Ok(())
 }
 
+/// `selene sync` — incremental re-index of changed files (delegates to `selene_sync`).
+pub async fn sync(path: PathBuf, quiet: bool) -> Outcome {
+    let root = match query_root(Some(path)) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    match selene_sync::sync_project(&root).await {
+        Ok(stats) => {
+            if !quiet {
+                if stats.is_noop() {
+                    eprintln!("up to date ({} files unchanged)", stats.unchanged);
+                } else {
+                    eprintln!(
+                        "synced: {} changed, {} removed, {} unchanged",
+                        stats.changed, stats.removed, stats.unchanged
+                    );
+                }
+            }
+            Outcome::Ok
+        }
+        Err(e) => {
+            if !quiet {
+                eprintln!("selene sync: {e:#}");
+            }
+            Outcome::Failure
+        }
+    }
+}
+
 /// `selene version` — the crate version. Exit 0.
 pub fn version() -> Outcome {
     println!("selene {}", env!("CARGO_PKG_VERSION"));

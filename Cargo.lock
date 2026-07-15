@@ -3827,6 +3827,7 @@ dependencies = [
  "selene-extract",
  "selene-mcp",
  "selene-resolve",
+ "selene-sync",
  "tempfile",
  "tokio",
  "tracing",
@@ -3973,6 +3974,16 @@ dependencies = [
 [[package]]
 name = "selene-sync"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "selene-core",
+ "selene-db",
+ "selene-extract",
+ "selene-resolve",
+ "tempfile",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "semver"

@@ -22,7 +22,7 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Init { path, force, .. } => cmd::init(path, force).await,
         Command::Uninit { path, force } => cmd::uninit(path, force),
         Command::Index { path, .. } => cmd::index(path).await,
-        Command::Sync { .. } => cmd::not_yet("sync", "Phase 6 Task 6/13"),
+        Command::Sync { path, quiet } => cmd::sync(path, quiet).await,
         Command::Status { path, json } => cmd::status(path, json).await,
 
         // -- query-class (reuse the MCP handlers) --
