@@ -478,3 +478,78 @@ async fn assertion_6_fulltext_search_ranks_hits() {
     );
     assert_eq!(total_hits[0]["name"], "total");
 }
+
+/// Vector search probe (Task 1, 2026-07-15): does SurrealDB 3.2 support HNSW vector
+/// indexes, the `<|K,EF|>` KNN operator, and `search::rrf` hybrid fusion **in the
+/// embedded engine**? The vocabulary gap on large repos ("keypress" never reaches
+/// "keybinding" through BM25 token overlap) needs SEMANTIC search, and the earlier
+/// benchmark work found several SurrealDB features inert in embedded mode — so this
+/// must be measured, not assumed, before any embedding pipeline is built on it.
+#[tokio::test]
+async fn hnsw_vector_knn_and_rrf_embedded() {
+    let db = mem_db().await;
+
+    // 1. An HNSW vector index over a 4-d embedding, cosine distance.
+    db.query("DEFINE INDEX doc_hnsw ON doc FIELDS embedding HNSW DIMENSION 4 DIST COSINE;")
+        .await
+        .expect("DEFINE HNSW parses")
+        .check()
+        .expect("HNSW index builds in embedded mode");
+
+    // 2. Three docs. `keypress` and `keybinding` have NEAR vectors (semantic
+    //    neighbours); `mouse` is far — the exact situation BM25 cannot bridge.
+    db.query(
+        "CREATE doc:keypress    SET name = 'keypress',    embedding = [1.0, 0.1, 0.0, 0.0];
+         CREATE doc:keybinding  SET name = 'keybinding',  embedding = [0.95, 0.15, 0.0, 0.0];
+         CREATE doc:mouse       SET name = 'mouse',       embedding = [0.0, 0.0, 1.0, 0.0];",
+    )
+    .await
+    .unwrap()
+    .check()
+    .unwrap();
+
+    // 3. Brute-force KNN (`<|K,DIST|>`) — no index needed, exact.
+    let mut resp = db
+        .query(
+            "SELECT name, vector::distance::knn() AS dist FROM doc \
+             WHERE embedding <|2,COSINE|> [1.0, 0.1, 0.0, 0.0] ORDER BY dist;",
+        )
+        .await
+        .expect("KNN query parses");
+    let brute: Vec<Value> = resp.take(0).expect("brute-force KNN returns rows");
+    assert_eq!(brute.len(), 2, "K=2 nearest neighbours: {brute:?}");
+    let names: Vec<&str> = brute.iter().filter_map(|r| r["name"].as_str()).collect();
+    assert!(
+        names.contains(&"keypress") && names.contains(&"keybinding"),
+        "the two nearest to the keypress vector are keypress + keybinding, NOT mouse — \
+         this is exactly the bridge BM25 cannot make: {names:?}"
+    );
+
+    // 4. HNSW-index KNN (`<|K,EF|>`, EF as a number) — uses the index we defined.
+    let mut resp = db
+        .query(
+            "SELECT name FROM doc WHERE embedding <|2,40|> [1.0, 0.1, 0.0, 0.0];",
+        )
+        .await
+        .expect("HNSW <|K,EF|> query parses");
+    let hnsw: Vec<Value> = resp.take(0).expect("HNSW KNN returns rows");
+    assert!(!hnsw.is_empty(), "HNSW-backed KNN returns neighbours: {hnsw:?}");
+
+    // 5. `search::rrf` hybrid fusion — fuse two ranked lists (a fake FTS list and
+    //    the vector list). If this function is absent in 3.2, the test tells us and
+    //    fusion would be done in Rust instead.
+    let rrf = db
+        .query(
+            "LET $vs = SELECT id FROM doc WHERE embedding <|2,COSINE|> [1.0,0.1,0.0,0.0]; \
+             LET $ft = SELECT id FROM doc WHERE name = 'keybinding'; \
+             RETURN search::rrf([$ft, $vs], 60, 10);",
+        )
+        .await;
+    match rrf {
+        Ok(mut r) => {
+            let fused = r.take::<Vec<Value>>(2);
+            eprintln!("SEARCH::RRF embedded result: {fused:?}");
+        }
+        Err(e) => eprintln!("SEARCH::RRF not available in embedded 3.2: {e}"),
+    }
+}
