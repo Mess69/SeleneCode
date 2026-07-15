@@ -28,7 +28,7 @@ tracing-subscriber = { workspace = true }
 [features]
 # Optional semantic (vector) search: pulls the local ONNX embedder. Off by default so the shipped
 # static binary stays lean and fully offline. `selene embed` + hybrid search light up when it's on.
-semantic-search = ["dep:selene-embed"]
+semantic-search = ["dep:selene-embed", "selene-mcp/semantic-search"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

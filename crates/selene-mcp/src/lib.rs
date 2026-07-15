@@ -14,6 +14,8 @@ pub mod daemon;
 pub mod handlers;
 mod instructions;
 mod outcome;
+#[cfg(feature = "semantic-search")]
+mod semantic;
 mod server;
 mod tools;
 mod validate;

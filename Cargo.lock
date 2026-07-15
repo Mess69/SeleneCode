@@ -5209,6 +5209,7 @@ dependencies = [
  "selene-context",
  "selene-core",
  "selene-db",
+ "selene-embed",
  "selene-extract",
  "selene-graph",
  "selene-resolve",

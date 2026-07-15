@@ -20,6 +20,9 @@ selene-context = { path = "../selene-context" }
 # Daemon-routed writes: the daemon owns the exclusive lock, so `sync` runs through it (against the
 # warm store) rather than fighting for the lock. No cycle — selene-sync does not depend on us.
 selene-sync = { path = "../selene-sync" }
+# The local embedder, behind `semantic-search` — the daemon holds the model warm so query-time
+# embedding costs ~8ms, not the ~3.6s model load. Off by default (no ONNX in a default build).
+selene-embed = { workspace = true, optional = true }
 # Task 1 (spike): the SDK the whole of Phase 5 rides on. Features pinned to what a
 # stdio server needs — `server` (ServerHandler), `macros` (#[tool_router]/#[tool]),
 # `transport-io` (stdio). NOT the http/sse transports: Phase 5 is stdio-only.
@@ -34,6 +37,11 @@ libc = { workspace = true }
 anyhow = { workspace = true }
 # The daemon's FileWatcher: auto-sync the warm store when source files change.
 notify = { workspace = true }
+
+[features]
+# Semantic (vector) search over MCP: the server holds the embedder warm and `search`/`explore` fuse
+# lexical + vector. Off by default so the MCP server compiles no ONNX runtime.
+semantic-search = ["dep:selene-embed"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }

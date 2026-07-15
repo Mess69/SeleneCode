@@ -144,6 +144,27 @@ pub async fn search(root: Option<PathBuf>, query: &str) -> ToolOutcome {
         Err(outcome) => return outcome,
     };
 
+    // When the index has embeddings, hybrid (lexical + semantic) search bridges the vocabulary gap —
+    // a query for `keypress` reaches a `keybinding` symbol it shares no token with. Falls back to
+    // lexical when there are no embeddings or the query can't be embedded.
+    #[cfg(feature = "semantic-search")]
+    if let Some(hits) = crate::semantic::hybrid_nodes(&qm, query, 50).await {
+        if hits.is_empty() {
+            return ToolOutcome::guidance(format!("## No symbol matches `{query}`\n"));
+        }
+        let mut out = format!("## Symbols matching `{query}` (hybrid: semantic + lexical)\n\n");
+        for n in hits.iter().take(50) {
+            out.push_str(&format!(
+                "- `{}` — {} ({}:{})\n",
+                n.name,
+                n.kind.as_str(),
+                n.file_path,
+                n.start_line
+            ));
+        }
+        return ToolOutcome::guidance(out);
+    }
+
     let hits = match qm.find_all_symbols(query).await {
         Ok(h) => h,
         Err(e) => return graph_outcome(&e),
