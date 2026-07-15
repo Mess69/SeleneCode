@@ -557,3 +557,57 @@ small enough to hide entirely behind the resolve, which is why they are now deci
 **Verdict: SeleneCode beats CodeGraph outright on the TS and Rust corpora (1.4× and 2.7×) and is
 within ~10 % on the large Python one, where SurrealDB's FTS build is the last floor.** The whole
 session moved django 10.0 s → 6.4 s and both smaller repos from ~1.3× *slower* to 0.37–0.69× (faster).
+
+⚠️ **This verdict is scoped to ≤1k-file corpora. It does NOT hold at VS Code scale — see follow-up 7.**
+
+# Follow-up 7 (2026-07-15): VS Code (257k nodes) — the honest large-repo head-to-head
+
+The first real *large* repo, and it inverts the story. All four numbers below are apples-to-apples:
+the SAME `/usr/bin/time -l` instrument, same machine, same VS Code `src/` tree, cold, one process.
+
+| metric | SeleneCode (Rust) | CodeGraph (TS) | verdict |
+|---|---:|---:|---|
+| **wall** | 401 s | 202 s | **2.0× SLOWER** |
+| **peak RSS** | 6.28 GiB (6.74 GB) | 1.44 GiB (1.54 GB) | **4.4× MORE memory** |
+| **disk (index)** | 524 M (RocksDB) | 960 M (SQLite) | **1.8× LESS — Selene wins** |
+| **edges** | 1 203 398 | 1 201 805 | **MATCH (+0.13 %) — graph is correct** |
+
+The graph is right (edge count matches within a rounding error, the parity gate is tolerance-0), and
+the store is smaller on disk. **But at scale SeleneCode is 2× slower and needs 4.4× the RAM.** That is
+the true picture; the small/medium wins in follow-up 6 do not generalize.
+
+## Why the small/medium wins invert at scale — two distinct causes
+
+1. **The concurrent-write win becomes a correctness *hazard*, not a speedup.** Edges are a SurrealDB
+   `RELATION` whose endpoints are shared graph state — a popular callee is one endpoint on thousands
+   of edges. Concurrent `INSERT RELATION` writes therefore collide on that endpoint under RocksDB's
+   optimistic concurrency. On django (46 k edges) collisions are rare and concurrency is a real win;
+   at VS Code's ~1.2 M edges they are *constant* — the concurrent resolve aborts with `Resource busy`
+   or live-locks on retries. (The earlier "39 s VS Code" number was this bug: a FAILED partial index
+   with only 284 k of 1.2 M edges.) The fix is a **scale gate** (`serialize_writes`, keyed on
+   >100 k nodes): concurrent below, sequential above. Sequential is correct at any size, so VS Code
+   completes — at 401 s. The concurrent path is not *available* at this scale, so there is no faster
+   correct path to fall back to. This is the bulk of the 2× gap.
+
+2. **SeleneCode holds the whole resolve in RAM; CodeGraph streams through SQLite.** The 6.28 GiB peak
+   is the in-memory reference queue (976 k unresolved refs) plus the eager `StoreContext` index
+   (257 k nodes) held live for the ladder. CodeGraph resolves against SQLite on disk and never holds
+   the full set resident, so it peaks at 1.44 GiB. This is a deliberate speed-for-memory trade that
+   *pays off* on small/medium repos and *overshoots* here — 6.7 GB is a real ceiling risk on a 16 GB
+   laptop indexing a monorepo.
+
+## The honest whole-picture verdict, all corpora
+
+| corpus | size | speed vs CodeGraph | memory | correct |
+|---|---|---|---|---|
+| codegraph/src (TS) | 162 files | **1.4× faster** | — | ✓ |
+| SeleneCode/crates (Rust) | 344 files | **2.7× faster** | — | ✓ |
+| django (Python) | 931 files | ~tied (1.10×) | — | ✓ |
+| **VS Code (TS)** | **257 k nodes** | **2.0× SLOWER** | **4.4× more** | **✓ (edges match)** |
+
+**SeleneCode wins on small/medium repos and loses on huge ones.** The crossover is the write model:
+below the gate, concurrent writes + in-RAM resolve make it fast; above it, RELATION-endpoint
+contention forces serialization and the in-RAM resolve becomes a memory liability. Closing the
+large-repo gap is a **data-model** question (how edges are stored so endpoint writes don't contend,
+and whether the resolve can stream instead of holding 976 k refs), not a tuning question — exactly
+the write-side DB cost `CLAUDE.md` flags as unre-argued. Nothing here is fixed by more concurrency.
