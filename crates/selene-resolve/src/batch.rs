@@ -164,16 +164,30 @@ async fn resolve_pending<S: GraphStore + Clone>(
     let detected = detect_frameworks(&ctx);
     let extract_stats = run_framework_extract(store, &ctx, &detected).await?;
     let post = run_post_extract(store, &ctx, &detected).await?;
-    drop(ctx);
+    let framework_added = extract_stats.nodes + post.nodes;
     tracing::info!(
         ms = t.elapsed().as_millis(),
+        framework_added,
         "resolve/1b: framework extract"
     );
 
     // --- (2) the context, over a graph that now HAS the route/config nodes ----
-    let t = std::time::Instant::now();
-    let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
-    tracing::info!(ms = t.elapsed().as_millis(), "resolve/2: ctx#2 warm");
+    // The context is rebuilt ONLY if the framework pass added nodes (routes/config) it must now
+    // see for `known_names`. When it added none — every repo without a detected v0 framework, which
+    // is most of them — ctx#1 is already complete and the second full `all_nodes` scan + cache warm
+    // (~470 ms on django-scale) is pure waste. The route→handler references the framework pass emits
+    // live in the STORE and are read from there (see the fetch below), not from the context, so they
+    // do not require a rebuild.
+    let ctx = if framework_added > 0 {
+        drop(ctx);
+        let t = std::time::Instant::now();
+        let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
+        tracing::info!(ms = t.elapsed().as_millis(), "resolve/2: ctx#2 warm (rebuilt)");
+        ctx
+    } else {
+        tracing::info!("resolve/2: ctx#2 skipped (framework added no nodes)");
+        ctx
+    };
 
     let total = match &in_memory {
         Some(p) => p.len(),
