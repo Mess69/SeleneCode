@@ -130,9 +130,12 @@ pub(crate) fn fts_index_ddl(concurrently: bool) -> String {
     FTS_INDEXES
         .iter()
         .map(|(name, field)| {
+            // No `HIGHLIGHTS`: nothing calls `search::highlight`/`search::offsets`, and storing the
+            // highlight offsets is a build cost paid for no reader. BM25 scoring (`search::score`,
+            // which the ranking DOES use) does not need it. (django FTS build ~4.2s → measured below.)
             format!(
                 "DEFINE INDEX IF NOT EXISTS {name} ON node FIELDS {field} \
-                 FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS{suffix};\n"
+                 FULLTEXT ANALYZER identifier BM25{suffix};\n"
             )
         })
         .collect()
@@ -284,7 +287,7 @@ mod tests {
         for (name, field) in FTS_INDEXES {
             let define = format!(
                 "DEFINE INDEX IF NOT EXISTS {name} ON node FIELDS {field} \
-                 FULLTEXT ANALYZER identifier BM25 HIGHLIGHTS"
+                 FULLTEXT ANALYZER identifier BM25"
             );
             assert!(ddl.contains(&define), "all_ddl missing inline FTS: {name}");
             assert!(inline.contains(&format!("{define};")), "inline: {name}");
