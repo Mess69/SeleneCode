@@ -16,6 +16,7 @@
 //! over the store's pending queue to bind the new references.
 
 pub mod hooks;
+pub mod worktree;
 
 use std::collections::HashMap;
 use std::path::Path;
