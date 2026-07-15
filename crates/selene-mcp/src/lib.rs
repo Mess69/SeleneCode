@@ -10,6 +10,7 @@
 //! recoverable condition is success-shaped guidance. See [`ToolOutcome`]: one `isError` early
 //! and an agent abandons the tool for the whole session.
 
+pub mod daemon;
 pub mod handlers;
 mod instructions;
 mod outcome;

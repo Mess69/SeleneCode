@@ -5,7 +5,6 @@
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use rmcp::ServiceExt;
 use selene_db::SurrealStore;
 use selene_extract::Indexer;
 use selene_mcp::ToolOutcome;
@@ -309,12 +308,24 @@ pub async fn serve(mcp: bool, path: Option<PathBuf>) -> Outcome {
 }
 
 async fn serve_inner(root: Option<PathBuf>) -> Result<()> {
-    let service = selene_mcp::SeleneMcp::new(root)
-        .serve(rmcp::transport::stdio())
-        .await
-        .context("MCP handshake failed")?;
-    service.waiting().await.context("MCP server stopped")?;
-    Ok(())
+    // The daemon launcher decides direct-vs-proxy-vs-daemon (see `selene_mcp::daemon`).
+    selene_mcp::daemon::launch(root).await
+}
+
+/// `selene daemon` — list the running SeleneCode daemons across all projects. Exit 0 even when
+/// none are running (an empty list is a fact, not a failure — map exit-code semantics).
+pub fn daemon() -> Outcome {
+    let daemons = selene_mcp::daemon::list_daemons();
+    if daemons.is_empty() {
+        println!("No SeleneCode daemons are running.");
+        return Outcome::Ok;
+    }
+    println!("{} daemon(s) running:\n", daemons.len());
+    for d in &daemons {
+        println!("  pid {:<8} v{:<8} {}", d.pid, d.version, d.root);
+        println!("           socket: {}", d.socket_path);
+    }
+    Outcome::Ok
 }
 
 /// `selene sync` — incremental re-index of changed files (delegates to `selene_sync`).

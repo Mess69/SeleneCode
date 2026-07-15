@@ -4,15 +4,61 @@
 //! failed call (the spike's finding #1). So no handler propagates: each opens the store,
 //! answers, and returns a [`ToolOutcome`].
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use selene_context::{
     ContextBuilder, NOT_INDEXED, build_node_view, node_not_found, render_node_view,
 };
 use selene_db::SurrealStore;
 use selene_graph::{GraphError, QueryManager};
+use tokio::sync::OnceCell;
 
 use crate::outcome::ToolOutcome;
+
+/// Process-global warm-store cache, keyed by the `.selene` directory.
+///
+/// Opening the embedded RocksDB store is not free — and until now **every** MCP handler opened it
+/// fresh and dropped it, so a single agent session of five tool calls paid five opens. Here the
+/// store is opened **once per root** and every later call reuses the same Arc-backed handle. In the
+/// daemon (the sole store owner) this is the whole warm-store win; in a one-shot CLI query it is a
+/// single map insert the process discards on exit. `SurrealStore` is `Clone` (it wraps only the
+/// cheap `Surreal` handle), so handing a clone to each [`QueryManager`] costs nothing.
+///
+/// Per-root single-init is a [`tokio::sync::OnceCell`] behind a brief `std` lock: we take the lock
+/// only to fetch-or-create the cell (no `.await` under it), then initialise the cell outside it, so
+/// two concurrent first-callers for the same root open the store exactly once and callers for other
+/// roots never block on it.
+type WarmCell = Arc<OnceCell<SurrealStore>>;
+static WARM: OnceLock<Mutex<HashMap<PathBuf, WarmCell>>> = OnceLock::new();
+
+async fn warm_store(db: &Path) -> Result<SurrealStore, ToolOutcome> {
+    let cell = {
+        let mut map = WARM
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        map.entry(db.to_path_buf())
+            .or_insert_with(|| Arc::new(OnceCell::new()))
+            .clone()
+    };
+    let store = cell
+        .get_or_try_init(|| SurrealStore::open(db))
+        .await
+        .map_err(|e| ToolOutcome::failed(format!("could not open the index: {e}")))?;
+    Ok(store.clone())
+}
+
+/// Populate the warm-store cache for `root` ahead of the first query. The daemon calls this right
+/// after it binds, so the first client's first tool call is already fast. A root with no `.selene/`
+/// is a silent no-op — prewarming is best-effort.
+pub async fn prewarm(root: &Path) {
+    let db = root.join(".selene");
+    if db.exists() {
+        let _ = warm_store(&db).await;
+    }
+}
 
 /// Open the graph for a project root.
 ///
@@ -24,9 +70,7 @@ async fn open(root: &Path) -> Result<QueryManager<SurrealStore>, ToolOutcome> {
     if !db.exists() {
         return Err(ToolOutcome::guidance(NOT_INDEXED));
     }
-    let store = SurrealStore::open(&db)
-        .await
-        .map_err(|e| ToolOutcome::failed(format!("could not open the index: {e}")))?;
+    let store = warm_store(&db).await?;
     Ok(QueryManager::new(store, root.to_path_buf()))
 }
 

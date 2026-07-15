@@ -37,3 +37,7 @@ workspace = true
 [dev-dependencies]
 tempfile = { workspace = true }
 serde_json = { workspace = true }
+# Daemon integration test: drive the real `selene serve --mcp` binary as an MCP server through a
+# genuine rmcp client over a spawned child process (proxy → daemon → warm store, end to end).
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "process", "time"] }
+rmcp = { workspace = true, features = ["client", "transport-child-process"] }

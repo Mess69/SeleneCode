@@ -73,11 +73,27 @@ fn expected_no_ops_are_zero() {
 #[test]
 fn unimplemented_stubs_fail_cleanly() {
     // The anti-inert-seam guarantee: the arm is reachable and returns Failure until its task lands.
-    // `sync` on an un-indexed project is exit 1 (nothing to sync); `daemon` is still a stub.
+    // `sync` on an un-indexed project is exit 1 (nothing to sync); telemetry/upgrade are still stubs.
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path().to_str().unwrap();
     assert_eq!(code(&["sync", p]), 1, "sync on an un-indexed project → 1");
-    assert_eq!(code(&["daemon"]), 1);
+    assert_eq!(code(&["telemetry"]), 1);
+    assert_eq!(code(&["upgrade"]), 1);
+}
+
+#[test]
+fn daemon_list_with_none_running_is_zero() {
+    // `selene daemon` lists running daemons; none running is a fact, not a failure (exit 0). A
+    // private HOME keeps the test off the developer's real registry.
+    let home = tempfile::tempdir().unwrap();
+    let out = Command::new(selene())
+        .arg("daemon")
+        .env("HOME", home.path())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .unwrap();
+    assert_eq!(out.code(), Some(0), "listing zero daemons → 0");
 }
 
 #[test]

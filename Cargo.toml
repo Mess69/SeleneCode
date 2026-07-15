@@ -40,6 +40,9 @@ serde_json   = { version = "1", features = ["preserve_order"] }
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"
+# POSIX pid liveness (`kill(pid, 0)`) and `getppid()` for the daemon lifecycle. std has
+# `process::id()` but no liveness check or parent pid. Tiny, ubiquitous, no build cost.
+libc         = "0.2"
 # Ordered map: preserves traversal/visit order (e.g. `Subgraph.nodes`) where a
 # plain HashMap would not — the Rust analog of the CodeGraph TS traverser's
 # reliance on `Map` insertion order (see

@@ -50,7 +50,7 @@ pub async fn run(cli: Cli) -> ExitCode {
 
         // -- serve / daemon / hooks --
         Command::Serve { mcp, path, .. } => cmd::serve(mcp, path).await,
-        Command::Daemon => cmd::not_yet("daemon", "Phase 6 Task 17"),
+        Command::Daemon => cmd::daemon(),
         Command::Unlock { path } => cmd::unlock(path),
         // prompt-hook NEVER breaks the prompt: exit 0 on every path (map §Subcommands).
         Command::PromptHook => Outcome::ExpectedNoOp,
