@@ -311,8 +311,10 @@ pub struct StoreContext<S: GraphStore> {
     cpp_include_dirs: Vec<String>,
 }
 
-/// A repo above this many nodes keeps the lazy LRU path (VS Code is ~500 k; at roughly 400 B a node
-/// the eager index is then ~200 MB, which is a trade we make deliberately rather than by accident).
+/// A repo above this many nodes keeps the lazy LRU path. The eager index stores each node ONCE
+/// behind an `Arc` (see `EagerIndex`/`deref_clone`); the four lookup groups + by_id hold 8-byte
+/// pointer-clones, so it is ~one node's bytes per symbol plus pointers — NOT the 4-5 deep copies it
+/// held before, which were the bulk of the indexer's peak RSS at VS Code scale.
 const EAGER_MAX: usize = 2_000_000;
 
 /// Every node, grouped the four ways the ladder asks for them.
@@ -324,11 +326,20 @@ const EAGER_MAX: usize = 2_000_000;
 /// therefore reproduce the same order — which is exactly what the graph diff at the end of this
 /// change verifies, rather than assumes.
 struct EagerIndex {
-    by_id: HashMap<String, Node>,
-    by_name: HashMap<String, Vec<Node>>,
-    by_lower: HashMap<String, Vec<Node>>,
-    by_qname: HashMap<String, Vec<Node>>,
-    by_file: HashMap<String, Vec<Node>>,
+    by_id: HashMap<String, Arc<Node>>,
+    by_name: HashMap<String, Vec<Arc<Node>>>,
+    by_lower: HashMap<String, Vec<Arc<Node>>>,
+    by_qname: HashMap<String, Vec<Arc<Node>>>,
+    by_file: HashMap<String, Vec<Arc<Node>>>,
+}
+
+/// Deref-clone a group slice into the owned `Vec<Node>` the `ResolutionContext` trait returns.
+/// The eager index stores each node ONCE behind an `Arc` (the four groups hold cheap 8-byte
+/// pointer-clones, not 4-5 deep copies of every node — that duplication was ~5× the node bytes
+/// resident and the bulk of the indexer's peak RSS on a large repo). The deep copy is paid only
+/// here, on the SMALL per-query result set, and freed as soon as the caller drops it.
+fn deref_clone(v: &[Arc<Node>]) -> Vec<Node> {
+    v.iter().map(|a| a.as_ref().clone()).collect()
 }
 
 impl EagerIndex {
@@ -341,24 +352,26 @@ impl EagerIndex {
             by_file: HashMap::new(),
         };
         for n in nodes {
+            // One heap Node per symbol; the four groups + by_id share it by refcount.
+            let n = Arc::new(n);
             ix.by_name
                 .entry(n.name.clone())
                 .or_default()
-                .push(n.clone());
+                .push(Arc::clone(&n));
             ix.by_lower
                 .entry(n.name.to_lowercase())
                 .or_default()
-                .push(n.clone());
+                .push(Arc::clone(&n));
             if !n.qualified_name.is_empty() {
                 ix.by_qname
                     .entry(n.qualified_name.clone())
                     .or_default()
-                    .push(n.clone());
+                    .push(Arc::clone(&n));
             }
             ix.by_file
                 .entry(n.file_path.clone())
                 .or_default()
-                .push(n.clone());
+                .push(Arc::clone(&n));
             ix.by_id.insert(n.id.clone(), n);
         }
         ix
@@ -570,7 +583,7 @@ impl<S: GraphStore> StoreContext<S> {
 impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     fn nodes_in_file(&self, path: &str) -> Vec<Node> {
         if let Some(ix) = &self.eager {
-            return ix.by_file.get(path).cloned().unwrap_or_default();
+            return ix.by_file.get(path).map(|v| deref_clone(v)).unwrap_or_default();
         }
         self.node_cache.get_or_insert_with(path.to_string(), || {
             self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path))
@@ -580,7 +593,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn nodes_by_name(&self, name: &str) -> Vec<Node> {
         if let Some(ix) = &self.eager {
-            return ix.by_name.get(name).cloned().unwrap_or_default();
+            return ix.by_name.get(name).map(|v| deref_clone(v)).unwrap_or_default();
         }
         self.name_cache.get_or_insert_with(name.to_string(), || {
             self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name))
@@ -590,7 +603,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn nodes_by_lower_name(&self, lower: &str) -> Vec<Node> {
         if let Some(ix) = &self.eager {
-            return ix.by_lower.get(lower).cloned().unwrap_or_default();
+            return ix.by_lower.get(lower).map(|v| deref_clone(v)).unwrap_or_default();
         }
         self.lower_name_cache
             .get_or_insert_with(lower.to_string(), || {
@@ -604,7 +617,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Node> {
         if let Some(ix) = &self.eager {
-            return ix.by_qname.get(qn).cloned().unwrap_or_default();
+            return ix.by_qname.get(qn).map(|v| deref_clone(v)).unwrap_or_default();
         }
         self.qualified_name_cache
             .get_or_insert_with(qn.to_string(), || {
@@ -633,7 +646,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn node_by_id(&self, id: &str) -> Option<Node> {
         if let Some(ix) = &self.eager {
-            return ix.by_id.get(id).cloned();
+            return ix.by_id.get(id).map(|a| a.as_ref().clone());
         }
         self.node_by_id_cache
             .get_or_insert_with(id.to_string(), || {

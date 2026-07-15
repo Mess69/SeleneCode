@@ -72,6 +72,44 @@ pub struct SurrealStore {
     serialize_writes: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
+/// Cap SurrealDB's RocksDB **block cache** to a sane fixed size unless the operator has set it.
+///
+/// SurrealDB sizes the block cache at `max((system_ram / 2) - 1 GiB, 16 MiB)` by default — **15 GiB
+/// on a 32 GiB machine**. The cache holds *read* pages; for `index` (a write-heavy pass over a
+/// codebase that is a few hundred MB on disk) that ceiling is pure waste — measured, it let a
+/// VS Code index's RSS climb to ~6.7 GB that was cache, not data, while the on-disk store was 524 MB.
+/// A code graph fits comfortably in a small cache: 256 MiB covers most of a real repo's hot set for
+/// the read-heavy `serve` path too, so this is a strict improvement, not a serve/index trade.
+///
+/// Set via the documented env var (`SURREAL_ROCKSDB_BLOCK_CACHE_SIZE`, bytes) so an operator can
+/// still override it; we only fill it in when it is unset.
+#[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
+#[allow(unsafe_code)] // the `set_var`s below; safety argued inline
+fn cap_rocksdb_block_cache() {
+    // SurrealDB sizes RocksDB from system RAM: on a 32 GiB machine the block cache defaults to 15 GiB
+    // and the memtables to ~1 GiB (128 MiB × 8). Both are read/throughput caches sized for a large
+    // server, not for indexing a few-hundred-MB code graph on a laptop. Pin them to modest fixed
+    // sizes so `index` does not balloon RSS with cache the workload never reuses. All three stay
+    // overridable — we only fill in a var the operator left unset.
+    //
+    // SAFETY (all three sets): called once at store-open, before the datastore below (the sole reader
+    // of SURREAL_ROCKSDB_* in this process) is constructed, and no other thread touches these vars —
+    // so there is no concurrent-access race.
+    const DEFAULTS: [(&str, usize); 3] = [
+        // 256 MiB read cache — covers a real repo's hot pages; serve stays fast, index barely reads.
+        ("SURREAL_ROCKSDB_BLOCK_CACHE_SIZE", 256 * 1024 * 1024),
+        // 64 MiB per memtable × 4 = 256 MiB of write buffers (vs the ~1 GiB default) — enough to keep
+        // the bulk write batched without holding a gigabyte of unflushed rows resident.
+        ("SURREAL_ROCKSDB_WRITE_BUFFER_SIZE", 64 * 1024 * 1024),
+        ("SURREAL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER", 4),
+    ];
+    for (var, bytes) in DEFAULTS {
+        if std::env::var_os(var).is_none() {
+            unsafe { std::env::set_var(var, bytes.to_string()) };
+        }
+    }
+}
+
 impl SurrealStore {
     /// A fresh in-memory store (`kv-mem`). Data lives only for the process;
     /// used by fast tests and ephemeral tooling. Namespace/database are already
@@ -112,6 +150,7 @@ impl SurrealStore {
     /// for the preference rationale and the shared documented behavior.
     #[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
     pub async fn open(dir: &Path) -> Result<Self> {
+        cap_rocksdb_block_cache();
         let db = connect_disk_with_lock_retry(|| Surreal::new::<RocksDb>(dir)).await?;
         db.use_ns(NAMESPACE).use_db(DATABASE).await?;
         Ok(Self { db, serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) })
