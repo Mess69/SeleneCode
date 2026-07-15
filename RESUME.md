@@ -24,15 +24,40 @@ planifié, plus un blocage.
 |---|---|
 | Phases 1, 2, 3 (db, extract, resolve) | ✅ **mergées sur `main`** (`ba29336`), gates verts |
 | Phase 4 (graph + context) | ✅ code fini — **et `explore` répond enfin** (§2) |
-| Phase 5 (MCP + binaire) | 🟡 écrit et commité, **Tasks 19–20 restent** |
-| Perf | ✅ **6× + 2,5×** — voir §3 |
+| Phase 5 (MCP + binaire) | 🟡 **Task 19 ✅ faite**, **Task 20 gate construit et lancé** — voir §5bis |
+| Perf | ✅ **~5,6× vs ce matin, 1,4–1,9× de TS** — voir §3 |
 | Phases 6, 7 (CLI/daemon, installer) | ✅ **plans écrits et arbitrés**, 35 tâches prêtes |
 | Phases 8, 9 (langages wave-2, parité, v1) | ⬜ roadmap seulement |
 
 **Branche de travail : `feat/phase45-graph-context-mcp`** (PAS mergée).
 `main` est à `ba29336` (fin de Phase 3).
 
-**Toute la suite : 1 089 tests, 0 échec.** Parity 6/6, dispatch 5/5, phase4 7/7.
+**Toute la suite : ~1 100 tests, 0 échec.** Parity 6/6, dispatch 5/5, phase4 7/7.
+
+## 5bis. Task 20 — le gate du jalon : ce qu'il a RÉVÉLÉ (2026-07-15)
+
+Le gate est construit (`crates/selene-mcp/tests/dogfood_gate.rs`, `#[ignore]`) + `scripts/dogfood.sh`
+(Half B). Il pilote le **vrai binaire** en MCP stdio, sur 3 dépôts réels. Résultat mesuré :
+
+| repo | nœuds | latence | réponse |
+|---|---:|---:|---|
+| SeleneCode | 5k | 1,2 s | ✅ |
+| codegraph | 5k | 1,4 s | ✅ |
+| **VS Code** | **349k** | **35,6 → 6,5 s** (fixé) | ❌ **fausse** (vocabulaire) |
+
+**Le produit marche sur petits/moyens dépôts, pas encore sur les gros.** Deux problèmes indépendants,
+tous deux mesurés (`docs/benchmarks/2026-07-phase5-dogfood.md`) :
+
+1. **Latence — ✅ FIXÉE.** `explore` faisait **35,6 s** sur VS Code : quatre passes de pertinence
+   non-indexées, O(taille du graphe). La seule passe rapide était l'index FTS. Fix : au-dessus de
+   `LARGE_REPO_FILES = 3000`, on saute pass0 / pass6-7 (`CONTAINS`) / pass12 / dominant_file et on
+   s'appuie sur FTS → **6,5 s** (dont ~2,4 s de requête ; le reste = startup `serve`, nul avec le
+   daemon Phase 6). **Petits dépôts byte-identiques** (sha vérifiés).
+2. **Vocabulaire — ⬜ RESTE.** La question dit « key**press** », le code dit « key**binding** ». La
+   pertinence ne pont pas le vocabulaire requête→code. Le build TS avait `name_segment_vocab` pour
+   ça — jamais porté. **C'est la prochaine tâche** (choisie APRÈS la latence, à juste titre : aucune
+   qualité ne comptait à 35 s/appel). Tant que ce n'est pas fait, le gate VS Code échoue sur la
+   correction, pas la vitesse.
 
 ---
 
