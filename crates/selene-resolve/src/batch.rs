@@ -317,15 +317,13 @@ async fn resolve_pending<S: GraphStore + Clone>(
         //
         // It also costs almost nothing to keep: `insert_edges` is **2.4 s** of the 27.7 s persist.
         // The 24 s was never the edges — it was DRAINING THE QUEUE.
-        // This batch's edge chunks are disjoint slices (no shared edge id), so they insert
-        // CONCURRENTLY — but the whole `try_join_all` is awaited before the next batch's ladder
-        // runs, so the cross-batch dependency (batch N reads batch N-1's edges) is preserved. Only
-        // the WITHIN-batch inserts overlap. (django edges/batch ≈ 4 k ⇒ ~4 chunks in flight.)
+        // One `insert_edges` call — it chunks and decides concurrent-vs-sequential internally from
+        // the store's `serialize_writes` flag (concurrent on small/medium repos, sequential on a
+        // large one where concurrent RELATION inserts collide on shared endpoints). The whole call
+        // is awaited before the next batch's ladder runs, so the cross-batch dependency (batch N
+        // reads N-1's edges) holds regardless.
         let t = std::time::Instant::now();
-        futures::future::try_join_all(
-            edges.chunks(PERSIST_CHUNK).map(|chunk| store.insert_edges(chunk)),
-        )
-        .await?;
+        store.insert_edges(&edges).await?;
         ms_persist += t.elapsed().as_millis();
 
         merge(&mut stats, &result.stats);

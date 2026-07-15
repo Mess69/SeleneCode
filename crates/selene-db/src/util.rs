@@ -3,6 +3,8 @@
 //! clamp that `src/nodes.rs`, `src/edges.rs`, `src/search.rs`, and
 //! `src/unresolved.rs` previously each carried a copy of.
 
+use std::future::Future;
+
 /// Rows/keys/ids processed per store round trip by every batched operation
 /// (`insert_nodes`, `insert_edges`, `insert_unresolved`, `IN`-list reads,
 /// keyed multi-statement writes, `existing_node_ids` point lookups).
@@ -30,3 +32,39 @@ pub(crate) fn clamp_i64(n: usize) -> i64 {
 /// the tokio worker count (`surrealdb-core` `kvs/rocksdb/cnf.rs`), so past that width the futures
 /// just queue on a semaphore inside the engine and we pay the memory for nothing.
 pub(crate) const WRITE_CONCURRENCY: usize = 16;
+
+/// Is this a **retryable optimistic-transaction conflict**? SurrealDB's embedded RocksDB uses
+/// optimistic concurrency, so concurrent writers that touch overlapping state get back
+/// `Transaction conflict: Resource busy. This transaction can be retried`. It is not a real failure
+/// — the loser just re-runs once the winner commits. At small scale (django) the concurrent writes
+/// rarely collide; at VS Code scale (257k nodes, ~1.2M edges) they do, and without a retry the whole
+/// resolve aborts with an incomplete graph. Detected by message because the SDK surfaces it as an
+/// opaque `surrealdb::Error`.
+pub(crate) fn is_retryable_conflict(e: &crate::Error) -> bool {
+    let s = e.to_string();
+    s.contains("Resource busy") || s.contains("can be retried") || s.contains("Transaction conflict")
+}
+
+/// Run `op`, retrying on a retryable transaction conflict with a growing (dispersing) backoff.
+/// `op` must be idempotent — every batched write here first filters out identities already present,
+/// so a re-run after an aborted (nothing-committed) conflict cannot double-insert.
+pub(crate) async fn with_conflict_retry<F, Fut, T>(mut op: F) -> crate::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = crate::Result<T>>,
+{
+    const MAX_ATTEMPTS: u32 = 16;
+    let mut attempt = 0u32;
+    loop {
+        match op().await {
+            Ok(v) => return Ok(v),
+            Err(e) if attempt < MAX_ATTEMPTS && is_retryable_conflict(&e) => {
+                attempt += 1;
+                // Grows with the attempt so a burst of conflicting writers disperses rather than
+                // all retrying in lockstep. A few ms is nothing next to the write it guards.
+                tokio::time::sleep(std::time::Duration::from_millis(2 * attempt as u64)).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+}

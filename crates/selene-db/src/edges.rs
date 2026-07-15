@@ -419,12 +419,28 @@ impl SurrealStore {
         // within-call dedup above already made every chunk's edge identities DISJOINT, so no two
         // chunks race on the same record, and the total is a SUM — order-independent by
         // construction. Sequentially this was 94 round trips for django's edges.
-        let chunks: Vec<&[&Edge]> = valid.chunks(CHUNK).collect();
+        // **Edges are a RELATION whose endpoints are SHARED** — a popular callee is one endpoint on
+        // thousands of edges — so concurrent `INSERT RELATION` writes collide on that endpoint's graph
+        // state under RocksDB's optimistic concurrency. At small/medium scale collisions are rare and
+        // concurrency is a big win; at VS Code scale (~1.2M edges) they are constant and concurrency
+        // aborts the resolve ("Resource busy") or live-locks on retries. So the indexer sets
+        // `serialize_writes` for a large repo and we run the chunks sequentially there; below the
+        // threshold they run concurrently. Both paths retry a conflict as a cheap guard. (Node inserts
+        // stay concurrent unconditionally — content-hashed ids are disjoint and never collide.)
         let mut inserted: u64 = 0;
-        for group in chunks.chunks(WRITE_CONCURRENCY) {
-            let futs = group.iter().map(|c| self.insert_edge_chunk(c));
-            for n in futures::future::try_join_all(futs).await? {
-                inserted += n;
+        if self.writes_are_serial() {
+            for chunk in valid.chunks(CHUNK) {
+                inserted += crate::util::with_conflict_retry(|| self.insert_edge_chunk(chunk)).await?;
+            }
+        } else {
+            let chunks: Vec<&[&Edge]> = valid.chunks(CHUNK).collect();
+            for group in chunks.chunks(WRITE_CONCURRENCY) {
+                let futs = group
+                    .iter()
+                    .map(|c| crate::util::with_conflict_retry(move || self.insert_edge_chunk(c)));
+                for n in futures::future::try_join_all(futs).await? {
+                    inserted += n;
+                }
             }
         }
         Ok(inserted)

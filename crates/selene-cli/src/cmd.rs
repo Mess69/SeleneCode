@@ -106,23 +106,39 @@ async fn index_inner(path: PathBuf) -> Result<()> {
         result.files_indexed, result.nodes_created
     );
 
+    // **Scale gate for the write path.** Concurrent writes (edge inserts, and the FTS build
+    // overlapped with resolve) are a large win on small/medium repos but collide on RocksDB's
+    // optimistic-transaction layer at VS Code scale (~257k nodes / ~1.2M edges), aborting the resolve
+    // or live-locking. Above the threshold we serialize: `set_serialize_writes` reaches every writer
+    // (shared across store clones), and the FTS builds AFTER resolve instead of overlapping it.
+    const LARGE_REPO_NODES: usize = 100_000;
+    let large = result.nodes_created as usize > LARGE_REPO_NODES;
+    store.set_serialize_writes(large);
+
     eprintln!("resolving …");
-    // Build the FULLTEXT index on a SEPARATE task, not `tokio::join!` on this one. The resolve
-    // ladder runs inside `block_in_place`; under `join!` (one task) that blocking section stalls the
-    // FTS branch, so the FTS build leaked ~1.3 s past the resolve instead of hiding behind it. A
-    // spawned task runs on another worker and progresses *during* the ladder's blocking sections.
-    // (SurrealStore is Arc-backed; the clone shares the one database — the same concurrent write the
-    // join already relied on, now actually overlapped.)
-    let store_fts = store.clone();
-    let fts_handle = tokio::spawn(async move { store_fts.bulk_load_finish().await });
-    let stats =
-        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+    let stats = if large {
+        // Serial: resolve, then FTS. Correct at any size; the only path that survives VS Code.
+        let stats =
+            selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+                .await
+                .context("resolution failed")?;
+        store.bulk_load_finish().await.context("the FULLTEXT index build failed")?;
+        stats
+    } else {
+        // Overlap the FTS build with resolve on a separate worker — hidden behind the resolve on
+        // repos where the concurrent writes don't contend.
+        let store_fts = store.clone();
+        let fts_handle = tokio::spawn(async move { store_fts.bulk_load_finish().await });
+        let stats =
+            selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+                .await
+                .context("resolution failed")?;
+        fts_handle
             .await
-            .context("resolution failed")?;
-    fts_handle
-        .await
-        .context("the FULLTEXT index task panicked")?
-        .context("the FULLTEXT index build failed")?;
+            .context("the FULLTEXT index task panicked")?
+            .context("the FULLTEXT index build failed")?;
+        stats
+    };
 
     let (nodes, edges) = store.node_edge_count().await.unwrap_or((0, 0));
     eprintln!(
