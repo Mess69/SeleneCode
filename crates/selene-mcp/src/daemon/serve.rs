@@ -248,9 +248,14 @@ async fn run_daemon(root: PathBuf) -> Result<()> {
     // Warm the store now so the first client's first query is already fast.
     crate::handlers::prewarm(&root).await;
 
+    // Keep the warm graph fresh: auto-sync on file changes (opt out with SELENE_NO_WATCH). Runs for
+    // the daemon's life; aborted when the accept loop returns.
+    let watcher = tokio::spawn(super::watch::watch_and_sync(root.clone()));
+
     let outcome = accept_loop(listener, root.clone(), idle_ms).await;
 
     // --- shutdown ------------------------------------------------------------------------------
+    watcher.abort();
     registry::deregister(&root);
     let _ = std::fs::remove_file(&sock);
     lock::release(&pid_path, own_pid());

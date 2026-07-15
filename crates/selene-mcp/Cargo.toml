@@ -32,6 +32,8 @@ tokio = { workspace = true }
 sha2 = { workspace = true }
 libc = { workspace = true }
 anyhow = { workspace = true }
+# The daemon's FileWatcher: auto-sync the warm store when source files change.
+notify = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "io-util"] }

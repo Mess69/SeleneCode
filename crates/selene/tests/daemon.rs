@@ -171,6 +171,38 @@ async fn sync_routes_through_a_running_daemon() {
     let _ = client.cancel().await;
 }
 
+/// The daemon auto-syncs on a file change — no manual `selene sync` needed, and the new symbol
+/// resolves through the warm store.
+#[tokio::test(flavor = "multi_thread")]
+async fn daemon_auto_syncs_on_a_file_change() {
+    let tmp = tempfile::tempdir().unwrap();
+    let home = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    index_tiny_project(root);
+
+    // Bring up the daemon (and its watcher) and keep it live.
+    let client = connect(root, home.path()).await;
+    let _ = client.list_tools(Default::default()).await.unwrap();
+
+    // Add a brand-new symbol on disk. Do NOT run `selene sync` — the watcher must do it.
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    std::fs::write(root.join("src/c.ts"), "export function gamma(){ return 2 }\n").unwrap();
+
+    // Wait past the 2s debounce plus the re-index, polling the warm store for the new symbol.
+    let mut found = false;
+    for _ in 0..20 {
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let (is_err, text) = call(&client, "explore", serde_json::json!({ "query": "gamma" })).await;
+        if !is_err && text.contains("gamma") {
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "the daemon auto-synced the new file and the symbol resolves");
+
+    let _ = client.cancel().await;
+}
+
 /// `SELENE_NO_DAEMON=1` serves in-process and spawns NO daemon.
 #[tokio::test(flavor = "multi_thread")]
 async fn no_daemon_env_serves_in_process() {
