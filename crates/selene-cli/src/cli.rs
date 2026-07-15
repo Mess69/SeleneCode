@@ -168,8 +168,9 @@ pub enum Command {
     /// The agent prompt-hook. Hidden; never breaks the prompt (always exits 0).
     #[command(hide = true)]
     PromptHook,
-    /// Wire SeleneCode into an agent's MCP config (claude, cursor, codex, …).
+    /// Wire SeleneCode into an agent's MCP config (claude, cursor, codex, opencode, hermes, …).
     Install {
+        /// Agents to install into: `auto` (detected), `all`, `none`, or ids. Default: claude.
         #[arg(short, long)]
         target: Vec<String>,
         #[arg(short, long, default_value = "local")]
@@ -182,6 +183,7 @@ pub enum Command {
     },
     /// Remove SeleneCode from an agent's MCP config.
     Uninstall {
+        /// Agents to remove from: `auto`, `all`, `none`, or ids. Default: all.
         #[arg(short, long)]
         target: Vec<String>,
         #[arg(short, long, default_value = "local")]

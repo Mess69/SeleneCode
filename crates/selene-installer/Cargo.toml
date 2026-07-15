@@ -1,6 +1,6 @@
 [package]
 name = "selene-installer"
-description = "Wire SeleneCode into an agent's MCP config (surgical JSON writers)."
+description = "Wire SeleneCode into 8 agents' MCP configs (surgical JSON/JSONC/TOML/YAML writers)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -9,6 +9,11 @@ license.workspace = true
 [dependencies]
 serde_json = { workspace = true }
 anyhow = { workspace = true }
+# Format-preserving surgical editors (Phase 7): keep every neighbour byte-identical.
+# jsonc-parser CST edits JSON *and* JSONC (comments, key order, trailing commas survive);
+# toml_edit does the same for codex's config.toml. Hermes YAML is line-based (no crate).
+jsonc-parser = { workspace = true, features = ["cst"] }
+toml_edit = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }

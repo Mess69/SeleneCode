@@ -490,11 +490,12 @@ pub fn unlock(path: PathBuf) -> Outcome {
     }
 }
 
-/// `selene install` — wire SeleneCode into an agent's MCP config. Default target `claude`, default
-/// location `local` (`.mcp.json` in the project). The binary path written is `current_exe()`'s
-/// ABSOLUTE path (a static binary is not guaranteed on PATH; a bad path fails silently — map Q8).
+/// `selene install` — wire SeleneCode into one or more agents' MCP configs. `--target` accepts
+/// `auto` (agents whose config exists), `all`, `none`, or a list of ids; empty defaults to `claude`.
+/// The binary path written is `current_exe()`'s ABSOLUTE path (a static binary is not guaranteed on
+/// PATH; a bad path fails silently — map Q8). Only an unknown `--target` or bad `--location` exit 1.
 pub async fn install(targets: Vec<String>, location: String, print_config: bool) -> Outcome {
-    use selene_installer::{JSON_TARGETS, Location};
+    use selene_installer::Ctx;
     let binary = match std::env::current_exe() {
         Ok(b) => b,
         Err(e) => {
@@ -502,87 +503,82 @@ pub async fn install(targets: Vec<String>, location: String, print_config: bool)
             return Outcome::Failure;
         }
     };
-    let project_root = match std::env::current_dir().and_then(|d| d.canonicalize()) {
-        Ok(d) => d,
+    let ctx = match Ctx::from_env() {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("selene install: {e}");
             return Outcome::Failure;
         }
     };
     if print_config {
-        println!("{}", selene_installer::print_config(&binary, &project_root));
+        println!("{}", selene_installer::print_config(&binary, &ctx));
         return Outcome::Ok;
     }
-    let loc = match Location::parse(&location) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("selene install: {e}");
-            return Outcome::Failure;
-        }
+    let (loc, ids) = match resolve_targets("install", &targets, &location, &ctx) {
+        Ok(v) => v,
+        Err(o) => return o,
     };
-    let targets: Vec<String> = if targets.is_empty() {
-        vec!["claude".to_string()]
-    } else {
-        targets
-    };
-    // Validate the targets are ones this installer handles (JSON family).
-    for t in &targets {
-        if !JSON_TARGETS.contains(&t.as_str()) {
-            eprintln!(
-                "selene install: target '{t}' is not supported yet (JSON agents: {}).",
-                JSON_TARGETS.join(", ")
-            );
-            return Outcome::Failure;
-        }
+    if ids.is_empty() {
+        eprintln!("selene install: no matching agents (try `--target all` or name one).");
+        return Outcome::Ok; // an empty selection is a valid, success-shaped no-op
     }
-    match selene_installer::install(&targets, loc, &binary, &project_root) {
-        Ok(results) => {
-            for r in results {
-                let verb = if r.changed { "wired selene into" } else { "already present in" };
-                eprintln!("  {verb} {} ({})", r.path.display(), r.target);
-            }
-            eprintln!("Restart the agent (or reload its MCP servers) to pick up selene.");
-            Outcome::Ok
-        }
-        Err(e) => {
-            eprintln!("selene install: {e:#}");
-            Outcome::Failure
-        }
-    }
+    let results = selene_installer::install(&ids, loc, &binary, &ctx);
+    report_targets("install", &results);
+    eprintln!("Restart the agent (or reload its MCP servers) to pick up selene.");
+    Outcome::Ok
 }
 
-/// `selene uninstall` — remove SeleneCode from an agent's MCP config.
+/// `selene uninstall` — remove SeleneCode from agents' MCP configs. Empty `--target` defaults to
+/// `all` (strip selene everywhere). Success-shaped even when nothing was configured.
 pub async fn uninstall(targets: Vec<String>, location: String) -> Outcome {
-    use selene_installer::{JSON_TARGETS, Location};
-    let project_root = match std::env::current_dir().and_then(|d| d.canonicalize()) {
-        Ok(d) => d,
+    use selene_installer::Ctx;
+    let ctx = match Ctx::from_env() {
+        Ok(c) => c,
         Err(e) => {
             eprintln!("selene uninstall: {e}");
             return Outcome::Failure;
         }
     };
-    let loc = match Location::parse(&location) {
-        Ok(l) => l,
-        Err(e) => {
-            eprintln!("selene uninstall: {e}");
-            return Outcome::Failure;
-        }
+    let targets = if targets.is_empty() { vec!["all".to_string()] } else { targets };
+    let (loc, ids) = match resolve_targets("uninstall", &targets, &location, &ctx) {
+        Ok(v) => v,
+        Err(o) => return o,
     };
-    let targets: Vec<String> =
-        if targets.is_empty() { JSON_TARGETS.iter().map(|s| s.to_string()).collect() } else { targets };
-    match selene_installer::uninstall(&targets, loc, &project_root) {
-        Ok(results) => {
-            for r in results {
-                if r.changed {
-                    eprintln!("  removed selene from {} ({})", r.path.display(), r.target);
-                }
-            }
-            Outcome::Ok
-        }
-        Err(e) => {
-            eprintln!("selene uninstall: {e:#}");
-            Outcome::Failure
-        }
+    let results = selene_installer::uninstall(&ids, loc, &ctx);
+    report_targets("uninstall", &results);
+    Outcome::Ok
+}
+
+/// Parse `--location` and resolve the `--target` flag to concrete ids. The ONLY two exit-1 cases in
+/// the installer surface: an unknown target id and an invalid location.
+fn resolve_targets(
+    cmd: &str,
+    targets: &[String],
+    location: &str,
+    ctx: &selene_installer::Ctx,
+) -> Result<(selene_installer::Location, Vec<String>), Outcome> {
+    let loc = selene_installer::Location::parse(location).map_err(|e| {
+        eprintln!("selene {cmd}: {e}");
+        Outcome::Failure
+    })?;
+    // Empty → "claude"; a single special word (auto/all/none) passes through; else a CSV of ids.
+    let flag = if targets.is_empty() { "claude".to_string() } else { targets.join(",") };
+    let ids = selene_installer::resolve_target_flag(&flag, ctx, loc).map_err(|e| {
+        eprintln!("selene {cmd}: {e}");
+        Outcome::Failure
+    })?;
+    Ok((loc, ids))
+}
+
+/// Print one line per target result.
+fn report_targets(cmd: &str, results: &[selene_installer::TargetResult]) {
+    for r in results {
+        let where_ = r.path.as_ref().map(|p| p.display().to_string()).unwrap_or_default();
+        let note = r.note.as_deref().map(|n| format!(" — {n}")).unwrap_or_default();
+        eprintln!("  {:<11} {} {}{}", r.id, r.action.as_str(), where_, note);
+    }
+    if results.is_empty() {
+        eprintln!("selene {cmd}: no targets selected.");
     }
 }
 
