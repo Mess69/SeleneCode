@@ -85,14 +85,31 @@ idle-timeout + socket-EOF couvrent déjà le cycle de vie), git-hooks (post-comm
 `selene sync`), worktree-mismatch, `telemetry`. **Phase 7 reste** : cibles codex (TOML `toml_edit`)
 et hermes (YAML), install des git-hooks. Aucun n'est bloquant.
 
-## 7. Phase 7 installer — CONSTRUIT (2026-07-15, `b3f3f00`)
+## 7. Phase 7 installer — COMPLET, 8 agents / 4 formats (2026-07-15, `d953ee6`)
 
-`crates/selene-installer/` + `selene install`/`uninstall`. Édition **chirurgicale** de
-`mcpServers.selene` dans les configs JSON des 5 agents (claude/cursor/gemini/kiro/antigravity),
-local `.mcp.json` ou global. `serde_json` `preserve_order` garde les voisins octet-pour-octet.
-L'entrée nomme le chemin **absolu** de `current_exe()` (un binaire statique n'est pas garanti sur
-`PATH`). Refuse d'écraser un JSON invalide. `--print-config` n'écrit rien. 5 tests unitaires + 2
-tests bout-en-bout (exit codes).
+`crates/selene-installer/` + `selene install`/`uninstall`/`--print-config`. Les **8 agents** dans
+leur **propre format**, chacun avec préservation **octet-pour-octet** des voisins :
+- `format.rs` — 3 writers préservant le format, chacun avec un garde `round_trips` (parse → ré-émet
+  → compare les octets ; **refuse** de toucher un fichier qui ne round-trip pas plutôt que le
+  reformater) : **json** (jsonc-parser CST — JSON *et* JSONC, commentaires + ordre des clés + virgules
+  traînantes survivent ; remplace l'ancien writer serde_json qui reformatait), **toml** (toml_edit —
+  codex `[mcp_servers.selene]`), **yaml** (line-based — hermes `mcp_servers.selene` + l'entrée liste
+  `platform_toolsets.cli: - mcp-selene`).
+- `targets.rs` — registre des 8 cibles (ordre gelé claude, cursor, codex, opencode, hermes, gemini,
+  antigravity, kiro), injection `Ctx{home,cwd,env}` (pas de globals ; les tests fakent HOME), chemins
+  + formes d'entrée par agent (opencode conteneur `mcp` avec `{type,command[],enabled}` ; codex /
+  hermes / antigravity global-only), et `--target auto|all|none|<csv>`. Les **2 seuls** cas exit-1 :
+  target inconnu, location invalide. Tout le reste success-shaped (created/updated/unchanged/removed/
+  not-found/kept/unsupported).
+
+Vérifié contre le **vrai binaire** sur les 4 formats (commentaire codex/opencode + voisins préservés,
+hermes toolset, ré-install `unchanged`, uninstall ne retire que selene). 9 tests format + 6 tests
+cibles (Ctx sur tempdirs) + 2 bout-en-bout (exit codes).
+
+**Déféré** (documenté dans `targets.rs`) : les fichiers secondaires par-agent (blocs d'instructions
+AGENTS.md/CLAUDE.md/GEMINI.md, cleanup .cursor/rules + kiro steering, sweep %APPDATA% opencode,
+migration antigravity). Le port des ~97 tests de contrat TS à la ligne n'est pas fait (consigne
+« features pas mimic »). L'enregistrement du serveur MCP — la feature — l'est.
 
 ## 5bis. Task 20 — le gate du jalon : ce qu'il a RÉVÉLÉ (2026-07-15)
 
