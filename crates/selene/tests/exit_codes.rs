@@ -1,4 +1,4 @@
-#![allow(clippy::unwrap_used)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 //! The exit-code contract, pinned against the REAL binary. Every row here is the `Outcome` table
 //! in `src/exit.rs`; a subcommand does not get to invent a code. Later tasks append rows as they
 //! fill in stub bodies.
@@ -10,8 +10,13 @@ fn selene() -> &'static str {
 }
 
 fn code(args: &[&str]) -> i32 {
+    code_in(std::env::current_dir().unwrap().as_path(), args)
+}
+
+fn code_in(dir: &std::path::Path, args: &[&str]) -> i32 {
     Command::new(selene())
         .args(args)
+        .current_dir(dir)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .status()
@@ -68,7 +73,36 @@ fn expected_no_ops_are_zero() {
 #[test]
 fn unimplemented_stubs_fail_cleanly() {
     // The anti-inert-seam guarantee: the arm is reachable and returns Failure until its task lands.
-    assert_eq!(code(&["sync"]), 1);
+    // `sync` on an un-indexed project is exit 1 (nothing to sync); `daemon` is still a stub.
+    let tmp = tempfile::tempdir().unwrap();
+    let p = tmp.path().to_str().unwrap();
+    assert_eq!(code(&["sync", p]), 1, "sync on an un-indexed project → 1");
     assert_eq!(code(&["daemon"]), 1);
-    assert_eq!(code(&["install"]), 1);
+}
+
+#[test]
+fn install_writes_a_valid_mcp_config_and_uninstall_removes_it() {
+    // `install` is implemented (Phase 7): it writes `.mcp.json` in the project cwd with selene's
+    // ABSOLUTE binary path, exits 0, and is reversible. Runs in a tempdir so it touches no real config.
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert_eq!(code_in(dir, &["install"]), 0, "install → 0");
+
+    let cfg = dir.join(".mcp.json");
+    let text = std::fs::read_to_string(&cfg).expect(".mcp.json was written");
+    let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
+    let cmd = v["mcpServers"]["selene"]["command"].as_str().unwrap();
+    assert!(cmd.starts_with('/'), "the binary path is absolute, not bare `selene`: {cmd}");
+
+    // --print-config touches no file (idempotent inspection).
+    assert_eq!(code_in(dir, &["install", "--print-config"]), 0);
+
+    // Uninstall removes the selene entry and still exits 0.
+    assert_eq!(code_in(dir, &["uninstall"]), 0, "uninstall → 0");
+    let text = std::fs::read_to_string(&cfg).unwrap();
+    let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+    assert!(
+        v["mcpServers"].get("selene").is_none(),
+        "uninstall removed the selene entry"
+    );
 }

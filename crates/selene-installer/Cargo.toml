@@ -1,12 +1,17 @@
 [package]
 name = "selene-installer"
-description = "Multi-agent installer: targets + registry + TOML/JSON/JSONC writers."
+description = "Wire SeleneCode into an agent's MCP config (surgical JSON writers)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
 [dependencies]
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
 
 [lints]
 workspace = true

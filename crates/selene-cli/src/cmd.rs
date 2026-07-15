@@ -432,6 +432,102 @@ pub fn unlock(path: PathBuf) -> Outcome {
     }
 }
 
+/// `selene install` — wire SeleneCode into an agent's MCP config. Default target `claude`, default
+/// location `local` (`.mcp.json` in the project). The binary path written is `current_exe()`'s
+/// ABSOLUTE path (a static binary is not guaranteed on PATH; a bad path fails silently — map Q8).
+pub async fn install(targets: Vec<String>, location: String, print_config: bool) -> Outcome {
+    use selene_installer::{JSON_TARGETS, Location};
+    let binary = match std::env::current_exe() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("selene install: cannot find my own path: {e}");
+            return Outcome::Failure;
+        }
+    };
+    let project_root = match std::env::current_dir().and_then(|d| d.canonicalize()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("selene install: {e}");
+            return Outcome::Failure;
+        }
+    };
+    if print_config {
+        println!("{}", selene_installer::print_config(&binary, &project_root));
+        return Outcome::Ok;
+    }
+    let loc = match Location::parse(&location) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("selene install: {e}");
+            return Outcome::Failure;
+        }
+    };
+    let targets: Vec<String> = if targets.is_empty() {
+        vec!["claude".to_string()]
+    } else {
+        targets
+    };
+    // Validate the targets are ones this installer handles (JSON family).
+    for t in &targets {
+        if !JSON_TARGETS.contains(&t.as_str()) {
+            eprintln!(
+                "selene install: target '{t}' is not supported yet (JSON agents: {}).",
+                JSON_TARGETS.join(", ")
+            );
+            return Outcome::Failure;
+        }
+    }
+    match selene_installer::install(&targets, loc, &binary, &project_root) {
+        Ok(results) => {
+            for r in results {
+                let verb = if r.changed { "wired selene into" } else { "already present in" };
+                eprintln!("  {verb} {} ({})", r.path.display(), r.target);
+            }
+            eprintln!("Restart the agent (or reload its MCP servers) to pick up selene.");
+            Outcome::Ok
+        }
+        Err(e) => {
+            eprintln!("selene install: {e:#}");
+            Outcome::Failure
+        }
+    }
+}
+
+/// `selene uninstall` — remove SeleneCode from an agent's MCP config.
+pub async fn uninstall(targets: Vec<String>, location: String) -> Outcome {
+    use selene_installer::{JSON_TARGETS, Location};
+    let project_root = match std::env::current_dir().and_then(|d| d.canonicalize()) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("selene uninstall: {e}");
+            return Outcome::Failure;
+        }
+    };
+    let loc = match Location::parse(&location) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("selene uninstall: {e}");
+            return Outcome::Failure;
+        }
+    };
+    let targets: Vec<String> =
+        if targets.is_empty() { JSON_TARGETS.iter().map(|s| s.to_string()).collect() } else { targets };
+    match selene_installer::uninstall(&targets, loc, &project_root) {
+        Ok(results) => {
+            for r in results {
+                if r.changed {
+                    eprintln!("  removed selene from {} ({})", r.path.display(), r.target);
+                }
+            }
+            Outcome::Ok
+        }
+        Err(e) => {
+            eprintln!("selene uninstall: {e:#}");
+            Outcome::Failure
+        }
+    }
+}
+
 /// `selene version` — the crate version. Exit 0.
 pub fn version() -> Outcome {
     println!("selene {}", env!("CARGO_PKG_VERSION"));

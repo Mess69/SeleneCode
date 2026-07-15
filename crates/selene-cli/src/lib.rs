@@ -56,8 +56,8 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::PromptHook => Outcome::ExpectedNoOp,
 
         // -- installer (Phase 7) --
-        Command::Install { .. } => cmd::not_yet("install", "Phase 7"),
-        Command::Uninstall { .. } => cmd::not_yet("uninstall", "Phase 7"),
+        Command::Install { target, location, print_config, .. } => cmd::install(target, location, print_config).await,
+        Command::Uninstall { target, location, .. } => cmd::uninstall(target, location).await,
 
         // -- misc --
         Command::Telemetry { .. } => cmd::not_yet("telemetry", "Phase 6 Task 21"),

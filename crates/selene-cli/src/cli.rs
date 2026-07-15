@@ -176,8 +176,9 @@ pub enum Command {
         location: String,
         #[arg(short = 'y', long)]
         yes: bool,
+        /// Print the JSON snippet that would be written and touch no file.
         #[arg(long)]
-        print_config: Option<String>,
+        print_config: bool,
     },
     /// Remove SeleneCode from an agent's MCP config.
     Uninstall {

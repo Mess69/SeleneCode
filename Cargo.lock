@@ -3809,6 +3809,7 @@ dependencies = [
  "selene-extract",
  "selene-mcp",
  "selene-resolve",
+ "serde_json",
  "tempfile",
  "tokio",
  "tracing",
@@ -3825,6 +3826,7 @@ dependencies = [
  "selene-core",
  "selene-db",
  "selene-extract",
+ "selene-installer",
  "selene-mcp",
  "selene-resolve",
  "selene-sync",
@@ -3929,6 +3931,11 @@ dependencies = [
 [[package]]
 name = "selene-installer"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "serde_json",
+ "tempfile",
+]
 
 [[package]]
 name = "selene-mcp"

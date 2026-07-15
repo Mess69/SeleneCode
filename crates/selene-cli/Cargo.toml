@@ -12,6 +12,7 @@ selene-db = { path = "../selene-db", default-features = false, features = ["kv-r
 selene-extract = { path = "../selene-extract" }
 selene-resolve = { path = "../selene-resolve" }
 selene-sync = { path = "../selene-sync" }
+selene-installer = { path = "../selene-installer" }
 selene-mcp = { path = "../selene-mcp" }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }

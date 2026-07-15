@@ -36,7 +36,7 @@ selene-cli       = { path = "crates/selene-cli" }
 # docs/reference/rust-ecosystem-2026-07.md (verified 2026-07-12); grammar crates
 # are pinned exact (=x.y.z) below (Phase 2 Task 1), adopted by selene-extract.
 serde        = { version = "1", features = ["derive"] }
-serde_json   = "1"
+serde_json   = { version = "1", features = ["preserve_order"] }
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"
