@@ -19,7 +19,7 @@ use exit::Outcome;
 pub async fn run(cli: Cli) -> ExitCode {
     let outcome = match cli.command {
         // -- lifecycle --
-        Command::Init { path, force, .. } => cmd::init(path, force).await,
+        Command::Init { path, force, no_hooks, .. } => cmd::init(path, force, no_hooks).await,
         Command::Uninit { path, force } => cmd::uninit(path, force),
         Command::Index { path, .. } => cmd::index(path).await,
         Command::Sync { path, quiet } => cmd::sync(path, quiet).await,

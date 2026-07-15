@@ -31,6 +31,9 @@ pub enum Command {
         force: bool,
         #[arg(short, long)]
         verbose: bool,
+        /// Do not install the git hooks that re-sync the index after commit/merge/checkout.
+        #[arg(long)]
+        no_hooks: bool,
     },
     /// Remove SeleneCode from a project (deletes `.selene/`).
     Uninit {

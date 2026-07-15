@@ -123,7 +123,7 @@ async fn index_inner(path: PathBuf) -> Result<()> {
 }
 
 /// `selene init` — index by default. Already-initialized is an expected no-op (warn, exit 0).
-pub async fn init(path: PathBuf, force: bool) -> Outcome {
+pub async fn init(path: PathBuf, force: bool, no_hooks: bool) -> Outcome {
     let Ok(root) = resolve(&path) else {
         eprintln!("selene init: no such path: {}", path.display());
         return Outcome::Failure;
@@ -135,15 +135,42 @@ pub async fn init(path: PathBuf, force: bool) -> Outcome {
         );
         return Outcome::ExpectedNoOp;
     }
-    index(root).await
+    let outcome = index(root.clone()).await;
+    // Install the git hooks that keep the index fresh after commit/merge/checkout. Best effort:
+    // outside a git repo it is a silent no-op, and a hook failure never fails `init`.
+    if !no_hooks && matches!(outcome, Outcome::Ok) {
+        install_hooks(&root);
+    }
+    outcome
 }
 
-/// `selene uninit` — remove `.selene/`. Not-there is an expected no-op (exit 0).
+/// Install the git sync hooks with selene's absolute path. Never fails the caller.
+fn install_hooks(root: &Path) {
+    let Ok(binary) = std::env::current_exe() else {
+        return;
+    };
+    match selene_sync::hooks::install(root, &binary) {
+        Ok(results) if !results.is_empty() => {
+            let n = results.iter().filter(|r| r.action != "unchanged").count();
+            if n > 0 {
+                eprintln!("installed {n} git sync hook(s) (post-commit/merge/checkout)");
+            }
+        }
+        Ok(_) => {} // not a git repo — nothing to do
+        Err(e) => eprintln!("selene init: could not install git hooks: {e}"),
+    }
+}
+
+/// `selene uninit` — remove `.selene/` and the git sync hooks. Not-there is an expected no-op.
 pub fn uninit(path: PathBuf, _force: bool) -> Outcome {
     let root = match path.canonicalize() {
         Ok(r) => r,
         Err(_) => return Outcome::ExpectedNoOp, // nothing to remove
     };
+    // Strip our git hooks first (best effort, never fails uninit).
+    if let Err(e) = selene_sync::hooks::remove(&root) {
+        eprintln!("selene uninit: could not remove git hooks: {e}");
+    }
     let dir = root.join(".selene");
     if !dir.exists() {
         eprintln!("not initialized: {} has no .selene/", root.display());

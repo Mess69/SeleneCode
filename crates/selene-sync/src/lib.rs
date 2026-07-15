@@ -15,6 +15,8 @@
 //! never orphans edges pointing into it. After the touched files are re-extracted, resolution runs
 //! over the store's pending queue to bind the new references.
 
+pub mod hooks;
+
 use std::collections::HashMap;
 use std::path::Path;
 
