@@ -3803,6 +3803,7 @@ dependencies = [
  "anyhow",
  "clap",
  "rmcp",
+ "selene-cli",
  "selene-core",
  "selene-db",
  "selene-extract",
@@ -3817,6 +3818,20 @@ dependencies = [
 [[package]]
 name = "selene-cli"
 version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "rmcp",
+ "selene-core",
+ "selene-db",
+ "selene-extract",
+ "selene-mcp",
+ "selene-resolve",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "selene-context"

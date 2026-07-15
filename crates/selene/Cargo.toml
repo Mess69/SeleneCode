@@ -23,6 +23,7 @@ selene-db = { path = "../selene-db", default-features = false, features = ["kv-r
 selene-extract = { path = "../selene-extract" }
 selene-resolve = { path = "../selene-resolve" }
 selene-mcp = { path = "../selene-mcp" }
+selene-cli = { path = "../selene-cli" }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true }
