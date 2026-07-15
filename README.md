@@ -27,7 +27,7 @@ radius — enough to answer without opening a file.
 | **Indexing** | 12 languages (TS, JS, Python, Rust, Go, Java, Kotlin, C, C++, PHP, Ruby, …), deterministic |
 | **Speed** | django (931 files, 19k nodes): **index ~11 s, explore ~1–2 s**. **1.4–1.9× of the CodeGraph TS build** — see [the benchmark](docs/benchmarks/2026-07-14-rust-vs-ts-speed.md) |
 | **`explore`** | answers flow questions correctly on small/medium repos; the milestone gate (`selene-mcp/tests/dogfood_gate.rs`) drives the real binary end-to-end |
-| **Large repos** | VS Code (349k nodes): indexing works, explore latency fixed (35.6 s → 6.5 s). One open limitation — semantic relevance when the query's words diverge from the code's ([details](docs/benchmarks/2026-07-phase5-dogfood.md)) |
+| **Large repos** | VS Code (349k nodes): indexing works; `explore` is **~2 s steady-state** (a persistent `serve` pays a ~9 s warm-up once per session). One open limitation — semantic relevance when the query's words diverge from the code's ([details](docs/benchmarks/2026-07-phase5-dogfood.md)) |
 | **Not built yet** | the CLI beyond `index`/`serve`/`status` (`sync`), the file watcher, the daemon, and `selene install` (MCP config is wired by hand today) |
 
 Honest limitations and the roadmap are in [`RESUME.md`](RESUME.md).

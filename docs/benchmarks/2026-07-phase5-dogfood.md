@@ -132,7 +132,21 @@ database can do that the TS build's SQLite could not. It is the single most comp
 SurrealDB" lever left, and it is scoped, not built: it needs an embedding pipeline (a model over
 349k symbols), which is a feature, not a tweak.
 
+**Steady-state latency in REAL usage (persistent serve), measured on VS Code (349k nodes):**
+
+```
+call 1:  9.1 s   (cold: RocksDB open + FTS index loaded into RAM on first query)
+call 2:  2.1 s   ← steady state
+call 3:  2.1 s
+```
+
+The `6.5 s` figure above is a **fresh spawn per call** — what the gate does, paying warm-up every
+time. Real MCP usage keeps `serve` running for the whole session, so the ~9 s warm-up is paid **once**
+and every subsequent `explore` is **~2 s** on a 349k-node repo. That is genuinely usable. The daemon
+(Phase 6) is the lever that would keep the store warm ACROSS sessions/processes so even the first call
+is fast — a pure Tokio win.
+
 **Bottom line.** The product answers flow questions correctly and fast on small/medium repos (the
-common case), and large-repo latency is fixed (35.6 s → 6.5 s). What remains for a large repo is
-*semantic* relevance when the query's vocabulary diverges from the code's — a documented limitation
-with a clear, native path (vector search), not a regression.
+common case), and on a large repo it is ~2 s steady-state. What remains for a large repo is *semantic*
+relevance when the query's vocabulary diverges from the code's — a documented limitation with a clear,
+native path (vector search), not a regression.
