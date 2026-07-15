@@ -142,7 +142,7 @@ use selene_context::{Confidence, find_relevant_context};
 async fn find_relevant_context_gathers_a_connected_subgraph() {
     let (qm, _tmp) = manager(write_colocation_fixture).await;
 
-    let ctx = find_relevant_context(&qm, "scrapeLoop", &FindOptions::default(), None)
+    let ctx = find_relevant_context(&qm, "scrapeLoop", &FindOptions::default(), None, false)
         .await
         .unwrap();
 
@@ -161,13 +161,19 @@ async fn low_confidence_is_a_value_not_an_error() {
     let (qm, _tmp) = manager(write_colocation_fixture).await;
 
     // Two terms, nothing in the graph matching more than one of them, nothing distinctive.
-    let ctx = find_relevant_context(&qm, "zzzalpha zzzbeta", &FindOptions::default(), None)
-        .await
-        .expect(
-            "a query the graph cannot answer is an ANSWER — an Err here becomes an isError at \
+    let ctx = find_relevant_context(
+        &qm,
+        "zzzalpha zzzbeta",
+        &FindOptions::default(),
+        None,
+        false,
+    )
+    .await
+    .expect(
+        "a query the graph cannot answer is an ANSWER — an Err here becomes an isError at \
              the MCP layer, and the rmcp spike proved an escaping `?` becomes a JSON-RPC \
              transport failure. One isError early and the agent abandons the tool.",
-        );
+    );
 
     assert!(ctx.subgraph.nodes.is_empty());
     assert_eq!(
@@ -178,9 +184,15 @@ async fn low_confidence_is_a_value_not_an_error() {
     );
 
     // The positive control: the same pipeline reports High on a query it CAN answer.
-    let good = find_relevant_context(&qm, "scrapeLoop parseFeed", &FindOptions::default(), None)
-        .await
-        .unwrap();
+    let good = find_relevant_context(
+        &qm,
+        "scrapeLoop parseFeed",
+        &FindOptions::default(),
+        None,
+        false,
+    )
+    .await
+    .unwrap();
     assert_eq!(
         good.confidence,
         Confidence::High,
@@ -192,7 +204,7 @@ async fn low_confidence_is_a_value_not_an_error() {
 #[tokio::test(flavor = "multi_thread")]
 async fn one_term_queries_are_always_high_confidence() {
     let (qm, _tmp) = manager(write_colocation_fixture).await;
-    let ctx = find_relevant_context(&qm, "scrapeLoop", &FindOptions::default(), None)
+    let ctx = find_relevant_context(&qm, "scrapeLoop", &FindOptions::default(), None, false)
         .await
         .unwrap();
     assert_eq!(ctx.confidence, Confidence::High);
@@ -226,7 +238,7 @@ async fn the_trims_never_drop_a_root() {
         max_nodes: 1, // a cap so tight that only a root can survive
         ..FindOptions::default()
     };
-    let ctx = find_relevant_context(&qm, "scrapeLoop", &opts, None)
+    let ctx = find_relevant_context(&qm, "scrapeLoop", &opts, None, false)
         .await
         .unwrap();
 

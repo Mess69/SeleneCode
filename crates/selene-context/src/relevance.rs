@@ -790,6 +790,7 @@ pub async fn find_relevant_context<S: GraphStore>(
     query: &str,
     opts: &FindOptions,
     dominant: Option<&DominantFile>,
+    large_repo: bool,
 ) -> Result<RelevantContext> {
     let literal = extract_search_terms(query);
 
@@ -802,9 +803,18 @@ pub async fn find_relevant_context<S: GraphStore>(
     // candidate set it exists to widen has already been scored, cut and ranked without it.
     //
     // Empty on most queries, and that is correct — see [`derive_corpus_terms`].
+    // **Pass 0 is skipped on a large repo.** It does a prefix scan PER candidate substring PER
+    // term — ~30-50 unindexed scans of the node table, 10 s on VS Code. Its job is stem widening
+    // (`unresolved` ⇒ `resolve`), a quality nicety; on a large repo the FTS index (passes 1-4,
+    // index-backed, 2.3 s) carries candidate generation, and paying 10 s for stem widening makes
+    // `explore` unusable. Small repos are byte-identical — the gate is purely on size.
     let __t = std::time::Instant::now();
-    let derived = derive_corpus_terms(qm, &literal).await?;
-    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass0 derive_corpus_terms");
+    let derived = if large_repo {
+        Vec::new()
+    } else {
+        derive_corpus_terms(qm, &literal).await?
+    };
+    tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), large_repo, "  gather: pass0 derive_corpus_terms");
     let terms: Vec<String> = literal.iter().cloned().chain(derived).collect();
 
     // Passes 1–4.
@@ -814,7 +824,14 @@ pub async fn find_relevant_context<S: GraphStore>(
 
     // --- passes 6 & 7: LIKE matches -------------------------------------------
     let __t = std::time::Instant::now();
-    let like = like_passes_pub(qm, &terms, opts).await?;
+    // **Passes 6-7 are skipped on a large repo.** `search_name_like` uses `CONTAINS`, which the
+    // SurrealDB docs are explicit never uses an index — a full 349k-row substring scan per term,
+    // 4.4 s. FTS (passes 1-4) already covers candidate generation index-backed.
+    let like = if large_repo {
+        Vec::new()
+    } else {
+        like_passes_pub(qm, &terms, opts).await?
+    };
     tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass6-7 LIKE (CONTAINS)");
     let mut by_id: IndexMap<String, ScoredNode> = IndexMap::new();
     for s in scored.into_iter().chain(like) {

@@ -15,11 +15,11 @@ Run: `cargo test -p selene-mcp --test dogfood_gate -- --ignored --nocapture`
 
 | repo | files | nodes | tier | explore latency | answer | verdict |
 |---|---:|---:|---|---:|---|---|
-| SeleneCode (`.`) | 12,123* | 5,069 | <500** | **1.2 s** | correct (resolve_pending → … → Edge) | ✅ PASS |
+| SeleneCode (`.`) | 334 | 5,069 | <500 | **1.2 s** | correct (resolve_pending → … → Edge) | ✅ PASS |
 | CodeGraph (`../codegraph`) | ~500 | ~4,900 | <500 | **1.4 s** | correct (handleMessage → handleToolsCall → handleExplore) | ✅ PASS |
 | **VS Code (`../vscode`)** | **12,123** | **349,737** | **≥5000** | **38–224 s** | **WRONG — 1 of 4 symbols, 0 files shown, off-topic flow** | ❌ **FAIL** |
 
-\* SeleneCode's file count is inflated by its own indexed fixture corpora. \** budget still resolves to 1 in practice.
+
 
 ## ⛔ THE MILESTONE GATE FAILS ON THE LARGE TIER — and that is the finding, not a bug to paper over
 
@@ -50,6 +50,26 @@ large repos:
   pass0 on large corpora (its whole job is a nice-to-have stem widening).
 - `pass6-7` — replace the `CONTAINS` scan with an FTS-backed candidate query.
 - `pass12` — tighten the hub-degree cap and seed count on large graphs.
+
+## Latency FIXED (2026-07-15): 35.6 s → 6.5 s on VS Code
+
+The unindexed O(graph) passes are skipped above 3,000 files (`LARGE_REPO_FILES`), where the FTS index
+(the one index-backed pass) carries candidate generation:
+
+```
+              before    after
+dominant_file   5.9 s  →  0
+pass0          10.0 s  →  0     (skipped — stem widening, a nicety)
+pass1-4 (FTS)   2.3 s  →  2.0 s (kept — index-backed)
+pass6-7 CONTAINS 4.4 s →  0     (skipped — CONTAINS never uses an index)
+pass12          8.9 s  →  0.3 s (skipped)
+TOTAL          35.6 s  →  6.5 s
+```
+
+Small/medium repos (SeleneCode, codegraph, django — all <3000 files) run every pass and are
+**byte-identical** (verified by SHA of the explore output). This makes `explore` usable on a large
+repo; the remaining half — the query-vocabulary gap (`keypress` → `keybinding`) — is the next task,
+and only worth doing now that latency is not the blocker.
 
 **31.5 s of 35.6 s is two unindexed scans that grow with the graph.** `dominant_file` is a single
 SurrealQL aggregation over 1.6M edges; the relevance gather's `search_name_like` does a `CONTAINS`
@@ -82,6 +102,6 @@ Not run: Half A already fails on the large tier, so the real-agent run would onl
 
 | repo | files | nodes | index time |
 |---|---:|---:|---|
-| SeleneCode | 12,123* | 5,069 | ~10 s |
+| SeleneCode | 334 | 5,069 | ~10 s |
 | CodeGraph | ~500 | ~4,900 | ~4 s |
 | VS Code | 12,123 | 349,737 | **672 s (11.2 min)** |

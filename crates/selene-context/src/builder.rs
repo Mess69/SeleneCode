@@ -39,6 +39,19 @@ use crate::relevance::{
 };
 use crate::stopwords::extract_search_terms;
 
+/// Above this many files, the `dominant_file` core-directory boost cannot fire (no single file
+/// holds ≥3× the edges of the next among hundreds of thousands), so its 12-query `GROUP BY` over
+/// every edge — 5.9 s on VS Code — is skipped. Comfortably above any repo where the boost is
+/// verified to help (django is 931 files).
+const DOMINANT_FILE_MAX_FILES: u64 = 3_000;
+const LARGE_REPO_FILES: u64 = 3_000;
+
+/// Above this many files, `explore` skips the unindexed relevance passes (pass 0 stem widening,
+/// passes 6-7 `CONTAINS` scans, pass 12 graph walk) and relies on the FTS index. Those passes are
+/// O(graph size) and made `explore` take 35 s on VS Code (349k nodes); on a repo this large they
+/// are unaffordable, and the FTS index (index-backed) carries candidate generation. Small/medium
+/// repos (django is 931 files) run every pass, byte-identical.
+
 /// The section prefix a file block starts with. **Load-bearing**: truncation cuts on it, so
 /// it must stay unique and greppable (`budgets::FILE_SECTION_PREFIX`).
 const FILE_HEADER: &str = "**`";
@@ -73,29 +86,38 @@ impl<S: GraphStore> ContextBuilder<S> {
         let file_count = self.qm.file_count().await?;
         let budget = budget_for(file_count);
 
-        // Pass 4c's core-directory boost. This argument was **hardcoded to `None`** — the store
-        // had no `dominant_file` primitive, so the boost could never fire, and a scoring pass
-        // that never fires reads exactly like one that does. The primitive exists now
-        // (`GraphStore::dominant_file`); a store error still degrades to `None`, which is the
-        // same degradation TS takes on a SQL failure ("scoring works without the boost") and
-        // never an `isError`.
+        // Pass 4c's core-directory boost, **only computed where it can matter.** `dominant_file` is a `GROUP BY` over every edge
+        // (12 queries on a huge repo); on VS Code that was **5.9 s**. Its boost fires only when one
+        // file holds ≥3× the edges of the next (`DOMINANCE_RATIO`) — a small-repo phenomenon. Among
+        // 1.6M edges across 12k files, no single file dominates, so the whole computation is a 6 s
+        // no-op above this size. django (931 files) still computes it; VS Code (12k) skips it.
         let __t = std::time::Instant::now();
-        let dominant = self.qm.store().dominant_file().await.ok().flatten().map(
-            |(file_path, edge_count, next_edge_count)| DominantFile {
-                file_path,
-                edge_count,
-                next_edge_count,
-            },
-        );
+        let dominant = if file_count <= DOMINANT_FILE_MAX_FILES {
+            self.qm.store().dominant_file().await.ok().flatten().map(
+                |(file_path, edge_count, next_edge_count)| DominantFile {
+                    file_path,
+                    edge_count,
+                    next_edge_count,
+                },
+            )
+        } else {
+            None
+        };
 
         // **`FindOptions::explore()`, never `::default()`** — see its docs. The default is TS's
         // `buildContext` option set (20 nodes, 3 roots, depth 1); explore's is 10× larger, and
         // running explore through the default is what made a four-concept question unanswerable.
         tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/1: dominant_file");
         let __t = std::time::Instant::now();
-        let ctx =
-            find_relevant_context(&self.qm, query, &FindOptions::explore(), dominant.as_ref())
-                .await?;
+        let large_repo = file_count > LARGE_REPO_FILES;
+        let ctx = find_relevant_context(
+            &self.qm,
+            query,
+            &FindOptions::explore(),
+            dominant.as_ref(),
+            large_repo,
+        )
+        .await?;
         tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), nodes = ctx.subgraph.nodes.len(), "explore/2: find_relevant_context (relevance gather)");
 
         if ctx.subgraph.nodes.is_empty() {

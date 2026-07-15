@@ -188,15 +188,19 @@ fn flow_step_count(out: &str) -> usize {
 fn assert_sufficient(q: &Question, out: &str) {
     let (files, all) = rendered_files_and_symbols(out);
     let shown = |sym: &str| all.contains(sym);
-    let file_shown =
-        |path: &str| files.iter().any(|f| f == path || f.ends_with(path) || path.ends_with(f));
+    let file_shown = |path: &str| {
+        files
+            .iter()
+            .any(|f| f == path || f.ends_with(path) || path.ends_with(f))
+    };
 
     for sym in &q.must_contain_symbols {
         assert!(
             shown(sym),
             "[{}] the answer does not render `{sym}` — an agent cannot answer \"{}\" without \
              opening a file. That is the gate.\n--- files shown: {files:?}",
-            q.repo, q.query
+            q.repo,
+            q.query
         );
     }
     for path in &q.must_contain_files {
@@ -260,7 +264,10 @@ fn dogfood_the_milestone_gate() {
     let mut ran = 0;
     for q in &qs.question {
         let Some(repo) = resolve_repo(&q.repo) else {
-            eprintln!("SKIP [{}] — repo not present (sibling clone absent)", q.repo);
+            eprintln!(
+                "SKIP [{}] — repo not present (sibling clone absent)",
+                q.repo
+            );
             continue;
         };
         eprintln!("\n=== [{}] {} ===", q.repo, q.query);
@@ -274,14 +281,21 @@ fn dogfood_the_milestone_gate() {
             q.max_explore_calls
         );
         assert_sufficient(q, &out);
-        eprintln!("  ✅ sufficient — {} chars, flow {} steps", out.len(), flow_step_count(&out));
+        eprintln!(
+            "  ✅ sufficient — {} chars, flow {} steps",
+            out.len(),
+            flow_step_count(&out)
+        );
         ran += 1;
     }
     assert!(
         ran > 0,
         "the gate proved nothing — no repo was present. At minimum `.` (SeleneCode) must run."
     );
-    eprintln!("\n=== {ran}/{} rows proved zero-Read sufficiency ===", qs.question.len());
+    eprintln!(
+        "\n=== {ran}/{} rows proved zero-Read sufficiency ===",
+        qs.question.len()
+    );
 }
 
 /// **The negative control.** Without it Half A is not a test: a gate that would pass on garbage
