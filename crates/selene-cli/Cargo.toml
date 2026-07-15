@@ -16,6 +16,8 @@ selene-installer = { path = "../selene-installer" }
 selene-mcp = { path = "../selene-mcp" }
 # The local embedder — behind `semantic-search`, so a default build never compiles the ONNX runtime.
 selene-embed = { workspace = true, optional = true }
+# JSON serialization for `selene viz`'s graph export (safe escaping into the HTML).
+serde_json = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true }

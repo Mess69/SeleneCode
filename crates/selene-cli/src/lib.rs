@@ -8,6 +8,7 @@
 pub mod cli;
 mod cmd;
 pub mod exit;
+mod viz;
 
 pub use cli::{Cli, Command};
 
@@ -15,7 +16,7 @@ use std::process::ExitCode;
 
 use exit::Outcome;
 
-/// The one dispatch — 22 arms. Returns the process exit code (see [`exit`] for the contract).
+/// The one dispatch — 23 arms. Returns the process exit code (see [`exit`] for the contract).
 pub async fn run(cli: Cli) -> ExitCode {
     let outcome = match cli.command {
         // -- lifecycle --
@@ -48,6 +49,9 @@ pub async fn run(cli: Cli) -> ExitCode {
             depth,
             ..
         } => cmd::affected(files, stdin, depth, path).await,
+
+        // -- visualization --
+        Command::Viz { path, out, max_nodes, all_kinds, open } => cmd::viz(path, out, max_nodes, all_kinds, open).await,
 
         // -- serve / daemon / hooks --
         Command::Serve { mcp, path, .. } => cmd::serve(mcp, path).await,
