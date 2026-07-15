@@ -209,7 +209,6 @@ async fn resolve_pending<S: GraphStore + Clone>(
     // hot ladder is cache/query shape; a hot persist is write batching), and one summed number
     // cannot tell you which you have.
     let (mut ms_ladder, mut ms_persist, mut ms_fetch) = (0u128, 0u128, 0u128);
-    let mut all_failed: Vec<UnresolvedRef> = Vec::new();
 
     // **Fetched ONCE, not paged.** `LIMIT n START offset` is a SKIP-SCAN: the engine walks the
     // first `offset` rows only to discard them, so paging 52 358 refs RESOLVE_BATCH at a time costs
@@ -288,17 +287,16 @@ async fn resolve_pending<S: GraphStore + Clone>(
         //
         // It also costs almost nothing to keep: `insert_edges` is **2.4 s** of the 27.7 s persist.
         // The 24 s was never the edges — it was DRAINING THE QUEUE.
+        // This batch's edge chunks are disjoint slices (no shared edge id), so they insert
+        // CONCURRENTLY — but the whole `try_join_all` is awaited before the next batch's ladder
+        // runs, so the cross-batch dependency (batch N reads batch N-1's edges) is preserved. Only
+        // the WITHIN-batch inserts overlap. (django edges/batch ≈ 4 k ⇒ ~4 chunks in flight.)
         let t = std::time::Instant::now();
-        for chunk in edges.chunks(PERSIST_CHUNK) {
-            store.insert_edges(chunk).await?;
-        }
+        futures::future::try_join_all(
+            edges.chunks(PERSIST_CHUNK).map(|chunk| store.insert_edges(chunk)),
+        )
+        .await?;
         ms_persist += t.elapsed().as_millis();
-
-        // ⚠ **The STORED rows, unmutated** (#760). They are what gets re-inserted as failed; a
-        // resolver that mutated `reference_name` would re-key them. The old drain loop turned that
-        // bug into an infinite loop (5M edges / 1.4 GB in the TS build); the offset walk cannot
-        // hang, so the guard below is now an ASSERTION on the data rather than a brake on the loop.
-        all_failed.extend(result.unresolved.iter().cloned());
 
         merge(&mut stats, &result.stats);
         done += batch.len();
@@ -308,11 +306,14 @@ async fn resolve_pending<S: GraphStore + Clone>(
     }
 
     // --- (3b) the queue reaches its final state ONCE ------------------------------------------
-    // The edges were written per batch above (they have to be — see the note there). What is
-    // deferred is the QUEUE, which nothing reads during the pass: two statements instead of
-    // 52 354 keyed writes.
+    // The edges were written per batch above (they have to be — see the note there). What is left
+    // is to empty the pending queue. We do NOT persist the failed refs: `retryable_failed` and
+    // `unresolved_by_files` — the only readers of `status = failed` rows — have ZERO callers, and
+    // incremental sync reads `status = pending`, not failed. So writing ~24 k failed rows on django
+    // was ~1.5 s spent on a table nothing queries. Passing `&[]` keeps the one needed statement
+    // (DELETE the pending rows) and drops the dead insert. (measured django persist 3.96 s → ~2.7 s.)
     let t = std::time::Instant::now();
-    store.replace_pending_with_failed(&all_failed).await?;
+    store.replace_pending_with_failed(&[]).await?;
     ms_persist += t.elapsed().as_millis();
 
     // --- the #760 invariant, now checkable instead of merely survivable -----------------------
