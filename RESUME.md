@@ -24,7 +24,8 @@ planifié, plus un blocage.
 |---|---|
 | Phases 1, 2, 3 (db, extract, resolve) | ✅ **mergées sur `main`** (`ba29336`), gates verts |
 | Phase 4 (graph + context) | ✅ code fini — **et `explore` répond enfin** (§2) |
-| Phase 5 (MCP + binaire) | 🟡 **Task 19 ✅ faite**, **Task 20 gate construit et lancé** — voir §5bis |
+| Phase 5 (MCP + binaire) | ✅ **Task 19 faite**, **Task 20 gate construit + lancé** (§5bis), latence gros-dépôt fixée |
+| Binaire | ✅ `index` · `serve --mcp` · **`status`** (nouveau) · README réécrit, quick-start vérifiée |
 | Perf | ✅ **~5,6× vs ce matin, 1,4–1,9× de TS** — voir §3 |
 | Phases 6, 7 (CLI/daemon, installer) | ✅ **plans écrits et arbitrés**, 35 tâches prêtes |
 | Phases 8, 9 (langages wave-2, parité, v1) | ⬜ roadmap seulement |
@@ -53,11 +54,18 @@ tous deux mesurés (`docs/benchmarks/2026-07-phase5-dogfood.md`) :
    `LARGE_REPO_FILES = 3000`, on saute pass0 / pass6-7 (`CONTAINS`) / pass12 / dominant_file et on
    s'appuie sur FTS → **6,5 s** (dont ~2,4 s de requête ; le reste = startup `serve`, nul avec le
    daemon Phase 6). **Petits dépôts byte-identiques** (sha vérifiés).
-2. **Vocabulaire — ⬜ RESTE.** La question dit « key**press** », le code dit « key**binding** ». La
-   pertinence ne pont pas le vocabulaire requête→code. Le build TS avait `name_segment_vocab` pour
-   ça — jamais porté. **C'est la prochaine tâche** (choisie APRÈS la latence, à juste titre : aucune
-   qualité ne comptait à 35 s/appel). Tant que ce n'est pas fait, le gate VS Code échoue sur la
-   correction, pas la vitesse.
+2. **Vocabulaire — ⬜ RESTE, et la voie est tracée.** La question dit « key**press** », le code dit
+   « key**binding** ». **Tenté : l'analyseur `edgengram(3,15)` de SurrealDB** (le mécanisme natif de
+   partial-match, remplaçant la table SQLite `name_segment_vocab` du build TS). **Mesuré sur VS Code
+   (re-index 11 min) : ça ne suffit pas** — « keypress » et « keybinding » ne partagent que « key »
+   (3 car.), noyé sous les matches de « command »/« executed » ; et les vrais symboles ne contiennent
+   NI « command » NI « executed » — ils ne sont atteignables que par le SENS. Reverté (byte-identique
+   petits dépôts, zéro bénéfice sur la cible ; garder un changement de schéma inefficace = le piège
+   du seam inerte). **La vraie réponse SurrealDB-native : la recherche vectorielle** (HNSW + cosine
+   KNN) — embedder chaque symbole + la requête, KNN sur la similarité. C'est le superpouvoir
+   graphe+vecteur que le SQLite du build TS ne pouvait pas offrir, et le prochain gros levier
+   « max out SurrealDB ». Scopé, pas construit (il faut un pipeline d'embeddings). Détail :
+   `docs/benchmarks/2026-07-phase5-dogfood.md`.
 
 ---
 
