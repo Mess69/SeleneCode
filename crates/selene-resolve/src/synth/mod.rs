@@ -229,22 +229,26 @@ pub async fn run_synthesis_with<S: GraphStore>(
     // kind it would have used. First pass wins, which is why the order is fixed.
     let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
 
-    for pass in passes {
-        // Language gate, BEFORE the pass runs.
-        if !pass.languages.is_empty() && !pass.languages.iter().any(|l| langs.contains(l)) {
-            continue;
-        }
+    // Run the language-gated passes CONCURRENTLY — each is a read-only correlation over the store
+    // (the ctx is `Send + Sync`, its caches thread-safe), so their store reads overlap instead of
+    // running one after another. `join_all` preserves order, so the merge below is still in pass
+    // order and "first pass wins" is unchanged. A panicking pass still degrades to zero edges.
+    let gated: Vec<&SynthPassDef<S>> = passes
+        .iter()
+        .filter(|p| p.languages.is_empty() || p.languages.iter().any(|l| langs.contains(l)))
+        .collect();
+    let results = futures::future::join_all(
+        gated
+            .iter()
+            .map(|pass| AssertUnwindSafe((pass.run)(store, ctx)).catch_unwind()),
+    )
+    .await;
 
-        // A failing pass contributes zero edges and never fails the index: the
-        // blast radius of one bad regex is one channel, not the whole graph.
-        let edges = match AssertUnwindSafe((pass.run)(store, ctx))
-            .catch_unwind()
-            .await
-        {
+    for res in results {
+        let edges = match res {
             Ok(Ok(edges)) => edges,
             Ok(Err(_)) | Err(_) => continue,
         };
-
         for mut e in edges {
             if !seen.insert((e.source.clone(), e.target.clone())) {
                 continue;
