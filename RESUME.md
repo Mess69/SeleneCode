@@ -79,28 +79,32 @@ Un binaire unique, SurrealDB embarqué (RocksDB), qui **indexe** et **sert du MC
 pas déduit : `selene index` + `selene serve --mcp` + `explore` répond (§2).
 **11–12 langages** (c, cpp, go, java, js, kotlin, php, python, ruby, rust, ts).
 
-### Ce qui n'existe PAS — et ce sont des stubs de 3 lignes, pas des « presque finis »
+### Ce qui EXISTE maintenant (mis à jour 2026-07-15)
 
-| crate | lignes | conséquence concrète |
-|---|---|---|
-| `selene-cli` | **3** | **2 commandes en tout** : `index`, `serve`. Pas de `status`, rien d'autre. |
-| `selene-sync` | **3** | **Tu réindexes À LA MAIN quand ton code change.** Pas de watch, pas d'incrémental branché. |
-| `selene-installer` | **3** | Pas de `selene install`. La config MCP s'écrit **à la main**. |
+- **Binaire** : `index` · `serve --mcp` · **`status`**. README réécrit avec quick-start vérifiée.
+- **Task 19 (discipline `isError` + caps d'entrée)** : ✅ faite, testée via le vrai serveur.
+- **Task 20 (gate du jalon)** : ✅ construit (`dogfood_gate.rs` + `dogfood.sh`) et **lancé** — voir
+  §5bis. Il a prouvé que le produit marche sur petits/moyens dépôts et révélé le gap gros-dépôt
+  (latence fixée, vocabulaire à faire via vector search).
 
-*(`selene-resolve` (17 k lignes) et `selene-graph` sont **implémentés** — le mot « stub » traîne dans
-leur doc de module et trompe un `grep`. Ne te fais pas avoir.)*
+### Ce qui n'existe TOUJOURS PAS — stubs de 3 lignes
 
-### Les trois trous qui séparent « ça tourne » de « ça tient sa promesse »
+| crate | conséquence concrète |
+|---|---|
+| `selene-sync` | **Réindex À LA MAIN quand le code change.** Pas de watch, pas d'incrémental branché. |
+| `selene-installer` | Pas de `selene install`. La config MCP s'écrit **à la main** (documenté au README). |
+| `selene-cli` | Le binaire `selene` porte `index`/`serve`/`status` en dur ; les 22 sous-commandes du plan Phase 6 (dont `sync`, le daemon) ne sont pas construites. |
 
-1. **Task 20 — le gate du jalon — n'est pas écrit.** Personne n'a **prouvé** qu'un agent répond avec
-   **zéro Read/Grep** sur un gros dépôt (VS Code, 11 938 fichiers). C'est *la* promesse du produit.
-   Elle est **plausible, pas démontrée**. Tout le reste est décoration tant que ce n'est pas mesuré.
-2. **Task 19 — discipline `isError`** pas faite. Un `?` qui s'échappe d'un handler et l'agent
-   abandonne l'outil **pour toujours** (§5.B).
-3. **`explore` n'est prouvé que sur TS et Rust.** Le gate Phase 4 tourne sur **2 projets, tous les
-   deux TS**. Python/Django, Go, Java/Spring : le code existe, **rien ne le prouve**.
+*(`selene-resolve` (17 k lignes) et `selene-graph` sont **implémentés** — « stub » traîne dans leur
+doc de module et trompe un `grep`.)*
 
-### Utilisable dès maintenant, avec ces réserves
+### Ce qui reste pour « ça tient sa promesse à TOUTE échelle »
+
+1. **Vector search** — le gate VS Code échoue sur le vocabulaire (§5bis). La voie native est tracée.
+2. **`explore` prouvé surtout sur TS/Rust.** Le gate Phase 4 tourne sur 2 projets TS ; Python/Django,
+   Go, Java/Spring : le code existe, peu prouvé (le dogfood gate ajoute django/VS Code côté latence).
+
+### Utilisable dès maintenant
 
 ```bash
 cargo build --release -p selene
