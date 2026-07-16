@@ -462,7 +462,7 @@ pub fn infer_java_field_receiver_type<C: ResolutionContext>(
     }
 
     // The class enclosing the call — the TIGHTEST one (the latest start).
-    let mut enclosing: Option<&Node> = None;
+    let mut enclosing: Option<&Arc<Node>> = None;
     for n in &in_file {
         if !matches!(n.kind, NodeKind::Class | NodeKind::Interface) || n.language != r.language {
             continue;
@@ -713,7 +713,7 @@ pub(crate) fn lookup_callee_return_type<C: ResolutionContext>(
         None => (None, callee),
     };
 
-    let candidates: Vec<Node> = ctx
+    let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_name(method)
         .into_iter()
         .filter(|n| {
@@ -738,12 +738,12 @@ pub(crate) fn lookup_callee_return_type<C: ResolutionContext>(
                         || n.qualified_name.ends_with(&format!("::{want}"))
                         || want.ends_with(&format!("::{}", n.qualified_name))
                 })
-                .and_then(|n| n.return_type)
+                .and_then(|n| n.return_type.clone())
         }
         None => candidates
             .into_iter()
             .find(|n| n.kind == NodeKind::Function)
-            .and_then(|n| n.return_type),
+            .and_then(|n| n.return_type.clone()),
     }
 }
 

@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 
+use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
@@ -156,7 +157,7 @@ fn supertype_names_of<C: ResolutionContext>(
         }
         for supertype in ctx.supertypes(&node.id) {
             if seen.insert(supertype.name.clone()) {
-                out.push(supertype.name);
+                out.push(supertype.name.clone());
             }
         }
     }
@@ -473,12 +474,12 @@ fn method_name_fallback<C: ResolutionContext>(
         return None;
     }
 
-    let methods: Vec<Node> = candidates
+    let methods: Vec<Arc<Node>> = candidates
         .into_iter()
         .filter(|n| n.kind == NodeKind::Method && n.name == method)
         .collect();
 
-    let same_language: Vec<Node> = methods
+    let same_language: Vec<Arc<Node>> = methods
         .iter()
         .filter(|m| m.language == r.language)
         .cloned()
@@ -495,7 +496,7 @@ fn method_name_fallback<C: ResolutionContext>(
 
     if targets.len() > 1 {
         let receiver_words = split_camel_case(receiver);
-        let mut best: Option<&Node> = None;
+        let mut best: Option<&Arc<Node>> = None;
         let mut best_score = 0i32;
 
         // Same-file candidates first, so a tie (`>` keeps the first seen) resolves

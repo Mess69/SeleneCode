@@ -29,6 +29,7 @@
 
 use std::collections::HashSet;
 
+use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
@@ -161,7 +162,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
 
         // Anchor on the class node in the REFERENCE'S OWN FILE — never a same-named
         // class elsewhere.
-        let mut frontier: Vec<Node> = self
+        let mut frontier: Vec<Arc<Node>> = self
             .ctx
             .nodes_by_name(&class_name)
             .into_iter()
@@ -190,7 +191,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
             if frontier.is_empty() {
                 break;
             }
-            let mut next: Vec<Node> = Vec::new();
+            let mut next: Vec<Arc<Node>> = Vec::new();
 
             for type_node in &frontier {
                 for supertype in self.ctx.supertypes(&type_node.id) {
@@ -211,7 +212,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                     if let Some(target) = found {
                         return Some(ResolvedRef {
                             original: r.clone(), // the STORED row (#760)
-                            target_node_id: target.id,
+                            target_node_id: target.id.clone(),
                             confidence: 0.85,
                             resolved_by: ResolvedBy::FunctionRef,
                         });

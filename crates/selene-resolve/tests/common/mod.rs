@@ -204,54 +204,54 @@ impl FakeContext {
 }
 
 impl ResolutionContext for FakeContext {
-    fn nodes_in_file(&self, path: &str) -> Vec<Node> {
+    fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.file_path == path)
-            .cloned()
+            .map(|n| Arc::new(n.clone()))
             .collect()
     }
 
-    fn nodes_by_name(&self, name: &str) -> Vec<Node> {
+    fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.name == name)
-            .cloned()
+            .map(|n| Arc::new(n.clone()))
             .collect()
     }
 
-    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Node> {
+    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.name.to_lowercase() == lower)
-            .cloned()
+            .map(|n| Arc::new(n.clone()))
             .collect()
     }
 
-    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Node> {
+    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.qualified_name == qn)
-            .cloned()
+            .map(|n| Arc::new(n.clone()))
             .collect()
     }
 
-    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Node> {
+    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Arc<Node>> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.kind == kind)
-            .cloned()
+            .map(|n| Arc::new(n.clone()))
             .collect()
     }
 
-    fn node_by_id(&self, id: &str) -> Option<Node> {
+    fn node_by_id(&self, id: &str) -> Option<Arc<Node>> {
         self.tick();
-        self.node(id).cloned()
+        self.node(id).map(|n| Arc::new(n.clone()))
     }
 
     fn count_files_with_name(&self, name: &str) -> u64 {
@@ -272,7 +272,7 @@ impl ResolutionContext for FakeContext {
         self.nodes.iter().filter(|n| n.name == name).count() as u64
     }
 
-    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Node> {
+    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Arc<Node>> {
         self.tick();
         let exact = format!("{ty}::{method}");
         let suffix = format!("::{ty}::{method}");
@@ -284,11 +284,11 @@ impl ResolutionContext for FakeContext {
                     && Language::from_wire(&n.language) == Some(language)
                     && (n.qualified_name == exact || n.qualified_name.ends_with(&suffix))
             })
-            .cloned()
+            .map(|n| Arc::new(n.clone()))
             .collect()
     }
 
-    fn supertypes(&self, node_id: &str) -> Vec<Node> {
+    fn supertypes(&self, node_id: &str) -> Vec<Arc<Node>> {
         self.tick();
         let Ok(edges) = self.supertype_edges.lock() else {
             return Vec::new();
@@ -296,16 +296,16 @@ impl ResolutionContext for FakeContext {
         edges
             .iter()
             .filter(|(child, _)| child == node_id)
-            .filter_map(|(_, parent)| self.node(parent).cloned())
+            .filter_map(|(_, parent)| self.node(parent).map(|n| Arc::new(n.clone())))
             .collect()
     }
 
-    fn members_of(&self, node_id: &str) -> Vec<Node> {
+    fn members_of(&self, node_id: &str) -> Vec<Arc<Node>> {
         self.tick();
         self.contains_edges
             .iter()
             .filter(|(container, _)| container == node_id)
-            .filter_map(|(_, member)| self.node(member).cloned())
+            .filter_map(|(_, member)| self.node(member).map(|n| Arc::new(n.clone())))
             .collect()
     }
 

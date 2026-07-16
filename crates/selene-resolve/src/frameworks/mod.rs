@@ -118,7 +118,7 @@ pub(crate) fn by_convention<C: ResolutionContext + ?Sized>(
     dirs: &[&str],
     confidence: f64,
 ) -> Option<ResolvedRef> {
-    let candidates: Vec<Node> = ctx
+    let candidates: Vec<_> = ctx
         .nodes_by_name(&r.reference_name)
         .into_iter()
         .filter(|n| kinds.contains(&n.kind))

@@ -75,24 +75,30 @@ pub trait ResolutionContext: Send + Sync {
     // ---- graph reads --------------------------------------------------------
 
     /// Every node attributed to `path`.
-    fn nodes_in_file(&self, path: &str) -> Vec<Node>;
+    ///
+    /// Returns `Arc<Node>`, not `Node`: the ladder calls these accessors millions of times and a
+    /// deep `Vec<Node>` clone per call (each `Node` is ~half a dozen heap `String`s) is the hot cost
+    /// — `resolve/3` was 189 s on VS Code. An `Arc` clone is a refcount bump, the same cheap
+    /// reference-passing the TS original got free from its GC (~15× on a 10k-element group). The
+    /// eager index stores each node once behind an `Arc`.
+    fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>>;
 
     /// Every node whose `name` matches exactly (case-sensitive).
-    fn nodes_by_name(&self, name: &str) -> Vec<Node>;
+    fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>>;
 
     /// Every node whose lower-cased `name` equals `lower` (fuzzy matching,
     /// Task 7). `lower` is expected **pre-lowercased** by the caller.
-    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Node>;
+    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>>;
 
     /// Every node whose `qualified_name` matches exactly (overloads can share
     /// one, so this is a `Vec`, not an `Option`).
-    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Node>;
+    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>>;
 
     /// Every node of exactly `kind`.
-    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Node>;
+    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Arc<Node>>;
 
     /// Point lookup by id.
-    fn node_by_id(&self, id: &str) -> Option<Node>;
+    fn node_by_id(&self, id: &str) -> Option<Arc<Node>>;
 
     /// How many **files** contain a node named exactly `name`.
     ///
@@ -126,7 +132,7 @@ pub trait ResolutionContext: Send + Sync {
     /// Memoized (key `"{language} {ty}::{method}"`, `maps/resolution.md`
     /// §Caches) — the store has no suffix query, so this is a
     /// fetch-by-name-then-filter (spike F2).
-    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Node>;
+    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Arc<Node>>;
 
     /// The supertypes of `node_id`: the targets of its outgoing
     /// `implements`/`extends` edges.
@@ -135,10 +141,10 @@ pub trait ResolutionContext: Send + Sync {
     /// unioned every rails `Engine`'s parents and produced a cross-class wrong
     /// edge (`design/function-ref-capture.md` §Known limits); the node walk
     /// eliminated it.
-    fn supertypes(&self, node_id: &str) -> Vec<Node>;
+    fn supertypes(&self, node_id: &str) -> Vec<Arc<Node>>;
 
     /// The `contains` children of `node_id` — a class's members.
-    fn members_of(&self, node_id: &str) -> Vec<Node>;
+    fn members_of(&self, node_id: &str) -> Vec<Arc<Node>>;
 
     // ---- filesystem reads ---------------------------------------------------
 
@@ -267,12 +273,12 @@ pub struct StoreContext<S: GraphStore> {
     known_names: HashSet<String>,
 
     // LRU caches (maps/resolution.md §Caches).
-    node_cache: SyncLru<String, Vec<Node>>, // file → nodes
-    name_cache: SyncLru<String, Vec<Node>>, // name → nodes
-    lower_name_cache: SyncLru<String, Vec<Node>>, // lower(name) → nodes
-    qualified_name_cache: SyncLru<String, Vec<Node>>,
-    method_match_cache: SyncLru<String, Vec<Node>>, // "{lang} {ty}::{method}"
-    node_by_id_cache: SyncLru<String, Option<Node>>,
+    node_cache: SyncLru<String, Vec<Arc<Node>>>, // file → nodes
+    name_cache: SyncLru<String, Vec<Arc<Node>>>, // name → nodes
+    lower_name_cache: SyncLru<String, Vec<Arc<Node>>>, // lower(name) → nodes
+    qualified_name_cache: SyncLru<String, Vec<Arc<Node>>>,
+    method_match_cache: SyncLru<String, Vec<Arc<Node>>>, // "{lang} {ty}::{method}"
+    node_by_id_cache: SyncLru<String, Option<Arc<Node>>>,
 
     /// **Every node, indexed in memory.** `None` on a repo too large to hold (see `EAGER_MAX`),
     /// where the lazy LRU path below stays in charge.
@@ -290,15 +296,15 @@ pub struct StoreContext<S: GraphStore> {
     eager: Option<EagerIndex>,
     count_cache: SyncLru<String, u64>,
     node_count_cache: SyncLru<String, u64>,
-    supertype_cache: SyncLru<String, Vec<Node>>,
-    member_cache: SyncLru<String, Vec<Node>>,
+    supertype_cache: SyncLru<String, Vec<Arc<Node>>>,
+    member_cache: SyncLru<String, Vec<Arc<Node>>>,
     file_cache: SyncLru<String, Option<String>>, // content-bearing
     file_lines_cache: SyncLru<String, Option<Arc<Vec<String>>>>, // content-bearing
     import_mapping_cache: SyncLru<String, Arc<Vec<ImportMapping>>>,
     re_export_cache: SyncLru<String, Arc<Vec<ReExport>>>,
 
     /// ~24 kinds, never evicted — a plain map, not an LRU (`#1180`).
-    kind_cache: std::sync::Mutex<HashMap<NodeKind, Vec<Node>>>,
+    kind_cache: std::sync::Mutex<HashMap<NodeKind, Vec<Arc<Node>>>>,
 
     /// Store reads that FAILED. See [`ResolutionContext::store_read_errors`] —
     /// a swallowed store error must never be indistinguishable from a clean miss.
@@ -338,9 +344,17 @@ struct EagerIndex {
 /// pointer-clones, not 4-5 deep copies of every node — that duplication was ~5× the node bytes
 /// resident and the bulk of the indexer's peak RSS on a large repo). The deep copy is paid only
 /// here, on the SMALL per-query result set, and freed as soon as the caller drops it.
-fn deref_clone(v: &[Arc<Node>]) -> Vec<Node> {
-    v.iter().map(|a| a.as_ref().clone()).collect()
+fn arc_vec(v: Option<Vec<Node>>) -> Vec<Arc<Node>> {
+    v.unwrap_or_default().into_iter().map(Arc::new).collect()
 }
+
+/// Deref-clone an `Arc<Node>` group back into owned `Node`s — the CONTAINMENT boundary for the cold
+/// resolvers (framework/synth passes) that still work in owned `Node`s. The hot ladder path works in
+/// `Arc<Node>` end-to-end (no clone); these rarely-hit paths pay the deep copy here to stay simple.
+pub(crate) fn owned(v: Vec<Arc<Node>>) -> Vec<Node> {
+    v.into_iter().map(|a| a.as_ref().clone()).collect()
+}
+
 
 impl EagerIndex {
     fn build(nodes: Vec<Node>) -> Self {
@@ -581,77 +595,65 @@ impl<S: GraphStore> StoreContext<S> {
 }
 
 impl<S: GraphStore> ResolutionContext for StoreContext<S> {
-    fn nodes_in_file(&self, path: &str) -> Vec<Node> {
+    fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_file.get(path).map(|v| deref_clone(v)).unwrap_or_default();
+            return ix.by_file.get(path).cloned().unwrap_or_default();
         }
         self.node_cache.get_or_insert_with(path.to_string(), || {
-            self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path))
-                .unwrap_or_default()
+            arc_vec(self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path)))
         })
     }
 
-    fn nodes_by_name(&self, name: &str) -> Vec<Node> {
+    fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_name.get(name).map(|v| deref_clone(v)).unwrap_or_default();
+            return ix.by_name.get(name).cloned().unwrap_or_default();
         }
         self.name_cache.get_or_insert_with(name.to_string(), || {
-            self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name))
-                .unwrap_or_default()
+            arc_vec(self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name)))
         })
     }
 
-    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Node> {
+    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_lower.get(lower).map(|v| deref_clone(v)).unwrap_or_default();
+            return ix.by_lower.get(lower).cloned().unwrap_or_default();
         }
-        self.lower_name_cache
-            .get_or_insert_with(lower.to_string(), || {
-                self.blocking(
-                    "get_nodes_by_name_ci",
-                    self.store.get_nodes_by_name_ci(lower),
-                )
-                .unwrap_or_default()
-            })
+        self.lower_name_cache.get_or_insert_with(lower.to_string(), || {
+            arc_vec(self.blocking("get_nodes_by_name_ci", self.store.get_nodes_by_name_ci(lower)))
+        })
     }
 
-    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Node> {
+    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_qname.get(qn).map(|v| deref_clone(v)).unwrap_or_default();
+            return ix.by_qname.get(qn).cloned().unwrap_or_default();
         }
-        self.qualified_name_cache
-            .get_or_insert_with(qn.to_string(), || {
-                self.blocking(
-                    "get_nodes_by_qualified_name",
-                    self.store.get_nodes_by_qualified_name(qn),
-                )
-                .unwrap_or_default()
-            })
+        self.qualified_name_cache.get_or_insert_with(qn.to_string(), || {
+            arc_vec(self.blocking(
+                "get_nodes_by_qualified_name",
+                self.store.get_nodes_by_qualified_name(qn),
+            ))
+        })
     }
 
-    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Node> {
+    fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Arc<Node>> {
         if let Ok(cache) = self.kind_cache.lock()
             && let Some(hit) = cache.get(&kind)
         {
             return hit.clone();
         }
-        let fetched = self
-            .blocking("get_nodes_by_kind", self.store.get_nodes_by_kind(kind))
-            .unwrap_or_default();
+        let fetched = arc_vec(self.blocking("get_nodes_by_kind", self.store.get_nodes_by_kind(kind)));
         if let Ok(mut cache) = self.kind_cache.lock() {
             cache.insert(kind, fetched.clone());
         }
         fetched
     }
 
-    fn node_by_id(&self, id: &str) -> Option<Node> {
+    fn node_by_id(&self, id: &str) -> Option<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_id.get(id).map(|a| a.as_ref().clone());
+            return ix.by_id.get(id).cloned();
         }
-        self.node_by_id_cache
-            .get_or_insert_with(id.to_string(), || {
-                self.blocking("get_node", self.store.get_node(id)).flatten()
-            })
+        self.node_by_id_cache.get_or_insert_with(id.to_string(), || {
+            self.blocking("get_node", self.store.get_node(id)).flatten().map(Arc::new)
+        })
     }
 
     fn count_files_with_name(&self, name: &str) -> u64 {
@@ -672,7 +674,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
             })
     }
 
-    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Node> {
+    fn method_matches(&self, language: Language, ty: &str, method: &str) -> Vec<Arc<Node>> {
         // The memo key is the TS one, verbatim: `${language} ${type}::${method}`.
         let key = format!("{} {ty}::{method}", language.as_str());
         self.method_match_cache.get_or_insert_with(key, || {
@@ -692,7 +694,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
         })
     }
 
-    fn supertypes(&self, node_id: &str) -> Vec<Node> {
+    fn supertypes(&self, node_id: &str) -> Vec<Arc<Node>> {
         self.supertype_cache
             .get_or_insert_with(node_id.to_string(), || {
                 self.blocking(
@@ -702,16 +704,14 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
                 )
                 .unwrap_or_default()
                 .into_iter()
-                .map(|n| n.node)
-                .collect()
+                .map(|n| Arc::new(n.node)).collect()
             })
     }
 
-    fn members_of(&self, node_id: &str) -> Vec<Node> {
+    fn members_of(&self, node_id: &str) -> Vec<Arc<Node>> {
         self.member_cache
             .get_or_insert_with(node_id.to_string(), || {
-                self.blocking("children", self.store.children(node_id))
-                    .unwrap_or_default()
+                arc_vec(self.blocking("children", self.store.children(node_id)))
             })
     }
 

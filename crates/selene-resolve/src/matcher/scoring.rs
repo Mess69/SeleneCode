@@ -8,6 +8,7 @@
 //! binds to, silently, across every repo. A resolver that binds a reference to
 //! the *wrong* target is worse than one that binds nothing.
 
+use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::families::{crosses_known_family, same_language_family};
@@ -43,7 +44,7 @@ pub fn ambiguous_name_ceiling() -> usize {
 /// reference's own family; `imports` must not cross two *known* families;
 /// everything else (`calls`, `extends`, …) passes, because cross-language
 /// `calls` bridges are real.
-pub fn apply_language_gate(candidates: Vec<Node>, r: &UnresolvedRef) -> Vec<Node> {
+pub fn apply_language_gate(candidates: Vec<Arc<Node>>, r: &UnresolvedRef) -> Vec<Arc<Node>> {
     let Some(ref_lang) = Language::from_wire(&r.language) else {
         return candidates;
     };
@@ -102,11 +103,11 @@ pub fn path_proximity(from: &str, to: &str) -> i32 {
 /// It is a **stable partition, not a sort**: the same-file candidates keep their
 /// relative order, and so do the rest. A no-op with fewer than 2 candidates, or
 /// when none share the call site's file.
-pub fn prefer_call_site_file(nodes: &[Node], call_site_file: &str) -> Vec<Node> {
+pub fn prefer_call_site_file(nodes: &[Arc<Node>], call_site_file: &str) -> Vec<Arc<Node>> {
     if nodes.len() < 2 {
         return nodes.to_vec();
     }
-    let (same, other): (Vec<Node>, Vec<Node>) = nodes
+    let (same, other): (Vec<Arc<Node>>, Vec<Arc<Node>>) = nodes
         .iter()
         .cloned()
         .partition(|n| n.file_path == call_site_file);
@@ -126,7 +127,7 @@ pub fn prefer_call_site_file(nodes: &[Node], call_site_file: &str) -> Vec<Node> 
 /// with **+5 for the same language family** as a tiebreak. A C/C++
 /// `#include "X.h"` resolves relative to the including file — never to an
 /// arbitrary same-named header on another platform.
-pub fn pick_closest_file_node(candidates: &[Node], r: &UnresolvedRef) -> Option<Node> {
+pub fn pick_closest_file_node(candidates: &[Arc<Node>], r: &UnresolvedRef) -> Option<Arc<Node>> {
     let dir_of = |p: &str| -> String {
         match p.rfind('/') {
             Some(i) => p[..i].to_string(),
@@ -135,18 +136,18 @@ pub fn pick_closest_file_node(candidates: &[Node], r: &UnresolvedRef) -> Option<
     };
     let ref_dir = dir_of(&r.file_path);
 
-    let same_dir: Vec<&Node> = candidates
+    let same_dir: Vec<&Arc<Node>> = candidates
         .iter()
         .filter(|c| dir_of(&c.file_path) == ref_dir)
         .collect();
-    let pool: Vec<&Node> = if same_dir.is_empty() {
+    let pool: Vec<&Arc<Node>> = if same_dir.is_empty() {
         candidates.iter().collect()
     } else {
         same_dir
     };
 
     let ref_lang = Language::from_wire(&r.language);
-    let mut best: Option<&Node> = None;
+    let mut best: Option<&Arc<Node>> = None;
     let mut best_score = i32::MIN;
 
     for c in pool {
@@ -189,13 +190,13 @@ pub fn pick_closest_file_node(candidates: &[Node], r: &UnresolvedRef) -> Option<
 /// file) — and it cuts the candidate set to same-language size on mixed
 /// front-end/back-end repos (#915). When *all* candidates are cross-language (a
 /// legitimate cross-language `calls` bridge), nothing is skipped.
-pub fn find_best_match(candidates: &[Node], r: &UnresolvedRef) -> Option<Node> {
+pub fn find_best_match(candidates: &[Arc<Node>], r: &UnresolvedRef) -> Option<Arc<Node>> {
     let ref_parts: Vec<&str> = r.file_path.split('/').collect();
     let ref_dirs = &ref_parts[..ref_parts.len().saturating_sub(1)];
 
     let has_same_language = candidates.iter().any(|c| c.language == r.language);
 
-    let mut best: Option<&Node> = None;
+    let mut best: Option<&Arc<Node>> = None;
     let mut best_score = i32::MIN;
 
     for c in candidates {
@@ -267,8 +268,8 @@ mod tests {
     use super::*;
     use selene_core::RefStatus;
 
-    fn node(id: &str, kind: NodeKind, name: &str, file: &str, lang: Language) -> Node {
-        Node {
+    fn node(id: &str, kind: NodeKind, name: &str, file: &str, lang: Language) -> Arc<Node> {
+        Arc::new(Node {
             id: id.into(),
             kind,
             name: name.into(),
@@ -293,7 +294,7 @@ mod tests {
             route_method: None,
             route_path: None,
             framework: None,
-        }
+        })
     }
 
     fn re(name: &str, kind: &str, file: &str, lang: Language) -> UnresolvedRef {

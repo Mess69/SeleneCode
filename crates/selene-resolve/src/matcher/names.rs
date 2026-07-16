@@ -9,6 +9,7 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
+use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
@@ -57,7 +58,7 @@ pub fn match_by_file_path<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
         return None;
     }
 
-    let file_nodes: Vec<Node> = ctx
+    let file_nodes: Vec<Arc<Node>> = ctx
         .nodes_by_name(file_name)
         .into_iter()
         .filter(|n| n.kind == NodeKind::File)
@@ -77,7 +78,7 @@ pub fn match_by_file_path<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     // A suffix match (`snippets/foo.liquid` → `src/snippets/foo.liquid`). When
     // several files share the basename — a `#include "X.h"` with a same-named
     // header on another platform — the one in the includer's own directory wins.
-    let suffix: Vec<Node> = file_nodes
+    let suffix: Vec<Arc<Node>> = file_nodes
         .iter()
         .filter(|n| n.qualified_name.ends_with(name) || n.file_path.ends_with(name))
         .cloned()
@@ -121,7 +122,7 @@ pub fn match_by_qualified_name<C: ResolutionContext>(
         return None;
     }
 
-    let keep = |nodes: Vec<Node>| -> Vec<Node> {
+    let keep = |nodes: Vec<Arc<Node>>| -> Vec<Arc<Node>> {
         if r.reference_kind != "calls" {
             return nodes;
         }
@@ -157,7 +158,7 @@ pub fn match_by_qualified_name<C: ResolutionContext>(
     if last.is_empty() {
         return None;
     }
-    let partial: Vec<Node> = keep(ctx.nodes_by_name(last))
+    let partial: Vec<Arc<Node>> = keep(ctx.nodes_by_name(last))
         .into_iter()
         .filter(|n| n.qualified_name.ends_with(name))
         .collect();
@@ -193,7 +194,7 @@ pub fn match_by_exact_name<C: ResolutionContext>(
     r: &UnresolvedRef,
     ctx: &C,
 ) -> Option<ResolvedRef> {
-    let candidates: Vec<Node> = apply_language_gate(ctx.nodes_by_name(&r.reference_name), r)
+    let candidates: Vec<Arc<Node>> = apply_language_gate(ctx.nodes_by_name(&r.reference_name), r)
         .into_iter()
         .filter(|n| n.kind != NodeKind::Import)
         .collect();
@@ -245,7 +246,7 @@ pub fn match_by_exact_name<C: ResolutionContext>(
 pub fn match_fuzzy<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
     let lower = r.reference_name.to_lowercase();
 
-    let callable: Vec<Node> = apply_language_gate(
+    let callable: Vec<Arc<Node>> = apply_language_gate(
         ctx.nodes_by_lower_name(&lower)
             .into_iter()
             .filter(|n| {
@@ -258,7 +259,7 @@ pub fn match_fuzzy<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<R
         r,
     );
 
-    let same_language: Vec<Node> = callable
+    let same_language: Vec<Arc<Node>> = callable
         .iter()
         .filter(|n| n.language == r.language)
         .cloned()

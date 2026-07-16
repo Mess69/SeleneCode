@@ -314,7 +314,7 @@ impl DjangoResolver {
 
         Some(ResolvedRef {
             original: r.clone(),
-            target_node_id: iter_method.id,
+            target_node_id: iter_method.id.clone(),
             confidence: 0.7,
             resolved_by: ResolvedBy::Framework,
         })

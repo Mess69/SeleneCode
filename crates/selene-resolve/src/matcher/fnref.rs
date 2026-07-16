@@ -25,6 +25,7 @@
 //! through struct fields and stays uncovered for the same reason: partial coverage
 //! is worse than none.
 
+use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
@@ -78,7 +79,7 @@ fn bind(r: &UnresolvedRef, target: &str, confidence: f64) -> ResolvedRef {
 }
 
 /// The earliest-declared node (a stable pick among same-name overloads).
-fn earliest(nodes: &[Node]) -> Option<&Node> {
+fn earliest(nodes: &[Arc<Node>]) -> Option<&Arc<Node>> {
     nodes.iter().min_by_key(|n| n.start_line)
 }
 
@@ -104,7 +105,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     // scope-anchored: a `Decoy::handle` can never match a `KtHandlers::handle` ref.
     if r.reference_name.contains("::") {
         let member = &r.reference_name[r.reference_name.rfind("::")? + 2..];
-        let scoped: Vec<Node> = ctx
+        let scoped: Vec<Arc<Node>> = ctx
             .nodes_by_name(member)
             .into_iter()
             .filter(|n| {
@@ -121,7 +122,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
             return None;
         }
 
-        let same_file: Vec<Node> = scoped
+        let same_file: Vec<Arc<Node>> = scoped
             .iter()
             .filter(|n| n.file_path == r.file_path)
             .cloned()
@@ -141,7 +142,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     // --- a bare name ----------------------------------------------------------
     let bare_fn_only = BARE_FN_ONLY.contains(&ref_lang);
 
-    let candidates: Vec<Node> = ctx
+    let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_name(&r.reference_name)
         .into_iter()
         .filter(|n| {
@@ -164,7 +165,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     // The same-file definition wins — the extraction gate guarantees most survivors
     // have one, and it is the dominant C pattern (a static callback registered in a
     // same-file ops table).
-    let same_file: Vec<Node> = candidates
+    let same_file: Vec<Arc<Node>> = candidates
         .iter()
         .filter(|n| n.file_path == r.file_path)
         .cloned()
@@ -223,7 +224,7 @@ pub fn resolve_this_member_fn_ref<C: ResolutionContext>(
         }
     };
 
-    let candidates: Vec<Node> = ctx
+    let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_qualified_name(&format!("{class_prefix}::{member}"))
         .into_iter()
         .filter(|n| {

@@ -163,7 +163,7 @@ pub async fn run_jsx_render<S: GraphStore>(
 
             for tag in tags.into_iter().take(MAX_JSX_CHILDREN) {
                 // Resolve the tag to a component. AMBIGUOUS ⇒ SKIP.
-                let hits: Vec<Node> = ctx
+                let hits: Vec<_> = ctx
                     .nodes_by_name(&tag)
                     .into_iter()
                     .filter(|n| {

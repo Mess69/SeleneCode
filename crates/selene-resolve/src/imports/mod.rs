@@ -19,6 +19,7 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
+use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
@@ -711,7 +712,7 @@ pub fn resolve_jvm_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
 /// across source sets (commonMain / androidMain / appleMain). Taking the first
 /// candidate let a single platform `actual` absorb every common-side import, so
 /// the `expect` — the canonical API a commonMain file imports — looked unused.
-fn pick_closest_jvm_candidate(candidates: Vec<Node>, from_path: &str) -> Option<Node> {
+fn pick_closest_jvm_candidate(candidates: Vec<Arc<Node>>, from_path: &str) -> Option<Arc<Node>> {
     let from_dirs: Vec<&str> = from_path.split('/').collect();
     let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
 
@@ -726,7 +727,7 @@ fn pick_closest_jvm_candidate(candidates: Vec<Node>, from_path: &str) -> Option<
     };
     let is_expect = |n: &Node| n.decorators.iter().any(|d| d == "expect");
 
-    let mut best: Option<Node> = None;
+    let mut best: Option<Arc<Node>> = None;
     let mut best_prox = 0usize;
     for c in candidates {
         let prox = shared_prefix(&c.file_path);
@@ -1085,7 +1086,7 @@ fn resolve_python_module_member<C: ResolutionContext>(
         // import edge resolved (#578).
         let resolved = resolve_import_path(&module_path, &r.file_path, Language::Python, ctx)
             .or_else(|| {
-                find_python_module_file(&module_path, &r.file_path, ctx).map(|n| n.file_path)
+                find_python_module_file(&module_path, &r.file_path, ctx).map(|n| n.file_path.clone())
             });
 
         let Some(resolved) = resolved else { continue };
@@ -1132,7 +1133,7 @@ fn find_python_module_file<C: ResolutionContext>(
     module: &str,
     exclude: &str,
     ctx: &C,
-) -> Option<Node> {
+) -> Option<Arc<Node>> {
     if module.is_empty() || module.starts_with('.') {
         return None; // relative imports are handled elsewhere
     }
@@ -1368,7 +1369,7 @@ fn find_exported_symbol<C: ResolutionContext>(
     ctx: &C,
     visited: &mut HashSet<String>,
     depth: usize,
-) -> Option<Node> {
+) -> Option<Arc<Node>> {
     if depth > REEXPORT_MAX_DEPTH || !visited.insert(file_path.to_string()) {
         return None;
     }
@@ -1467,7 +1468,7 @@ fn resolve_static_member<C: ResolutionContext>(
     r: &UnresolvedRef,
     local_name: &str,
     ctx: &C,
-) -> Option<Node> {
+) -> Option<Arc<Node>> {
     if !STATIC_MEMBER_CONTAINERS.contains(&container.kind) {
         return None;
     }
@@ -1477,7 +1478,7 @@ fn resolve_static_member<C: ResolutionContext>(
         return None;
     }
 
-    let candidates: Vec<Node> = ctx
+    let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_qualified_name(&format!("{}::{member}", container.qualified_name))
         .into_iter()
         .filter(|n| n.file_path == container.file_path)
@@ -1499,7 +1500,7 @@ fn resolve_static_member<C: ResolutionContext>(
 }
 
 /// The `file`-kind node at `path`.
-fn file_node_at<C: ResolutionContext>(path: &str, ctx: &C) -> Option<Node> {
+fn file_node_at<C: ResolutionContext>(path: &str, ctx: &C) -> Option<Arc<Node>> {
     ctx.nodes_in_file(path)
         .into_iter()
         .find(|n| n.kind == NodeKind::File)

@@ -328,14 +328,13 @@ fn resolve_controller_action(
     } else {
         // The camelized class, wherever it lives (an engine, a namespaced module).
         let class = camelize_controller(controller);
-        ctx.nodes_by_name(&class)
+        crate::context::owned(ctx.nodes_by_name(&class))
             .into_iter()
             .find(|n| n.kind == NodeKind::Class)
             .map(|n| n.file_path)
     }?;
 
-    let target = ctx
-        .nodes_by_name(action)
+    let target = crate::context::owned(ctx.nodes_by_name(action))
         .into_iter()
         .find(|n| n.file_path == file && matches!(n.kind, NodeKind::Method | NodeKind::Function))
         .or_else(|| class_in(ctx, &file))?;
@@ -352,7 +351,7 @@ fn resolve_controller_action(
 }
 
 fn class_in(ctx: &dyn ResolutionContext, file: &str) -> Option<Node> {
-    ctx.nodes_in_file(file)
+    crate::context::owned(ctx.nodes_in_file(file))
         .into_iter()
         .find(|n| n.kind == NodeKind::Class)
 }
