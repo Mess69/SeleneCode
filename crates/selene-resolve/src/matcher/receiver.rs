@@ -87,16 +87,78 @@ const CPP_NON_TYPE_TOKENS: [&str; 23] = [
 /// these are built **per reference** from an escaped receiver name (the TS `new
 /// RegExp` shape). Naive compilation would dominate resolution wall-clock outright
 /// on any real repo — 400 references cost 4.6 s naive vs 0.22 s cached.
-static PATTERN_CACHE: LazyLock<SyncLru<String, Option<Arc<Regex>>>> =
+static PATTERN_CACHE: LazyLock<SyncLru<String, Option<Arc<Pattern>>>> =
     LazyLock::new(|| SyncLru::new(2_048));
+
+/// A compiled pattern, on the cheapest engine that can run it.
+///
+/// # Why two engines (measured, dhat at t-gmax, 2026-07-16)
+///
+/// A Unicode `\b`/`\w` pattern compiles to ~**524 KiB** of one-pass DFA
+/// transitions in `regex-automata` — and this cache held 1 228 of them on a
+/// 162-file corpus: **~750 MiB of the indexer's peak RSS was compiled
+/// regexes**. The ASCII spellings collapse those tables to a few KiB.
+///
+/// ASCII is also the *parity-faithful* semantics: the TS build ran these
+/// patterns through JavaScript `RegExp`, whose `\w` and `\b` are ASCII.
+///
+/// `fancy_regex` cannot disable Unicode (`(?-u)` is a parse error there), so
+/// plain `regex` runs every pattern it can parse (all of them except
+/// lookarounds — Lua's gate pattern), and `fancy_regex` remains solely the
+/// lookaround engine, with its original Unicode semantics.
+pub(crate) enum Pattern {
+    /// The `regex` crate, on the ASCII-rewritten pattern.
+    Plain(regex::Regex),
+    /// `fancy_regex` (backtracking, lookarounds), original pattern.
+    Fancy(Regex),
+}
+
+impl Pattern {
+    fn is_match(&self, s: &str) -> bool {
+        match self {
+            Pattern::Plain(re) => re.is_match(s),
+            Pattern::Fancy(re) => re.is_match(s).unwrap_or(false),
+        }
+    }
+
+    /// Capture group 1 of the first match, if any.
+    fn group1<'t>(&self, s: &'t str) -> Option<&'t str> {
+        match self {
+            Pattern::Plain(re) => re.captures(s).and_then(|c| c.get(1)).map(|m| m.as_str()),
+            Pattern::Fancy(re) => re
+                .captures(s)
+                .ok()
+                .flatten()
+                .and_then(|c| c.get(1))
+                .map(|m| m.as_str()),
+        }
+    }
+}
+
+/// Rewrite a pattern's `\w`/`\b` to their ASCII spellings for the `regex`
+/// engine. `\w` becomes an explicit class (legal inside `[...]` too — nested
+/// classes are class-set union), `\b` becomes the documented ASCII word
+/// boundary. The pattern TEXT is the cache key either way, so the rewrite is
+/// invisible to callers.
+fn ascii_pattern(pattern: &str) -> String {
+    pattern
+        .replace(r"\w", "[0-9A-Za-z_]")
+        .replace(r"\b", r"(?-u:\b)")
+}
 
 /// A compiled pattern, from the cache when possible.
 ///
-/// `None` for a pattern that fails to compile — a receiver name that escapes into
-/// something unparseable degrades that one lookup, it never fails a run.
-fn compiled(pattern: &str) -> Option<Arc<Regex>> {
+/// `None` for a pattern that fails to compile on BOTH engines — a receiver
+/// name that escapes into something unparseable degrades that one lookup, it
+/// never fails a run.
+fn compiled(pattern: &str) -> Option<Arc<Pattern>> {
     PATTERN_CACHE.get_or_insert_with(pattern.to_string(), || {
-        Regex::new(pattern).ok().map(Arc::new)
+        if let Ok(re) = regex::Regex::new(&ascii_pattern(pattern)) {
+            return Some(Arc::new(Pattern::Plain(re)));
+        }
+        Regex::new(pattern)
+            .ok()
+            .map(|re| Arc::new(Pattern::Fancy(re)))
     })
 }
 
@@ -107,17 +169,15 @@ fn compiled(pattern: &str) -> Option<Arc<Regex>> {
 /// `String` alloc + a globally-locked LRU hit, and the backward scans run it
 /// millions of times per index across every rayon thread. Measured on django:
 /// 44 s of a 46 s name-match lived here, at ~18 µs per scanned line.
-fn compile_all(patterns: &[String]) -> Vec<Arc<Regex>> {
+fn compile_all(patterns: &[String]) -> Vec<Arc<Pattern>> {
     patterns.iter().filter_map(|p| compiled(p)).collect()
 }
 
 /// Capture group 1 of the first pre-compiled pattern that matches `line`.
-fn capture_compiled(patterns: &[Arc<Regex>], line: &str) -> Option<String> {
+fn capture_compiled(patterns: &[Arc<Pattern>], line: &str) -> Option<String> {
     for re in patterns {
-        if let Ok(Some(caps)) = re.captures(line)
-            && let Some(m) = caps.get(1)
-        {
-            return Some(m.as_str().to_string());
+        if let Some(m) = re.group1(line) {
+            return Some(m.to_string());
         }
     }
     None
@@ -445,11 +505,9 @@ fn infer_php_assigned_property_type(
     let mut assign_idx = None;
     let mut var = String::new();
     for (i, line) in lines.iter().enumerate() {
-        if let Ok(Some(caps)) = assign.captures(line)
-            && let Some(m) = caps.get(1)
-        {
+        if let Some(m) = assign.group1(line) {
             assign_idx = Some(i);
-            var = m.as_str().to_string();
+            var = m.to_string();
             break;
         }
     }
@@ -473,7 +531,7 @@ fn infer_php_assigned_property_type(
             return Some(t);
         }
         // The enclosing `function` line is CHECKED (above) and then STOPS the scan.
-        if function_line.is_match(line).unwrap_or(false) {
+        if function_line.is_match(line) {
             break;
         }
         i -= 1;
@@ -615,7 +673,7 @@ pub fn infer_cpp_receiver_type<C: ResolutionContext>(
     while i >= 0 {
         let line = &lines[i as usize];
         if line.len() <= 10_000
-            && receiver_re.is_match(line).unwrap_or(false)
+            && receiver_re.is_match(line)
             && let Some(raw) = capture_compiled(&declarator, line)
         {
             match normalize_cpp_type_name(&raw).as_deref() {
@@ -648,7 +706,7 @@ pub fn infer_cpp_receiver_type<C: ResolutionContext>(
             continue;
         };
         for line in header_lines.iter() {
-            if line.len() > 10_000 || !receiver_re.is_match(line).unwrap_or(false) {
+            if line.len() > 10_000 || !receiver_re.is_match(line) {
                 continue;
             }
             if let Some(raw) = capture_compiled(&declarator, line)
@@ -674,21 +732,18 @@ fn infer_cpp_auto_initializer_type<C: ResolutionContext>(
 ) -> Option<String> {
     let escaped = escape(receiver);
     let init_re = compiled(&format!(r"\b{escaped}\b\s*=\s*([^;]+)"))?;
-    let caps = init_re.captures(line).ok()??;
-    let init = caps.get(1)?.as_str().trim();
+    let init = init_re.group1(line)?.trim();
 
     // `new Foo(...)`
     if let Some(new_re) = compiled(r"^new\s+([A-Za-z_][\w:]*)")
-        && let Ok(Some(c)) = new_re.captures(init)
-        && let Some(m) = c.get(1)
+        && let Some(m) = new_re.group1(init)
     {
-        return Some(cpp_last_segment(m.as_str()));
+        return Some(cpp_last_segment(m));
     }
 
     // A call or construction: `Foo(...)`, `A::b(...)`, `make_unique<T>(...)`.
     let call_re = compiled(r"^([A-Za-z_][\w:]*(?:\s*<[^>;]*>)?)\s*\(")?;
-    let caps = call_re.captures(init).ok()??;
-    let callee: String = caps.get(1)?.as_str().split_whitespace().collect();
+    let callee: String = call_re.group1(init)?.split_whitespace().collect();
     resolve_cpp_call_result_type(&callee, r, ctx, depth + 1)
 }
 
@@ -713,10 +768,9 @@ pub fn resolve_cpp_call_result_type<C: ResolutionContext>(
     let expr = inner.trim();
 
     if let Some(make_re) = compiled(r"(?:^|::)(?:make_unique|make_shared)\s*<\s*([A-Za-z_]\w*)")
-        && let Ok(Some(c)) = make_re.captures(expr)
-        && let Some(m) = c.get(1)
+        && let Some(m) = make_re.group1(expr)
     {
-        return Some(m.as_str().to_string());
+        return Some(m.to_string());
     }
 
     // A single-level member call — the `manager.view().render()` shape.

@@ -417,6 +417,7 @@ impl<S: GraphStore> StoreContext<S> {
                 target: "selene::index",
                 nodes = n,
                 ms = t.elapsed().as_millis(),
+                rss_mib = selene_core::peak_rss_mib(),
                 "resolve/0: eager node index (one scan, replaces the ladder's blocking point lookups)"
             );
             Some(ix)

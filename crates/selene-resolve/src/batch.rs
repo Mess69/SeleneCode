@@ -208,7 +208,11 @@ async fn resolve_pending<S: GraphStore + Clone>(
     // The context warms `known_names` once; these nodes must already exist or every
     // reference named after one of them is pre-filtered away. See the module docs.
     let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
-    tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve/1a: ctx#1 warm");
+    tracing::info!(
+        ms = t_phase.elapsed().as_millis(),
+        rss_mib = selene_core::peak_rss_mib(),
+        "resolve/1a: ctx#1 warm"
+    );
     let t = std::time::Instant::now();
     let detected = detect_frameworks(&ctx);
     let extract_stats = run_framework_extract(store, &ctx, &detected).await?;
@@ -217,6 +221,7 @@ async fn resolve_pending<S: GraphStore + Clone>(
     tracing::info!(
         ms = t.elapsed().as_millis(),
         framework_added,
+        rss_mib = selene_core::peak_rss_mib(),
         "resolve/1b: framework extract"
     );
 
@@ -233,6 +238,7 @@ async fn resolve_pending<S: GraphStore + Clone>(
         let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
         tracing::info!(
             ms = t.elapsed().as_millis(),
+            rss_mib = selene_core::peak_rss_mib(),
             "resolve/2: ctx#2 warm (rebuilt)"
         );
         ctx
@@ -341,6 +347,7 @@ async fn resolve_pending<S: GraphStore + Clone>(
             (result, edges)
         });
         ms_ladder += t.elapsed().as_millis();
+        let rss_after_ladder = selene_core::peak_rss_mib();
 
         // **The edges go in NOW, per batch — and that is not an optimisation miss, it is a
         // DEPENDENCY.** Deferring every insert to the end and writing them in one call was tried:
@@ -361,6 +368,14 @@ async fn resolve_pending<S: GraphStore + Clone>(
         let t = std::time::Instant::now();
         store.insert_edges(&edges).await?;
         ms_persist += t.elapsed().as_millis();
+        // TEMP RAM attribution: which half of the batch loop grows the peak.
+        tracing::info!(
+            target: "selene::index",
+            edges = edges.len(),
+            rss_after_ladder,
+            rss_after_insert = selene_core::peak_rss_mib(),
+            "resolve/3x: batch RSS"
+        );
 
         merge(&mut stats, &result.stats);
         done += batch.len();
@@ -379,6 +394,11 @@ async fn resolve_pending<S: GraphStore + Clone>(
     let t = std::time::Instant::now();
     store.replace_pending_with_failed(&[]).await?;
     ms_persist += t.elapsed().as_millis();
+    tracing::info!(
+        target: "selene::index",
+        rss_mib = selene_core::peak_rss_mib(),
+        "resolve/3b: queue drained"
+    );
 
     // --- the #760 invariant, now checkable instead of merely survivable -----------------------
     // Every pending row must have been decided exactly once: resolved (⇒ an edge) or failed. If a
@@ -417,6 +437,7 @@ async fn resolve_pending<S: GraphStore + Clone>(
         ms_ladder,
         ms_persist,
         refs = total,
+        rss_mib = selene_core::peak_rss_mib(),
         "resolve/3: batch loop"
     );
 
@@ -441,7 +462,11 @@ async fn resolve_pending<S: GraphStore + Clone>(
             .or_insert(0) += conformance.len();
     }
 
-    tracing::info!(ms = t.elapsed().as_millis(), "resolve/4: conformance");
+    tracing::info!(
+        ms = t.elapsed().as_millis(),
+        rss_mib = selene_core::peak_rss_mib(),
+        "resolve/4: conformance"
+    );
 
     // --- (5) drop the stale caches, (6) synthesize LAST ------------------------
     // NB: synthesis runs on caches we just dropped — by design (a stale cache makes every
@@ -458,9 +483,14 @@ async fn resolve_pending<S: GraphStore + Clone>(
     tracing::info!(
         ms = t.elapsed().as_millis(),
         synthesized,
+        rss_mib = selene_core::peak_rss_mib(),
         "resolve/6: synthesis"
     );
-    tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve: TOTAL");
+    tracing::info!(
+        ms = t_phase.elapsed().as_millis(),
+        rss_mib = selene_core::peak_rss_mib(),
+        "resolve: TOTAL"
+    );
     {
         use crate::resolver::*;
         use std::sync::atomic::Ordering::Relaxed;

@@ -21,6 +21,33 @@ use std::str::FromStr;
 mod ids;
 pub use ids::{EXTRACTION_VERSION, file_node_id, hash_content, node_id};
 
+/// Peak RSS of this process so far, in MiB. `0` where unsupported.
+///
+/// TEMP-profiling support (the `NS_*` counter family's RAM sibling): phase logs
+/// include it so a memory regression names its phase instead of being one
+/// opaque end-of-run number. `getrusage(RUSAGE_SELF).ru_maxrss` — bytes on
+/// macOS, KiB on Linux.
+#[allow(unsafe_code)]
+pub fn peak_rss_mib() -> u64 {
+    #[cfg(unix)]
+    // SAFETY: getrusage writes into the zeroed struct we hand it; no aliasing.
+    unsafe {
+        let mut ru: libc::rusage = std::mem::zeroed();
+        if libc::getrusage(libc::RUSAGE_SELF, &mut ru) == 0 {
+            let raw = ru.ru_maxrss as u64;
+            if cfg!(target_os = "macos") {
+                return raw / (1024 * 1024);
+            }
+            return raw / 1024;
+        }
+        0
+    }
+    #[cfg(not(unix))]
+    {
+        0
+    }
+}
+
 mod language;
 pub use language::{ALL_LANGUAGES, Language, LanguageFamily};
 

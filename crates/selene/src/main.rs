@@ -9,8 +9,15 @@
 use clap::Parser;
 use selene_cli::Cli;
 
+// TEMP-DHAT: heap profiling at t-gmax (`--features dhat-heap`).
+#[cfg(feature = "dhat-heap")]
+#[global_allocator]
+static ALLOC: dhat::Alloc = dhat::Alloc;
+
 #[tokio::main]
 async fn main() -> std::process::ExitCode {
+    #[cfg(feature = "dhat-heap")]
+    let _profiler = dhat::Profiler::new_heap();
     // The libraries emit `tracing` spans (index/resolve/explore timings). Off by default — an MCP
     // server must never write to stdout, and stderr noise is its own bug; opt in with `RUST_LOG`.
     // stdio MCP: stdout is the JSON-RPC transport, so the subscriber writes to stderr.

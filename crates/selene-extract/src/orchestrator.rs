@@ -376,7 +376,7 @@ impl<S: GraphStore> Indexer<S> {
         // commit order IS the determinism contract (#1015, module docs).
         files.sort_unstable();
 
-        tracing::info!(target: "selene::index", ms = t_scan.elapsed().as_millis(), files = files.len(), "index/1: scan");
+        tracing::info!(target: "selene::index", ms = t_scan.elapsed().as_millis(), files = files.len(), rss_mib = selene_core::peak_rss_mib(), "index/1: scan");
 
         // Initializing entry point: applies the schema on a fresh store and
         // defers FTS maintenance for the whole run (module docs).
@@ -414,11 +414,11 @@ impl<S: GraphStore> Indexer<S> {
             Err(e) => push_store_error(&mut result.errors, "get_meta", &e),
         }
 
-        tracing::info!(target: "selene::index", ms = t_begin.elapsed().as_millis(), "index/2: bulk_load_begin (schema + drop FTS)");
+        tracing::info!(target: "selene::index", ms = t_begin.elapsed().as_millis(), rss_mib = selene_core::peak_rss_mib(), "index/2: bulk_load_begin (schema + drop FTS)");
 
         let t_pipe = Instant::now();
         self.run_pipeline(&files, on_progress, &mut result).await;
-        tracing::info!(target: "selene::index", ms = t_pipe.elapsed().as_millis(), "index/3: pipeline TOTAL");
+        tracing::info!(target: "selene::index", ms = t_pipe.elapsed().as_millis(), rss_mib = selene_core::peak_rss_mib(), "index/3: pipeline TOTAL");
 
         // The deferred-FTS bracket closes here: the 4 FULLTEXT indexes are rebuilt and POLLED
         // (`wait_index_ready` sleeps between `INFO FOR INDEX` reads). Nothing had ever timed it.
@@ -427,7 +427,7 @@ impl<S: GraphStore> Indexer<S> {
             if let Err(e) = self.store.bulk_load_finish().await {
                 push_store_error(&mut result.errors, "bulk_load_finish", &e);
             }
-            tracing::info!(target: "selene::index", ms = t_fin.elapsed().as_millis(), "index/4: bulk_load_finish (rebuild + poll FTS)");
+            tracing::info!(target: "selene::index", ms = t_fin.elapsed().as_millis(), rss_mib = selene_core::peak_rss_mib(), "index/4: bulk_load_finish (rebuild + poll FTS)");
         }
 
         result.success = result.files_indexed > 0
@@ -722,6 +722,7 @@ impl<S: GraphStore> Indexer<S> {
             edges = pending_edges.len(), ms_edges = ms_e,
             unresolved = result.unresolved.len(), ms_unresolved = ms_u,
             files = pending_files.len(), ms_files = ms_f,
+            rss_mib = selene_core::peak_rss_mib(),
             "index/3b: the batched write, per call");
 
         tracing::info!(target: "selene::index", ms_read, ms_parse, ms_commit, ms_bulk, files = total,
