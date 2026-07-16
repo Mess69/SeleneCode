@@ -277,3 +277,38 @@ Speed unchanged (codegraph-src 1.8 s, django 22.1 s).
    `Node`/`UnresolvedRef`, and only then the streaming-resolve trade §③ always
    named. Re-attribute with dhat (`cargo build -p selene --features dhat-heap`,
    TEMP-DHAT notes in git history) before pulling any of them.
+
+---
+
+# ADDENDUM 3 (2026-07-17): ② the write path — executed, and the fsync theory fell too
+
+This doc's ② said the persist cost was "SurrealDB's RocksDB fsyncs on every
+transaction commit". Researched against the vendored 3.2.1 sources, then
+implemented, then measured — the MECHANISM was confirmed and the COST theory
+was wrong at django scale:
+
+**Confirmed mechanics** (all file:line-verified in surrealdb-core 3.2.1):
+one `.query()` with N statements = N kvs transactions; textual
+`BEGIN…COMMIT` = one; `?sync=never` skips the WAL flush but clean shutdown
+still fsyncs (same durability class as CodeGraph's SQLite WAL+NORMAL); this
+RocksDB build never pays macOS `F_FULLFSYNC` (fsync-to-drive-cache only);
+grouped commit only amortizes with ≥12 concurrent committers.
+
+**Implemented** (commit e53fd85): one transaction per write chunk everywhere
+(upsert_files 295→146 ms), `INSERT RELATION IGNORE` replacing the per-chunk
+SELECT dedup round trip, conflict-retry on EVERY bulk writer (fixes the
+"Resource busy" abort class — the VS Code failure mode — measured live under
+sync=never), and opt-in `SELENE_SYNC_NEVER=1` (~1.5 s wall on django).
+
+**Measured truth: django's ~7 s edge persist did not move** under txn
+batching, IGNORE, or sync=never. It is per-record `INSERT RELATION` engine
+execution (~50 µs/edge: save points, SCHEMAFULL validation, graph pointers).
+The write-path levers that remain are engine-internal (or the PRD §5.2
+re-argument). At VS Code scale the commit-count reduction and the retry
+hardening should still matter — the serialize gate stacked per-statement
+commits sequentially there; re-measure on VS Code before concluding ② is
+exhausted.
+
+**django end-state this session: 26.96 s → ~21-22 s (CodeGraph TS: 24.0 s).**
+Remaining django profile: edges 7-8 s (engine), synthesis ~4.5-5 s, FTS
+~4.5 s (concurrent), node bulk 2.4 s, ctx warms ~1.4 s, ladder 1.7 s.
