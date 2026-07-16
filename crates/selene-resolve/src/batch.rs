@@ -425,6 +425,19 @@ async fn resolve_pending<S: GraphStore + Clone>(
         "resolve/6: synthesis"
     );
     tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve: TOTAL");
+    {
+        use std::sync::atomic::Ordering::Relaxed;
+        use crate::resolver::*;
+        tracing::info!(
+            target: "selene::index",
+            prefilter_ms = NS_PREFILTER.load(Relaxed) / 1_000_000,
+            frameworks_ms = NS_FRAMEWORKS.load(Relaxed) / 1_000_000,
+            import_ms = NS_IMPORT.load(Relaxed) / 1_000_000,
+            namematch_ms = NS_NAMEMATCH.load(Relaxed) / 1_000_000,
+            passed_prefilter = N_PASSED_PREFILTER.load(Relaxed),
+            "classify: per-step profile (where the ladder time goes)"
+        );
+    }
     if synthesized > 0 {
         stats
             .by_method

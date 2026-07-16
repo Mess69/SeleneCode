@@ -19,6 +19,16 @@
 //! symbol a reference binds to, silently, in a way no type checks.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
+
+// TEMP profiling: per-step nanoseconds accumulated across all classify() calls (parallel-safe).
+// Logged once by the batch loop. Answers WHERE the 189s ladder goes, measured not guessed.
+pub static NS_PREFILTER: AtomicU64 = AtomicU64::new(0);
+pub static NS_FRAMEWORKS: AtomicU64 = AtomicU64::new(0);
+pub static NS_IMPORT: AtomicU64 = AtomicU64::new(0);
+pub static NS_NAMEMATCH: AtomicU64 = AtomicU64::new(0);
+pub static N_PASSED_PREFILTER: AtomicU64 = AtomicU64::new(0);
 
 use selene_core::{Edge, EdgeKind, Language, NodeKind, Provenance, UnresolvedRef};
 use serde_json::{Map, Value, json};
@@ -148,9 +158,11 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     /// and the caller records the deferrals in reference order. **Order is behavior**; parallelism
     /// must leave the result identical, which the tolerance-0 parity gate proves.
     pub(crate) fn classify(&self, r: &UnresolvedRef) -> (Option<ResolvedRef>, Defer) {
+        let t_pf = Instant::now();
         let mut defer = Defer::None;
         // --- step 1: built-in / external filter ------------------------------
         if is_built_in_or_external(r, &self.ctx) {
+            NS_PREFILTER.fetch_add(t_pf.elapsed().as_nanos() as u64, Ordering::Relaxed);
             return (None, defer);
         }
 
@@ -186,8 +198,11 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                 .iter()
                 .any(|f| f.claims_reference(existence_name))
         {
+            NS_PREFILTER.fetch_add(t_pf.elapsed().as_nanos() as u64, Ordering::Relaxed);
             return (None, defer);
         }
+        NS_PREFILTER.fetch_add(t_pf.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        N_PASSED_PREFILTER.fetch_add(1, Ordering::Relaxed);
         // Wave 2, in this step: ArkTS leading-dot attribute refs (`.titleStyle`)
         // are existence-checked with the dot stripped; Nix path imports bypass
         // the check entirely (they name a FILE, not a symbol).
@@ -252,18 +267,24 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // field), so only `references`/`imports` results crossing two KNOWN
         // families are dropped. A `calls` bridge and a config↔code edge both
         // survive.
+        let t_fw = Instant::now();
         for framework in &self.frameworks {
             if let Some(hit) = self.gate_framework_language(framework.resolve(r, &self.ctx), r) {
                 if hit.confidence >= 0.9 {
+                    NS_FRAMEWORKS.fetch_add(t_fw.elapsed().as_nanos() as u64, Ordering::Relaxed);
                     return (Some(hit), defer);
                 }
                 candidates.push(hit);
             }
         }
+        NS_FRAMEWORKS.fetch_add(t_fw.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
         // --- step 8: import-based resolution ---------------------------------
         // ≥ 0.9 returns immediately; anything weaker competes as a candidate.
-        if let Some(hit) = self.gate_language(resolve_via_import(r, &self.ctx), r) {
+        let t_im = Instant::now();
+        let import_hit = self.gate_language(resolve_via_import(r, &self.ctx), r);
+        NS_IMPORT.fetch_add(t_im.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if let Some(hit) = import_hit {
             if hit.confidence >= 0.9 {
                 return (Some(hit), defer);
             }
@@ -282,7 +303,10 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         // --- step 10: name matching -------------------------------------------
         // (Wave 2: the Nix same-file post-filter attaches here — a Nix callee
         // binds lexically or through explicit import wiring, never by name.)
-        if let Some(hit) = self.gate_language(match_reference(r, &self.ctx), r) {
+        let t_nm = Instant::now();
+        let name_hit = self.gate_language(match_reference(r, &self.ctx), r);
+        NS_NAMEMATCH.fetch_add(t_nm.elapsed().as_nanos() as u64, Ordering::Relaxed);
+        if let Some(hit) = name_hit {
             candidates.push(hit);
         }
 
