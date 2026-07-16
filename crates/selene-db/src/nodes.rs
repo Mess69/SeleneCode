@@ -211,7 +211,18 @@ impl SurrealStore {
             let db = self.db().clone();
             let sql = sql.clone();
             async move {
-                db.query(sql).bind(("batch", batch)).await?.check()?;
+                // Retry an optimistic-transaction conflict: the upsert is
+                // idempotent, and an aborted txn committed nothing. Without
+                // this, concurrent writers under `sync=never` (no fsync
+                // serializing them) abort the whole index on one collision.
+                crate::util::with_conflict_retry(|| async {
+                    db.query(sql.clone())
+                        .bind(("batch", batch.clone()))
+                        .await?
+                        .check()?;
+                    Ok(())
+                })
+                .await?;
                 Ok::<(), Error>(())
             }
         }))

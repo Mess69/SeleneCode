@@ -112,19 +112,30 @@ impl SurrealStore {
     /// order given, which the caller keeps in scan order.
     pub async fn upsert_files(&self, files: &[FileRecord]) -> Result<()> {
         for chunk in files.chunks(crate::util::CHUNK) {
-            let mut sql = String::new();
+            // One textual transaction per chunk: each bare top-level statement
+            // is otherwise its own kvs commit (surrealdb-core executor), so a
+            // 1 000-file chunk was 1 000 commit round-trips. Retried on
+            // optimistic conflict — UPSERT is idempotent and an aborted txn
+            // committed nothing.
+            let mut sql = String::from("BEGIN TRANSACTION;");
             for i in 0..chunk.len() {
                 sql.push_str(&format!(
                     "UPSERT type::record('file', $p{i}) CONTENT $c{i};"
                 ));
             }
-            let mut q = self.db().query(sql);
-            for (i, f) in chunk.iter().enumerate() {
-                q = q
-                    .bind((format!("p{i}"), f.path.clone()))
-                    .bind((format!("c{i}"), file_content(f)?));
-            }
-            q.await?.check()?;
+            sql.push_str("COMMIT TRANSACTION;");
+            let contents = chunk.iter().map(file_content).collect::<Result<Vec<_>>>()?;
+            crate::util::with_conflict_retry(|| async {
+                let mut q = self.db().query(sql.clone());
+                for (i, (f, c)) in chunk.iter().zip(&contents).enumerate() {
+                    q = q
+                        .bind((format!("p{i}"), f.path.clone()))
+                        .bind((format!("c{i}"), c.clone()));
+                }
+                q.await?.check()?;
+                Ok(())
+            })
+            .await?;
         }
         Ok(())
     }

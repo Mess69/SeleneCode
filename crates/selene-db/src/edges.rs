@@ -459,26 +459,15 @@ impl SurrealStore {
             return Ok(0);
         }
 
-        // Computed once per edge: bound (cloned) for the lookup, then zipped
-        // back with the chunk for the membership check below.
-        let eids: Vec<RecordId> = chunk.iter().map(|e| edge_record_id(e)).collect();
-        let mut resp = self
-            .db()
-            .query("SELECT VALUE id FROM $eids")
-            .bind(("eids", eids.clone()))
-            .await?;
-        let already: Vec<RecordId> = resp.take(0)?;
-        // mutable_key_type false positive: RecordId transitively reaches a
-        // Regex (interior mutability) through the Value enum, but our keys
-        // are plain string/int array keys and are never mutated.
-        #[allow(clippy::mutable_key_type)]
-        let already: HashSet<RecordId> = already.into_iter().collect();
-
+        // Store-side duplicates are handled by `INSERT RELATION IGNORE`: a
+        // `RecordExists` collision releases its save point and yields NOTHING
+        // (surrealdb-core 3.2.1 `doc/insert.rs:37-48` — an ignored record is
+        // absent from the results), so `RETURN VALUE 1` still counts exactly
+        // the rows genuinely inserted. This replaced a per-chunk
+        // `SELECT VALUE id FROM $eids` pre-filter round trip; the in-call
+        // dedup above stays (first-wins within a call, same as before).
         let mut by_kind: HashMap<&'static str, Vec<SqlValue>> = HashMap::new();
-        for (edge, eid) in chunk.iter().zip(&eids) {
-            if already.contains(eid) {
-                continue;
-            }
+        for edge in chunk {
             by_kind
                 .entry(edge.kind.as_str())
                 .or_default()
@@ -490,18 +479,27 @@ impl SurrealStore {
 
         // Iterate kinds in EdgeKind::ALL order so the statement layout is
         // deterministic (HashMap order is not).
-        let mut sql = String::new();
+        //
+        // The per-kind statements run inside ONE textual transaction. Without
+        // it, each top-level statement is its own kvs transaction (verified in
+        // surrealdb-core 3.2.1 `executor.rs` — one `.query()` call with N
+        // statements is N commits), and under the default `sync=every` every
+        // commit waits its own grouped WAL-flush round trip. One transaction
+        // per chunk cuts the resolve persist's commit count by ~the kind
+        // count, and the conflict-retry unit (the whole chunk) is unchanged.
+        let mut sql = String::from("BEGIN TRANSACTION;");
         let mut batches: Vec<Vec<SqlValue>> = Vec::with_capacity(by_kind.len());
         for kind in EdgeKind::ALL {
             if let Some(batch) = by_kind.remove(kind.as_str()) {
                 sql.push_str(&format!(
-                    "INSERT RELATION INTO {} $batch{} RETURN VALUE 1;",
+                    "INSERT RELATION IGNORE INTO {} $batch{} RETURN VALUE 1;",
                     kind.as_str(),
                     batches.len()
                 ));
                 batches.push(batch);
             }
         }
+        sql.push_str("COMMIT TRANSACTION;");
         let statements = batches.len();
         let mut q = self.db().query(sql);
         for (i, batch) in batches.into_iter().enumerate() {
@@ -510,7 +508,8 @@ impl SurrealStore {
         let mut resp = q.await?;
         let mut inserted: u64 = 0;
         for i in 0..statements {
-            let rows: Vec<i64> = resp.take(i)?;
+            // Slot 0 is BEGIN's (empty) result; the inner statements follow.
+            let rows: Vec<i64> = resp.take(i + 1)?;
             inserted += rows.len() as u64;
         }
         Ok(inserted)

@@ -115,11 +115,18 @@ impl SurrealStore {
             // **`INSERT INTO t $rows`, not `FOR $r IN $rows { CREATE ... }`.** The FOR form runs
             // one CREATE per row inside the engine; on django's 52 358 refs it measured 3.9 s. A
             // single INSERT hands the engine the whole chunk. Same rows, same order.
-            self.db()
-                .query("INSERT INTO unresolved_ref $rows RETURN NONE;")
-                .bind(("rows", rows))
-                .await?
-                .check()?;
+            //
+            // Conflict-retried: an aborted optimistic txn committed nothing,
+            // so a rerun inserts the chunk exactly once.
+            crate::util::with_conflict_retry(|| async {
+                self.db()
+                    .query("INSERT INTO unresolved_ref $rows RETURN NONE;")
+                    .bind(("rows", rows.clone()))
+                    .await?
+                    .check()?;
+                Ok(())
+            })
+            .await?;
         }
         Ok(())
     }
@@ -339,21 +346,29 @@ impl SurrealStore {
             return Ok(());
         }
         for chunk in keys.chunks(CHUNK) {
-            let mut sql = String::new();
+            // One textual transaction per chunk (a bare statement is its own
+            // kvs commit), retried on optimistic conflict — DELETE/UPDATE by
+            // key are idempotent and an aborted txn committed nothing.
+            let mut sql = String::from("BEGIN TRANSACTION;");
             for i in 0..chunk.len() {
                 sql.push_str(&template.replace("{i}", &i.to_string()));
             }
-            let mut query = self.db().query(sql);
-            for (key, value) in extra_binds {
-                query = query.bind((*key, *value));
-            }
-            for (i, (from, name, kind)) in chunk.iter().enumerate() {
-                query = query
-                    .bind((format!("from{i}"), from.clone()))
-                    .bind((format!("name{i}"), name.clone()))
-                    .bind((format!("kind{i}"), kind.clone()));
-            }
-            query.await?.check()?;
+            sql.push_str("COMMIT TRANSACTION;");
+            crate::util::with_conflict_retry(|| async {
+                let mut query = self.db().query(sql.clone());
+                for (key, value) in extra_binds {
+                    query = query.bind((*key, *value));
+                }
+                for (i, (from, name, kind)) in chunk.iter().enumerate() {
+                    query = query
+                        .bind((format!("from{i}"), from.clone()))
+                        .bind((format!("name{i}"), name.clone()))
+                        .bind((format!("kind{i}"), kind.clone()));
+                }
+                query.await?.check()?;
+                Ok(())
+            })
+            .await?;
         }
         Ok(())
     }

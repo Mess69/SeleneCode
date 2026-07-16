@@ -281,6 +281,7 @@ async fn resolve_pending<S: GraphStore + Clone>(
     // hot ladder is cache/query shape; a hot persist is write batching), and one summed number
     // cannot tell you which you have.
     let (mut ms_ladder, mut ms_persist, mut ms_fetch) = (0u128, 0u128, 0u128);
+    let mut ms_edge_inserts = 0u128;
 
     // **Fetched ONCE, not paged.** `LIMIT n START offset` is a SKIP-SCAN: the engine walks the
     // first `offset` rows only to discard them, so paging 52 358 refs RESOLVE_BATCH at a time costs
@@ -367,11 +368,14 @@ async fn resolve_pending<S: GraphStore + Clone>(
         // reads N-1's edges) holds regardless.
         let t = std::time::Instant::now();
         store.insert_edges(&edges).await?;
-        ms_persist += t.elapsed().as_millis();
+        let ms_insert = t.elapsed().as_millis();
+        ms_persist += ms_insert;
+        ms_edge_inserts += ms_insert;
         // TEMP RAM attribution: which half of the batch loop grows the peak.
         tracing::info!(
             target: "selene::index",
             edges = edges.len(),
+            ms_insert,
             rss_after_ladder,
             rss_after_insert = selene_core::peak_rss_mib(),
             "resolve/3x: batch RSS"
@@ -393,11 +397,14 @@ async fn resolve_pending<S: GraphStore + Clone>(
     // (DELETE the pending rows) and drops the dead insert. (measured django persist 3.96 s → ~2.7 s.)
     let t = std::time::Instant::now();
     store.replace_pending_with_failed(&[]).await?;
-    ms_persist += t.elapsed().as_millis();
+    let ms_drain = t.elapsed().as_millis();
+    ms_persist += ms_drain;
     tracing::info!(
         target: "selene::index",
+        ms_drain,
+        ms_edge_inserts,
         rss_mib = selene_core::peak_rss_mib(),
-        "resolve/3b: queue drained"
+        "resolve/3b: queue drained (persist = edge inserts + this drain)"
     );
 
     // --- the #760 invariant, now checkable instead of merely survivable -----------------------

@@ -157,7 +157,14 @@ impl SurrealStore {
     #[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
     pub async fn open(dir: &Path) -> Result<Self> {
         cap_rocksdb_block_cache();
-        let db = connect_disk_with_lock_retry(|| Surreal::new::<RocksDb>(dir)).await?;
+        // TEMP EXPERIMENT (write-path ②): `?sync=never` skips the per-commit
+        // fsync (macOS: F_FULLFSYNC). Env-gated while its win is measured.
+        let endpoint = if std::env::var("SELENE_SYNC_NEVER").is_ok() {
+            format!("{}?sync=never", dir.display())
+        } else {
+            dir.display().to_string()
+        };
+        let db = connect_disk_with_lock_retry(|| Surreal::new::<RocksDb>(endpoint.clone())).await?;
         db.use_ns(NAMESPACE).use_db(DATABASE).await?;
         Ok(Self {
             db,
