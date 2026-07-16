@@ -29,6 +29,8 @@ tracing-subscriber = { workspace = true }
 # Optional semantic (vector) search: pulls the local ONNX embedder. Off by default so the shipped
 # static binary stays lean and fully offline. `selene embed` + hybrid search light up when it's on.
 semantic-search = ["dep:selene-embed", "selene-mcp/semantic-search"]
+# The LadybugDB migration backend (`SELENE_BACKEND=ladybug selene index`). Off by default.
+kv-ladybug = ["selene-db/kv-ladybug"]
 
 [dev-dependencies]
 tempfile = { workspace = true }

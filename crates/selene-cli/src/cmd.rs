@@ -76,6 +76,14 @@ pub async fn index(path: PathBuf) -> Outcome {
 async fn index_inner(path: PathBuf) -> Result<()> {
     let root = resolve(&path)?;
 
+    // Migration escape hatch: `SELENE_BACKEND=ladybug selene index <path>` indexes into a LadybugDB
+    // store (`.selene-lbug/`) instead of SurrealDB — the head-to-head measurement path. Off unless
+    // both the feature is compiled and the env var is set, so the default binary is untouched.
+    #[cfg(feature = "kv-ladybug")]
+    if std::env::var("SELENE_BACKEND").as_deref() == Ok("ladybug") {
+        return index_inner_ladybug(root).await;
+    }
+
     // A running daemon holds the exclusive lock. A full re-index can't open the store past it, so
     // rather than surface a cryptic RocksDB lock error, point the user at the two real options.
     if let Some(pid) = selene_mcp::daemon::running_pid(&root) {
@@ -139,6 +147,43 @@ async fn index_inner(path: PathBuf) -> Result<()> {
             .context("the FULLTEXT index build failed")?;
         stats
     };
+
+    let (nodes, edges) = store.node_edge_count().await.unwrap_or((0, 0));
+    eprintln!(
+        "done: {nodes} nodes, {edges} edges ({} references bound)",
+        stats.resolved
+    );
+    Ok(())
+}
+
+/// The LadybugDB index path (feature `kv-ladybug`, `SELENE_BACKEND=ladybug`). Parallel to
+/// `index_inner` but with no scale gate — LadybugDB's bulk `COPY` writes don't contend the way
+/// SurrealDB's concurrent `INSERT RELATION` does, so there is nothing to serialize.
+#[cfg(feature = "kv-ladybug")]
+async fn index_inner_ladybug(root: PathBuf) -> Result<()> {
+    use selene_db::{GraphStore, LadybugStore};
+    // lbug creates the store directory itself and refuses an existing plain dir, so start fresh.
+    let dbdir = root.join(".selene-lbug");
+    let _ = std::fs::remove_dir_all(&dbdir);
+    let store = LadybugStore::open(&dbdir)
+        .await
+        .context("could not open the LadybugDB index")?;
+
+    eprintln!("indexing {} (LadybugDB backend) …", root.display());
+    let indexer = Indexer::new(root.clone(), store);
+    let result = indexer.index_all_deferring_fts(None).await;
+    let store = indexer.into_store();
+    eprintln!(
+        "  {} files, {} nodes",
+        result.files_indexed, result.nodes_created
+    );
+
+    eprintln!("resolving …");
+    let stats =
+        selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
+            .await
+            .context("resolution failed")?;
+    store.bulk_load_finish().await.ok();
 
     let (nodes, edges) = store.node_edge_count().await.unwrap_or((0, 0));
     eprintln!(
