@@ -312,3 +312,26 @@ exhausted.
 **django end-state this session: 26.96 s → ~21-22 s (CodeGraph TS: 24.0 s).**
 Remaining django profile: edges 7-8 s (engine), synthesis ~4.5-5 s, FTS
 ~4.5 s (concurrent), node bulk 2.4 s, ctx warms ~1.4 s, ladder 1.7 s.
+
+---
+
+# ADDENDUM 4 (2026-07-17): the two queued improvements, landed (commit 401c456)
+
+1. **Eager-group handouts are shared slices** (`Arc<[Arc<Node>]>`, frozen at
+   build, one refcount bump per lookup — was one Vec alloc + K contended bumps,
+   648 k lookups / 59 M clones per django run). Measured: ladder wall
+   1.7 → ~1.1 s, import CPU 7.5 → 3.9 s, namematch CPU 6.0 → 3.3 s. Graph
+   identical, 420 tests + both gates green.
+2. **RocksDB caps are LIVE** via `vendor/surrealdb` (crates.io 3.2.1 + one
+   line seeding `ConfigMap::from_env()` in the local engine — the stock SDK
+   ignores all `SURREAL_*` env; proven with the open-time "Memory manager"
+   log). Settled caps: block cache 768 MiB / write buffers 128 MiB × 4 /
+   stock L0 triggers. ⚠ Memtables are CHARGED INTO the block cache: a 256–512
+   MiB cache starves reads and TRIPLES the run; the cliff is between 512 and
+   768 MiB at django scale.
+
+**django end state: RSS 2.55 → 2.04 GiB, 23.1 s (0.96× vs CodeGraph), ceiling
+16 GiB → 1.25 GiB.** Full head-to-head: codegraph-src 0.77× / 467 MB,
+selene-crates 0.77× / ~600 MB, django 0.96× / 2.04 GiB (CodeGraph: 0.58 GiB).
+The remaining django gap vs CodeGraph is the resolve data at scale + engine
+execution — the §5.2 re-argument territory, to be judged at VS Code scale.
