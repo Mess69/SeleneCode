@@ -27,7 +27,7 @@ fn node(id: &str, kind: NodeKind, name: &str, qn: &str, file: &str, lang: Langua
         name: name.to_string(),
         qualified_name: qn.to_string(),
         file_path: file.to_string(),
-        language: lang.as_str().to_string(),
+        language: lang,
         start_line: 1,
         end_line: 10,
         start_column: 0,

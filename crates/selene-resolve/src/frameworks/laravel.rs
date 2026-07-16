@@ -43,8 +43,7 @@ use selene_core::{Language, Node, NodeKind, RefStatus, UnresolvedRef};
 
 use crate::context::ResolutionContext;
 use crate::frameworks::{
-    FrameworkExtraction, FrameworkResolver, RouteSpec, line_of, match_delim, route_node_in,
-    split_args,
+    FrameworkExtraction, FrameworkResolver, RouteSpec, line_of, match_delim, route_node, split_args,
 };
 use crate::strip_comments::strip_comments_for_regex;
 use crate::types::{ResolvedBy, ResolvedRef};
@@ -160,7 +159,7 @@ impl FrameworkResolver for Laravel {
             };
 
             let line = line_of(&src, whole.start());
-            let node = route_node_in(
+            let node = route_node(
                 &RouteSpec::new(
                     LARAVEL,
                     Some(&verb.as_str().to_uppercase()),
@@ -168,7 +167,7 @@ impl FrameworkResolver for Laravel {
                     path,
                     line,
                 ),
-                Language::Php.as_str(),
+                Language::Php,
                 NO_CLOCK,
             );
 
@@ -204,7 +203,7 @@ impl FrameworkResolver for Laravel {
             let mut spec = RouteSpec::new(LARAVEL, Some("RESOURCE"), name.as_str(), path, line);
             let display = format!("resource:{}", name.as_str());
             spec.name_override = Some(&display);
-            let node = route_node_in(&spec, Language::Php.as_str(), NO_CLOCK);
+            let node = route_node(&spec, Language::Php, NO_CLOCK);
 
             // `imports`, not `references` — the registration pulls in a whole
             // controller, it does not name one action.
@@ -231,7 +230,7 @@ impl FrameworkResolver for Laravel {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if Language::from_wire(&r.language) != Some(Language::Php) {
+        if r.language != Language::Php {
             return None;
         }
         let name = r.reference_name.as_str();
@@ -305,7 +304,7 @@ fn php_ref(from: &str, name: &str, kind: &str, file: &str, line: u32) -> Unresol
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: Language::Php.as_str().to_string(),
+        language: Language::Php,
         status: RefStatus::Pending,
         name_tail: name.to_string(),
     }

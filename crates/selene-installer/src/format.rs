@@ -26,8 +26,8 @@ pub enum Edit {
 
 pub mod json {
     use super::*;
-    use jsonc_parser::cst::{CstInputValue, CstRootNode};
     use jsonc_parser::ParseOptions;
+    use jsonc_parser::cst::{CstInputValue, CstRootNode};
     use serde_json::Value;
 
     fn opts() -> ParseOptions {
@@ -70,7 +70,11 @@ pub mod json {
             }
         }
         let out = root.to_string();
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 
     /// Remove `<container>.<key>` if present.
@@ -90,7 +94,11 @@ pub mod json {
             None => return Ok(Edit::Unchanged),
         }
         let out = root.to_string();
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 }
 
@@ -165,7 +173,11 @@ pub mod toml {
         container_tbl.set_implicit(true); // render `[container.key]`, not an empty `[container]`
         container_tbl.insert(key, to_item(entry));
         let out = doc.to_string();
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 
     /// Remove `[<container>.<key>]` if present.
@@ -183,11 +195,20 @@ pub mod toml {
             return Ok(Edit::Unchanged);
         }
         // Drop a now-empty `[container]`.
-        if doc.get(container).and_then(|c| c.as_table()).map(|t| t.is_empty()).unwrap_or(false) {
+        if doc
+            .get(container)
+            .and_then(|c| c.as_table())
+            .map(|t| t.is_empty())
+            .unwrap_or(false)
+        {
             doc.remove(container);
         }
         let out = doc.to_string();
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 }
 
@@ -200,7 +221,11 @@ pub mod yaml {
 
     /// Build the `selene:` block (2-space indent under a top-level `mcp_servers:`).
     fn selene_block(command: &str, args: &[String]) -> Vec<String> {
-        let mut lines = vec!["  selene:".to_string(), format!("    command: {command}"), "    args:".to_string()];
+        let mut lines = vec![
+            "  selene:".to_string(),
+            format!("    command: {command}"),
+            "    args:".to_string(),
+        ];
         for a in args {
             lines.push(format!("      - {a}"));
         }
@@ -250,7 +275,10 @@ pub mod yaml {
         let mut lines: Vec<String> = if text.is_empty() {
             Vec::new()
         } else {
-            text.trim_end_matches('\n').split('\n').map(|s| s.to_string()).collect()
+            text.trim_end_matches('\n')
+                .split('\n')
+                .map(|s| s.to_string())
+                .collect()
         };
         let block = selene_block(command, args);
 
@@ -279,7 +307,11 @@ pub mod yaml {
         if had_trailing_nl {
             out.push('\n');
         }
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 
     /// Add `- <item>` under `platform_toolsets.cli:` (hermes needs `mcp-selene` there or the MCP
@@ -294,10 +326,15 @@ pub mod yaml {
         let mut lines: Vec<String> = if text.is_empty() {
             Vec::new()
         } else {
-            text.trim_end_matches('\n').split('\n').map(|s| s.to_string()).collect()
+            text.trim_end_matches('\n')
+                .split('\n')
+                .map(|s| s.to_string())
+                .collect()
         };
         // Find `platform_toolsets:` → `  cli:`; append under cli, else scaffold.
-        let pts = lines.iter().position(|l| l.trim_end() == "platform_toolsets:");
+        let pts = lines
+            .iter()
+            .position(|l| l.trim_end() == "platform_toolsets:");
         match pts {
             Some(pi) => {
                 let cli = (pi + 1..lines.len())
@@ -329,15 +366,22 @@ pub mod yaml {
         if had_trailing_nl {
             out.push('\n');
         }
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 
     /// Remove `- <item>` from `platform_toolsets.cli:`.
     pub fn remove_toolset(text: &str, item: &str) -> Result<Edit> {
         let target = format!("    - {item}");
         let had_trailing_nl = text.ends_with('\n');
-        let mut lines: Vec<String> =
-            text.trim_end_matches('\n').split('\n').map(|s| s.to_string()).collect();
+        let mut lines: Vec<String> = text
+            .trim_end_matches('\n')
+            .split('\n')
+            .map(|s| s.to_string())
+            .collect();
         let before = lines.len();
         lines.retain(|l| l.trim_end() != target.trim_end());
         if lines.len() == before {
@@ -347,7 +391,11 @@ pub mod yaml {
         if had_trailing_nl {
             out.push('\n');
         }
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 
     /// Remove `mcp_servers.selene`. Drops a now-empty `mcp_servers:` too.
@@ -356,8 +404,11 @@ pub mod yaml {
             return Ok(Edit::Unchanged);
         }
         let had_trailing_nl = text.ends_with('\n');
-        let mut lines: Vec<String> =
-            text.trim_end_matches('\n').split('\n').map(|s| s.to_string()).collect();
+        let mut lines: Vec<String> = text
+            .trim_end_matches('\n')
+            .split('\n')
+            .map(|s| s.to_string())
+            .collect();
 
         let Some(idx) = mcp_servers_line(&lines) else {
             return Ok(Edit::Unchanged);
@@ -386,7 +437,11 @@ pub mod yaml {
         if had_trailing_nl {
             out.push('\n');
         }
-        Ok(if out == text { Edit::Unchanged } else { Edit::Write(out) })
+        Ok(if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        })
     }
 }
 
@@ -426,7 +481,9 @@ pub mod markdown {
         if text[end..].starts_with('\n') {
             end += 1;
         }
-        format!("{}{}", &text[..begin], &text[end..]).trim_end().to_string()
+        format!("{}{}", &text[..begin], &text[end..])
+            .trim_end()
+            .to_string()
     }
 
     /// Upsert the selene instructions block into `text` (or a fresh file), touching nothing else.
@@ -437,7 +494,11 @@ pub mod markdown {
         } else {
             format!("{base}\n\n{}\n", block())
         };
-        if out == text { Edit::Unchanged } else { Edit::Write(out) }
+        if out == text {
+            Edit::Unchanged
+        } else {
+            Edit::Write(out)
+        }
     }
 
     /// Remove the selene block. Returns whether the file should be **deleted** (nothing else left).
@@ -450,7 +511,14 @@ pub mod markdown {
             (Edit::Unchanged, true) // caller deletes the file
         } else {
             let out = format!("{base}\n");
-            (if out == text { Edit::Unchanged } else { Edit::Write(out) }, false)
+            (
+                if out == text {
+                    Edit::Unchanged
+                } else {
+                    Edit::Write(out)
+                },
+                false,
+            )
         }
     }
 }
@@ -498,7 +566,10 @@ mod tests {
         };
         assert!(out.contains("other"), "neighbor kept");
         assert!(!out.contains("selene"), "selene removed");
-        assert_eq!(json::remove(&out, "mcpServers", "selene").unwrap(), Edit::Unchanged);
+        assert_eq!(
+            json::remove(&out, "mcpServers", "selene").unwrap(),
+            Edit::Unchanged
+        );
     }
 
     #[test]
@@ -508,7 +579,10 @@ mod tests {
             panic!("expected a write");
         };
         assert!(out.contains("[other]"), "the sibling table survives: {out}");
-        assert!(out.contains("mcp_servers.existing"), "the neighbor server survives");
+        assert!(
+            out.contains("mcp_servers.existing"),
+            "the neighbor server survives"
+        );
         assert!(out.contains("mcp_servers.selene"), "selene added");
         assert_eq!(
             toml::upsert(&out, "mcp_servers", "selene", &entry()).unwrap(),
@@ -536,7 +610,10 @@ mod tests {
     }
 
     fn args() -> Vec<String> {
-        ["serve", "--mcp", "--path", "/root"].iter().map(|s| s.to_string()).collect()
+        ["serve", "--mcp", "--path", "/root"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect()
     }
 
     #[test]
@@ -550,7 +627,10 @@ mod tests {
         assert!(out.contains("  selene:"), "selene added");
         assert!(out.contains("      - --path"), "args rendered as a list");
         // Idempotent.
-        assert_eq!(yaml::upsert(&out, "/abs/selene", &args()).unwrap(), Edit::Unchanged);
+        assert_eq!(
+            yaml::upsert(&out, "/abs/selene", &args()).unwrap(),
+            Edit::Unchanged
+        );
     }
 
     #[test]
@@ -583,7 +663,11 @@ mod tests {
         assert!(out.contains("# My project"), "user's heading kept");
         assert!(out.contains("Some notes."), "user's prose kept");
         assert!(out.contains(markdown::MARKER_BEGIN), "block added");
-        assert_eq!(markdown::upsert(&out), Edit::Unchanged, "re-upsert is a no-op");
+        assert_eq!(
+            markdown::upsert(&out),
+            Edit::Unchanged,
+            "re-upsert is a no-op"
+        );
     }
 
     #[test]
@@ -597,7 +681,9 @@ mod tests {
         let mixed = format!("# Mine\n\n{}\n", markdown::block());
         let (edit, delete) = markdown::remove(&mixed);
         assert!(!delete, "keep a file with other content");
-        let Edit::Write(out) = edit else { panic!("expected a rewrite") };
+        let Edit::Write(out) = edit else {
+            panic!("expected a rewrite")
+        };
         assert!(out.contains("# Mine") && !out.contains(markdown::MARKER_BEGIN));
     }
 }

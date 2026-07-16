@@ -35,7 +35,7 @@ fn java_class(id: &str, name: &str, qn: &str, file: &str) -> Node {
         name: name.to_string(),
         qualified_name: qn.to_string(),
         file_path: file.to_string(),
-        language: Language::Java.as_str().to_string(),
+        language: Language::Java,
         start_line: 1,
         end_line: 40,
         start_column: 0,
@@ -79,7 +79,7 @@ fn import_ref(fqn: &str, from_file: &str) -> UnresolvedRef {
         column: Some(0),
         candidates: vec![],
         file_path: from_file.to_string(),
-        language: Language::Java.as_str().to_string(),
+        language: Language::Java,
         status: RefStatus::Pending,
         name_tail: fqn.rsplit('.').next().unwrap_or(fqn).to_string(),
     }

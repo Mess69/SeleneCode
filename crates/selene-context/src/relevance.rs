@@ -1909,6 +1909,7 @@ fn trim_nodes(nodes: &mut IndexMap<String, Node>, roots: &[String], opts: &FindO
 #[cfg(test)]
 mod tests {
     use super::*;
+    use selene_core::Language;
 
     /// The agent writes English; the code declares types. `"edge".contains("edges")` is false, so
     /// asked *"how are **edges** created"* the `Edge` type carried none of the query's concepts —
@@ -2049,7 +2050,7 @@ mod tests {
             name: "x".into(),
             qualified_name: "x".into(),
             file_path: path.into(),
-            language: "ruby".into(),
+            language: Language::Ruby,
             start_line: 1,
             end_line: 2,
             start_column: 0,

@@ -60,7 +60,7 @@ use crate::Result;
 use crate::context::ResolutionContext;
 use crate::types::{ResolvedBy, ResolvedRef};
 
-pub use routes::{RouteSpec, find_route, route_node, route_node_in};
+pub use routes::{RouteSpec, find_route, route_node};
 
 // =============================================================================
 // Shared helpers — one copy, used by every framework
@@ -370,14 +370,10 @@ pub async fn run_framework_extract_for_files<S: GraphStore>(
 
         for fw in applicable {
             match catch_unwind(AssertUnwindSafe(|| fw.extract(path, &source, *language))) {
-                Ok(mut out) => {
-                    // Stamp the file's language on any node that left it blank
-                    // (`route_node` does — see routes.rs).
-                    for n in &mut out.nodes {
-                        if n.language.is_empty() {
-                            n.language = language.as_str().to_string();
-                        }
-                    }
+                Ok(out) => {
+                    // No stamp pass anymore: `route_node` takes the language
+                    // directly (the enum has no empty-string sentinel), so every
+                    // emitted node arrives already typed.
                     nodes.extend(out.nodes);
                     refs.extend(out.refs);
                 }

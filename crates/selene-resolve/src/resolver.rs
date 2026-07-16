@@ -239,7 +239,10 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                 return (Some(via), defer);
             }
 
-            return (self.gate_language(match_function_ref(r, &self.ctx), r), defer);
+            return (
+                self.gate_language(match_function_ref(r, &self.ctx), r),
+                defer,
+            );
         }
 
         // --- step 5: JVM FQN imports -----------------------------------------
@@ -362,11 +365,9 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         r: &UnresolvedRef,
     ) -> Option<ResolvedRef> {
         let result = result?;
-        let (Some(target_lang), Some(ref_lang)) = (
-            self.target_language(&result.target_node_id),
-            Language::from_wire(&r.language),
-        ) else {
-            // A language we cannot type is a language we cannot gate. Pass it
+        let ref_lang = r.language;
+        let Some(target_lang) = self.target_language(&result.target_node_id) else {
+            // A target we cannot see is a target we cannot gate. Pass it
             // through — the TS does exactly this (`if (!tgt || !ref.language)`).
             return Some(result);
         };
@@ -398,10 +399,8 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         if r.reference_kind != "references" && r.reference_kind != "imports" {
             return Some(result);
         }
-        let (Some(target_lang), Some(ref_lang)) = (
-            self.target_language(&result.target_node_id),
-            Language::from_wire(&r.language),
-        ) else {
+        let ref_lang = r.language;
+        let Some(target_lang) = self.target_language(&result.target_node_id) else {
             return Some(result);
         };
         if crosses_known_family(target_lang, ref_lang) {
@@ -411,9 +410,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     }
 
     fn target_language(&self, node_id: &str) -> Option<Language> {
-        self.ctx
-            .node_by_id(node_id)
-            .and_then(|n| Language::from_wire(&n.language))
+        self.ctx.node_by_id(node_id).map(|n| n.language)
     }
 
     // =========================================================================
@@ -617,7 +614,7 @@ pub fn matches_any_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> b
 /// Path-shaped refs resolve to a **file** or to nothing at all — they never fall
 /// through to symbol matching.
 pub fn is_php_include_path_ref(r: &UnresolvedRef) -> bool {
-    r.language == Language::Php.as_str()
+    r.language == Language::Php
         && r.reference_kind == "imports"
         && (r.reference_name.contains('/') || r.reference_name.contains('.'))
 }
@@ -738,7 +735,7 @@ mod tests {
 
     #[test]
     fn best_candidate_keeps_the_earlier_on_a_tie() {
-        use selene_core::RefStatus;
+        use selene_core::{Language, RefStatus};
         let row = UnresolvedRef {
             from_node_id: "function:a".into(),
             reference_name: "x".into(),
@@ -747,7 +744,7 @@ mod tests {
             column: None,
             candidates: vec![],
             file_path: "a.ts".into(),
-            language: "typescript".into(),
+            language: Language::Typescript,
             status: RefStatus::Pending,
             name_tail: "x".into(),
         };

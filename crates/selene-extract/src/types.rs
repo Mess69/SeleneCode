@@ -1,6 +1,6 @@
 //! Extraction output shapes + constants (plan §File structure: `types.rs`).
 
-use selene_core::{Edge, Node};
+use selene_core::{Edge, Language, Node};
 use serde::{Deserialize, Serialize};
 
 use crate::ExtractionError;
@@ -33,7 +33,7 @@ pub struct UnresolvedReference {
     pub file_path: Option<String>,
     /// Language of the referencing file.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub language: Option<String>,
+    pub language: Option<Language>,
 }
 
 /// Everything one extraction pass produced. Errors are collected here, never

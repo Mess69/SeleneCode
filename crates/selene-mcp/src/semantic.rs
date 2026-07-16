@@ -24,7 +24,10 @@ async fn embed_query(query: &str) -> Option<Vec<f32>> {
     let mut guard = cell.lock().await;
     if guard.is_none() {
         // Loading is seconds; do it off the async workers so it never stalls the runtime.
-        let loaded = tokio::task::spawn_blocking(Embedder::load).await.ok()?.ok()?;
+        let loaded = tokio::task::spawn_blocking(Embedder::load)
+            .await
+            .ok()?
+            .ok()?;
         *guard = Some(loaded);
     }
     guard.as_mut()?.embed_query(query).ok()

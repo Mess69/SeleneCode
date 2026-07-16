@@ -96,7 +96,9 @@ impl SurrealStore {
             .query("SELECT count() FROM node WHERE embedding != NONE GROUP ALL")
             .await?;
         let n: Option<Value> = resp.take(0)?;
-        Ok(n.and_then(|v| v.get("count").and_then(|c| c.as_u64())).unwrap_or(0) > 0)
+        Ok(n.and_then(|v| v.get("count").and_then(|c| c.as_u64()))
+            .unwrap_or(0)
+            > 0)
     }
 
     /// K nearest nodes to `query_vec` by cosine distance, via the HNSW index. `raw_score` is a
@@ -148,7 +150,10 @@ impl SurrealStore {
                     obj.remove("dist");
                 }
                 let node: Node = serde_json::from_value(row)?;
-                Ok(SearchCandidate { node, raw_score: 1.0 / (1.0 + dist) })
+                Ok(SearchCandidate {
+                    node,
+                    raw_score: 1.0 / (1.0 + dist),
+                })
             })
             .collect()
     }
@@ -166,7 +171,9 @@ impl SurrealStore {
         let lexical = self
             .search_fts(&[query_text.to_string()], kinds, languages, PER_SIGNAL, 0)
             .await?;
-        let semantic = self.vector_search(query_vec, kinds, languages, PER_SIGNAL).await?;
+        let semantic = self
+            .vector_search(query_vec, kinds, languages, PER_SIGNAL)
+            .await?;
 
         if semantic.is_empty() {
             let mut out = lexical;
@@ -182,12 +189,18 @@ impl SurrealStore {
         for list in [&lexical, &semantic] {
             for (rank, cand) in list.iter().enumerate() {
                 *score.entry(cand.node.id.clone()).or_insert(0.0) += 1.0 / (RRF_K + rank as f64);
-                node_of.entry(cand.node.id.clone()).or_insert_with(|| cand.node.clone());
+                node_of
+                    .entry(cand.node.id.clone())
+                    .or_insert_with(|| cand.node.clone());
             }
         }
         let mut fused: Vec<SearchCandidate> = score
             .into_iter()
-            .filter_map(|(id, s)| node_of.remove(&id).map(|node| SearchCandidate { node, raw_score: s }))
+            .filter_map(|(id, s)| {
+                node_of
+                    .remove(&id)
+                    .map(|node| SearchCandidate { node, raw_score: s })
+            })
             .collect();
         fused.sort_by(|a, b| {
             b.raw_score

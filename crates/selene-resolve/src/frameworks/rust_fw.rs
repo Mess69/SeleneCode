@@ -45,7 +45,7 @@ use crate::context::ResolutionContext;
 use crate::frameworks::cargo::cargo_workspace_crate_map;
 use crate::frameworks::{
     FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, match_delim,
-    route_node_in,
+    route_node,
 };
 use crate::strip_comments::strip_comments_for_regex;
 use crate::types::{ResolvedBy, ResolvedRef};
@@ -152,7 +152,7 @@ impl FrameworkResolver for RustResolver {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if Language::from_wire(&r.language) != Some(Language::Rust) {
+        if r.language != Language::Rust {
             return None;
         }
         let name = r.reference_name.as_str();
@@ -376,9 +376,9 @@ fn push_route(
 }
 
 fn new_route(method: &str, route_path: &str, file: &str, line: u32) -> selene_core::Node {
-    route_node_in(
+    route_node(
         &RouteSpec::new(RUST, Some(method), route_path, file, line),
-        Language::Rust.as_str(),
+        Language::Rust,
         NO_CLOCK,
     )
 }
@@ -398,7 +398,7 @@ fn handler_ref(route_id: &str, handler: &str, file: &str, line: u32) -> Unresolv
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: Language::Rust.as_str().to_string(),
+        language: Language::Rust,
         status: RefStatus::Pending,
         name_tail: handler.to_string(),
     }

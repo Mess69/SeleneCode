@@ -568,7 +568,7 @@ mod tests {
     #![allow(clippy::unwrap_used, clippy::expect_used)]
 
     use super::*;
-    use selene_core::EdgeKind;
+    use selene_core::{EdgeKind, Language};
 
     fn node(id: &str, name: &str, kind: NodeKind) -> Node {
         Node {
@@ -577,7 +577,7 @@ mod tests {
             name: name.to_string(),
             qualified_name: name.to_string(),
             file_path: "src/lib.rs".to_string(),
-            language: "rust".to_string(),
+            language: Language::Rust,
             start_line: 1,
             end_line: 2,
             start_column: 0,

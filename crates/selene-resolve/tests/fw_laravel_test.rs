@@ -118,7 +118,7 @@ fn a_facade_reference_resolves_to_nothing() {
             column: Some(0),
             candidates: vec![],
             file_path: "routes/api.php".into(),
-            language: Language::Php.as_str().into(),
+            language: Language::Php,
             status: RefStatus::Pending,
             name_tail: name.into(),
         }

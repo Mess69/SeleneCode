@@ -142,11 +142,17 @@ pub fn remove(root: &Path) -> Result<Vec<HookResult>> {
     for name in HOOKS {
         let path = dir.join(name);
         let Ok(text) = std::fs::read_to_string(&path) else {
-            out.push(HookResult { path, action: "not-found" });
+            out.push(HookResult {
+                path,
+                action: "not-found",
+            });
             continue;
         };
         if !has_block(&text) {
-            out.push(HookResult { path, action: "not-found" });
+            out.push(HookResult {
+                path,
+                action: "not-found",
+            });
             continue;
         }
         let remainder = strip_block(&text);
@@ -157,7 +163,10 @@ pub fn remove(root: &Path) -> Result<Vec<HookResult>> {
                 .with_context(|| format!("write {}", path.display()))?;
             make_executable(&path);
         }
-        out.push(HookResult { path, action: "removed" });
+        out.push(HookResult {
+            path,
+            action: "removed",
+        });
     }
     Ok(out)
 }
@@ -201,7 +210,10 @@ mod tests {
     fn reinstall_is_idempotent() {
         let once = install_content(None, &bin());
         let twice = install_content(Some(&once), &bin());
-        assert_eq!(once, twice, "installing over our own block does not duplicate it");
+        assert_eq!(
+            once, twice,
+            "installing over our own block does not duplicate it"
+        );
     }
 
     #[test]

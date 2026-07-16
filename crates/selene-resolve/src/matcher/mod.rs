@@ -73,17 +73,17 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     // a wrong inference yields no edge, never a wrong one. They sit ABOVE the
     // method matcher because a chained receiver is more information than a bare
     // one, and below the qualified name because that is more still.
-    let lang = Language::from_wire(&r.language);
+    let lang = r.language;
 
     // --- (1b) C/C++: `Foo::instance().bar` -----------------------------------
-    if matches!(lang, Some(Language::C | Language::Cpp))
+    if matches!(lang, Language::C | Language::Cpp)
         && let Some(hit) = match_cpp_call_chain(r, ctx)
     {
         return Some(hit);
     }
 
     // --- (1c) `::`-scoped: PHP `Cls::for($x)->m`, Rust `Foo::new().m` ---------
-    if matches!(lang, Some(Language::Php | Language::Rust))
+    if matches!(lang, Language::Php | Language::Rust)
         && let Some(hit) = match_scoped_call_chain(r, ctx)
     {
         return Some(hit);
@@ -94,7 +94,7 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     // rows live in the chain tables and cost nothing until their extractors land.)
     if matches!(
         lang,
-        Some(Language::Java | Language::Kotlin | Language::CSharp | Language::Go)
+        Language::Java | Language::Kotlin | Language::CSharp | Language::Go
     ) && let Some(hit) = match_dotted_call_chain(r, ctx)
     {
         return Some(hit);

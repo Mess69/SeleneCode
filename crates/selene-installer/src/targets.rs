@@ -99,8 +99,16 @@ pub struct TargetResult {
 }
 
 /// The frozen, user-visible target order.
-pub const ALL_TARGETS: &[&str] =
-    &["claude", "cursor", "codex", "opencode", "hermes", "gemini", "antigravity", "kiro"];
+pub const ALL_TARGETS: &[&str] = &[
+    "claude",
+    "cursor",
+    "codex",
+    "opencode",
+    "hermes",
+    "gemini",
+    "antigravity",
+    "kiro",
+];
 
 /// The per-agent format + entry shape.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -124,14 +132,46 @@ struct Target {
 fn registry() -> Vec<Target> {
     use Kind::*;
     vec![
-        Target { id: "claude", kind: JsonMcpServers, global_only: false },
-        Target { id: "cursor", kind: JsonMcpServers, global_only: false },
-        Target { id: "codex", kind: Codex, global_only: true },
-        Target { id: "opencode", kind: Opencode, global_only: false },
-        Target { id: "hermes", kind: Hermes, global_only: true },
-        Target { id: "gemini", kind: JsonMcpServers, global_only: false },
-        Target { id: "antigravity", kind: JsonMcpServers, global_only: true },
-        Target { id: "kiro", kind: JsonMcpServers, global_only: false },
+        Target {
+            id: "claude",
+            kind: JsonMcpServers,
+            global_only: false,
+        },
+        Target {
+            id: "cursor",
+            kind: JsonMcpServers,
+            global_only: false,
+        },
+        Target {
+            id: "codex",
+            kind: Codex,
+            global_only: true,
+        },
+        Target {
+            id: "opencode",
+            kind: Opencode,
+            global_only: false,
+        },
+        Target {
+            id: "hermes",
+            kind: Hermes,
+            global_only: true,
+        },
+        Target {
+            id: "gemini",
+            kind: JsonMcpServers,
+            global_only: false,
+        },
+        Target {
+            id: "antigravity",
+            kind: JsonMcpServers,
+            global_only: true,
+        },
+        Target {
+            id: "kiro",
+            kind: JsonMcpServers,
+            global_only: false,
+        },
     ]
 }
 
@@ -154,7 +194,10 @@ pub fn resolve_target_flag(flag: &str, ctx: &Ctx, location: Location) -> Result<
             let mut out = Vec::new();
             for id in csv.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
                 if !ALL_TARGETS.contains(&id) {
-                    anyhow::bail!("unknown --target '{id}' (choose from: {})", ALL_TARGETS.join(", "));
+                    anyhow::bail!(
+                        "unknown --target '{id}' (choose from: {})",
+                        ALL_TARGETS.join(", ")
+                    );
                 }
                 out.push(id.to_string());
             }
@@ -186,7 +229,10 @@ impl Target {
                 opencode_file(&base.join("opencode"))
             }
             ("hermes", _) => {
-                let base = ctx.env("HERMES_HOME").map(PathBuf::from).unwrap_or_else(|| home.join(".hermes"));
+                let base = ctx
+                    .env("HERMES_HOME")
+                    .map(PathBuf::from)
+                    .unwrap_or_else(|| home.join(".hermes"));
                 base.join("config.yaml")
             }
             ("gemini", Location::Local) => cwd.join(".gemini").join("settings.json"),
@@ -209,7 +255,13 @@ impl Target {
     }
 
     /// Apply an install to `text`, returning the new content (or Unchanged).
-    fn install_edit(&self, text: &str, binary: &Path, ctx: &Ctx, location: Location) -> Result<Edit> {
+    fn install_edit(
+        &self,
+        text: &str,
+        binary: &Path,
+        ctx: &Ctx,
+        location: Location,
+    ) -> Result<Edit> {
         let bin = binary.to_string_lossy().into_owned();
         let args = self.args(ctx, location);
         match self.kind {
@@ -237,7 +289,11 @@ impl Target {
                     Edit::Write(s) => s,
                     Edit::Unchanged => after_mcp,
                 };
-                Ok(if after_toolset == text { Edit::Unchanged } else { Edit::Write(after_toolset) })
+                Ok(if after_toolset == text {
+                    Edit::Unchanged
+                } else {
+                    Edit::Write(after_toolset)
+                })
             }
         }
     }
@@ -257,7 +313,11 @@ impl Target {
                     Edit::Write(s) => s,
                     Edit::Unchanged => after_mcp,
                 };
-                Ok(if after_toolset == text { Edit::Unchanged } else { Edit::Write(after_toolset) })
+                Ok(if after_toolset == text {
+                    Edit::Unchanged
+                } else {
+                    Edit::Write(after_toolset)
+                })
             }
         }
     }
@@ -272,9 +332,13 @@ impl Target {
         let cwd = &ctx.cwd;
         Some(match (self.id, location) {
             ("claude", Location::Local) => Instruction::Block(cwd.join("CLAUDE.md")),
-            ("claude", Location::Global) => Instruction::Block(home.join(".claude").join("CLAUDE.md")),
+            ("claude", Location::Global) => {
+                Instruction::Block(home.join(".claude").join("CLAUDE.md"))
+            }
             ("gemini", Location::Local) => Instruction::Block(cwd.join("GEMINI.md")),
-            ("gemini", Location::Global) => Instruction::Block(home.join(".gemini").join("GEMINI.md")),
+            ("gemini", Location::Global) => {
+                Instruction::Block(home.join(".gemini").join("GEMINI.md"))
+            }
             ("codex", _) => Instruction::Block(home.join(".codex").join("AGENTS.md")),
             ("opencode", Location::Local) => Instruction::Block(cwd.join("AGENTS.md")),
             ("opencode", Location::Global) => {
@@ -339,7 +403,11 @@ pub fn install(ids: &[String], location: Location, binary: &Path, ctx: &Ctx) -> 
             out.push(unsupported(t.id));
             continue;
         };
-        out.push(finish(t.id, Some(path.clone()), install_config(t, &path, binary, ctx, location)));
+        out.push(finish(
+            t.id,
+            Some(path.clone()),
+            install_config(t, &path, binary, ctx, location),
+        ));
         if let Some(instr) = t.instruction(ctx, location) {
             let (p, res) = install_instruction(instr);
             out.push(finish(t.id, Some(p), res));
@@ -379,13 +447,23 @@ fn install_config(
     let existed = path.exists();
     let text = read_or_note(path)?;
     if !text.trim().is_empty() && !t.round_trips(&text) {
-        return Ok((Action::Kept, Some("refused: file does not round-trip losslessly".into())));
+        return Ok((
+            Action::Kept,
+            Some("refused: file does not round-trip losslessly".into()),
+        ));
     }
     match t.install_edit(&text, binary, ctx, location)? {
         Edit::Unchanged => Ok((Action::Unchanged, None)),
         Edit::Write(out) => {
             write_atomic(path, &out)?;
-            Ok((if existed { Action::Updated } else { Action::Created }, None))
+            Ok((
+                if existed {
+                    Action::Updated
+                } else {
+                    Action::Created
+                },
+                None,
+            ))
         }
     }
 }
@@ -396,7 +474,10 @@ fn uninstall_config(t: &Target, path: &Path) -> Result<(Action, Option<String>)>
     }
     let text = read_or_note(path)?;
     if !text.trim().is_empty() && !t.round_trips(&text) {
-        return Ok((Action::Kept, Some("refused: file does not round-trip losslessly".into())));
+        return Ok((
+            Action::Kept,
+            Some("refused: file does not round-trip losslessly".into()),
+        ));
     }
     match t.uninstall_edit(&text)? {
         Edit::Unchanged => Ok((Action::Kept, None)),
@@ -418,7 +499,14 @@ fn install_instruction(instr: Instruction) -> (PathBuf, Result<(Action, Option<S
                     Edit::Unchanged => Ok((Action::Unchanged, None)),
                     Edit::Write(out) => {
                         write_atomic(&path, &out)?;
-                        Ok((if existed { Action::Updated } else { Action::Created }, None))
+                        Ok((
+                            if existed {
+                                Action::Updated
+                            } else {
+                                Action::Created
+                            },
+                            None,
+                        ))
                     }
                 }
             })();
@@ -432,7 +520,14 @@ fn install_instruction(instr: Instruction) -> (PathBuf, Result<(Action, Option<S
                     return Ok((Action::Unchanged, None));
                 }
                 write_atomic(&path, &content)?;
-                Ok((if existed { Action::Updated } else { Action::Created }, None))
+                Ok((
+                    if existed {
+                        Action::Updated
+                    } else {
+                        Action::Created
+                    },
+                    None,
+                ))
             })();
             (path, res)
         }
@@ -488,7 +583,12 @@ fn unsupported(id: &str) -> TargetResult {
 /// Wrap a per-file outcome (or a collected error) into a `TargetResult`.
 fn finish(id: &str, path: Option<PathBuf>, res: Result<(Action, Option<String>)>) -> TargetResult {
     let (action, note) = res.unwrap_or_else(|e| (Action::Kept, Some(format!("error: {e:#}"))));
-    TargetResult { id: id.to_string(), path, action, note }
+    TargetResult {
+        id: id.to_string(),
+        path,
+        action,
+        note,
+    }
 }
 
 /// Read a file, or `""` if absent. An unreadable/existing file backs itself up and is treated as

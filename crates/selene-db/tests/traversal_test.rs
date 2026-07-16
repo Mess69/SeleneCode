@@ -10,7 +10,7 @@
 //! deterministic. Tests that belong to `GraphQueryManager` (getContext, file
 //! deps, cycles, dead code, metrics) are out of scope here (Phase 4).
 
-use selene_core::{Edge, EdgeKind, Node, NodeKind};
+use selene_core::{Edge, EdgeKind, Language, Node, NodeKind};
 use selene_db::{Direction, SurrealStore, TraversalOptions};
 
 // =============================================================================
@@ -26,7 +26,7 @@ fn tnode(name: &str, kind: NodeKind) -> Node {
         name: name.to_string(),
         qualified_name: name.to_string(),
         file_path: format!("src/{name}.ts"),
-        language: "typescript".to_string(),
+        language: Language::Typescript,
         start_line: 1,
         end_line: 10,
         start_column: 0,

@@ -184,6 +184,7 @@ impl FrameworkResolver for DjangoResolver {
             // Path-only router: no HTTP verb. The name is the RAW url string.
             let node = route_node(
                 &RouteSpec::new(self.name(), None, url.as_str(), path, line),
+                language,
                 0,
             );
 
@@ -224,6 +225,7 @@ impl FrameworkResolver for DjangoResolver {
 
             let node = route_node(
                 &RouteSpec::new(self.name(), Some("VIEWSET"), &route_path, path, line),
+                language,
                 0,
             );
             let tail = cls.rsplit('.').next().unwrap_or(cls);
@@ -329,7 +331,7 @@ impl DjangoResolver {
             column: Some(0),
             candidates: vec![],
             file_path: file.to_string(),
-            language: Language::Python.as_str().to_string(),
+            language: Language::Python,
             status: selene_core::RefStatus::Pending,
             name_tail: name.rsplit('.').next().unwrap_or(name).to_string(),
         }
@@ -421,7 +423,7 @@ fn handler_ref(route_id: &str, handler: &str, file: &str, line: u32) -> Unresolv
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: Language::Python.as_str().to_string(),
+        language: Language::Python,
         status: selene_core::RefStatus::Pending,
         name_tail: handler.to_string(),
     }
@@ -477,7 +479,7 @@ impl FrameworkResolver for Flask {
             })
     }
 
-    fn extract(&self, path: &str, content: &str, _language: Language) -> FrameworkExtraction {
+    fn extract(&self, path: &str, content: &str, language: Language) -> FrameworkExtraction {
         let mut out = FrameworkExtraction::default();
         // Comment-stripped, byte-offset preserving (Task 11's shared machinery): a
         // commented-out decorator must not become a route, and blanking must not
@@ -501,6 +503,7 @@ impl FrameworkResolver for Flask {
             let line = line_of(content, whole.start());
             let node = route_node(
                 &RouteSpec::new("flask", Some(&method), path_str, path, line),
+                language,
                 NO_CLOCK,
             );
 
@@ -523,6 +526,7 @@ impl FrameworkResolver for Flask {
                 let Some(route_path) = p.get(1) else { continue };
                 let node = route_node(
                     &RouteSpec::new("flask", Some("ANY"), route_path.as_str(), path, line),
+                    language,
                     NO_CLOCK,
                 );
                 out.refs
@@ -535,7 +539,7 @@ impl FrameworkResolver for Flask {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if r.language != Language::Python.as_str() {
+        if r.language != Language::Python {
             return None;
         }
         // A blueprint is a module-level variable, not a symbol the name matcher
@@ -581,7 +585,7 @@ impl FrameworkResolver for FastApi {
             .any(|f| ctx.read_file(f).is_some_and(|src| src.contains("FastAPI(")))
     }
 
-    fn extract(&self, path: &str, content: &str, _language: Language) -> FrameworkExtraction {
+    fn extract(&self, path: &str, content: &str, language: Language) -> FrameworkExtraction {
         let mut out = FrameworkExtraction::default();
         // See `Flask::extract` — the same contract, the same shared stripper.
         let content = &strip_comments_for_regex(content, Language::Python);
@@ -598,6 +602,7 @@ impl FrameworkResolver for FastApi {
             let line = line_of(content, whole.start());
             let node = route_node(
                 &RouteSpec::new("fastapi", Some(&method), path_str, path, line),
+                language,
                 NO_CLOCK,
             );
 
@@ -612,7 +617,7 @@ impl FrameworkResolver for FastApi {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if r.language != Language::Python.as_str() {
+        if r.language != Language::Python {
             return None;
         }
         let name = r.reference_name.as_str();

@@ -28,7 +28,7 @@ fn extracts_function_declarations() {
 
     assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
     let f = find(&r, NodeKind::Function, "ProcessOrder").unwrap();
-    assert_eq!(f.language, "go");
+    assert_eq!(f.language.as_str(), "go");
     // Uppercase first letter ⇒ exported (the Go visibility rule).
     assert_eq!(f.is_exported, Some(true));
     // Multi-return `(Receipt, error)` → first result.

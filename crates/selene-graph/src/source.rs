@@ -35,14 +35,18 @@
 
 use std::path::{Path, PathBuf};
 
-use selene_core::Node;
+use selene_core::{Language, Node};
 use selene_db::GraphStore;
 
 use crate::error::{GraphError, Result};
 use crate::query::{QueryManager, normalize_path};
 
 /// Languages whose source is rendered as **keys only** — never values (#383).
-pub const CONFIG_LEAF_LANGUAGES: &[&str] = &["json", "yaml", "toml", "properties", "env", "ini"];
+///
+/// The TS table also listed `json`/`toml`/`env`/`ini`, but those have no
+/// [`Language`] variant — no extractor exists for them, so no node can carry
+/// them and the arms were unreachable. The enum makes that structural.
+pub const CONFIG_LEAF_LANGUAGES: &[Language] = &[Language::Yaml, Language::Properties];
 
 /// The default `limit` for a file view. Ported verbatim from the agent's `Read`.
 pub const DEFAULT_READ_LIMIT: usize = 2000;
@@ -161,7 +165,7 @@ fn config_keys_only(text: &str) -> String {
     out
 }
 
-fn is_config_leaf(language: &str) -> bool {
+fn is_config_leaf(language: Language) -> bool {
     CONFIG_LEAF_LANGUAGES.contains(&language)
 }
 
@@ -187,7 +191,7 @@ impl<S: GraphStore> QueryManager<S> {
         };
 
         // #383: a config leaf yields its keys, never its values.
-        if is_config_leaf(&node.language) {
+        if is_config_leaf(node.language) {
             return Ok(Some(config_keys_only(&text)));
         }
 

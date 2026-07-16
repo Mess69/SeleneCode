@@ -355,7 +355,6 @@ pub(crate) fn owned(v: Vec<Arc<Node>>) -> Vec<Node> {
     v.into_iter().map(|a| a.as_ref().clone()).collect()
 }
 
-
 impl EagerIndex {
     fn build(nodes: Vec<Node>) -> Self {
         let mut ix = EagerIndex {
@@ -617,21 +616,26 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
         if let Some(ix) = &self.eager {
             return ix.by_lower.get(lower).cloned().unwrap_or_default();
         }
-        self.lower_name_cache.get_or_insert_with(lower.to_string(), || {
-            arc_vec(self.blocking("get_nodes_by_name_ci", self.store.get_nodes_by_name_ci(lower)))
-        })
+        self.lower_name_cache
+            .get_or_insert_with(lower.to_string(), || {
+                arc_vec(self.blocking(
+                    "get_nodes_by_name_ci",
+                    self.store.get_nodes_by_name_ci(lower),
+                ))
+            })
     }
 
     fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
             return ix.by_qname.get(qn).cloned().unwrap_or_default();
         }
-        self.qualified_name_cache.get_or_insert_with(qn.to_string(), || {
-            arc_vec(self.blocking(
-                "get_nodes_by_qualified_name",
-                self.store.get_nodes_by_qualified_name(qn),
-            ))
-        })
+        self.qualified_name_cache
+            .get_or_insert_with(qn.to_string(), || {
+                arc_vec(self.blocking(
+                    "get_nodes_by_qualified_name",
+                    self.store.get_nodes_by_qualified_name(qn),
+                ))
+            })
     }
 
     fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Arc<Node>> {
@@ -640,7 +644,8 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
         {
             return hit.clone();
         }
-        let fetched = arc_vec(self.blocking("get_nodes_by_kind", self.store.get_nodes_by_kind(kind)));
+        let fetched =
+            arc_vec(self.blocking("get_nodes_by_kind", self.store.get_nodes_by_kind(kind)));
         if let Ok(mut cache) = self.kind_cache.lock() {
             cache.insert(kind, fetched.clone());
         }
@@ -651,9 +656,12 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
         if let Some(ix) = &self.eager {
             return ix.by_id.get(id).cloned();
         }
-        self.node_by_id_cache.get_or_insert_with(id.to_string(), || {
-            self.blocking("get_node", self.store.get_node(id)).flatten().map(Arc::new)
-        })
+        self.node_by_id_cache
+            .get_or_insert_with(id.to_string(), || {
+                self.blocking("get_node", self.store.get_node(id))
+                    .flatten()
+                    .map(Arc::new)
+            })
     }
 
     fn count_files_with_name(&self, name: &str) -> u64 {
@@ -687,7 +695,7 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
                 .into_iter()
                 .filter(|n| {
                     n.kind == NodeKind::Method
-                        && Language::from_wire(&n.language) == Some(language)
+                        && n.language == language
                         && (n.qualified_name == exact || n.qualified_name.ends_with(&suffix))
                 })
                 .collect()
@@ -704,7 +712,8 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
                 )
                 .unwrap_or_default()
                 .into_iter()
-                .map(|n| Arc::new(n.node)).collect()
+                .map(|n| Arc::new(n.node))
+                .collect()
             })
     }
 

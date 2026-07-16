@@ -42,7 +42,9 @@ pub(crate) const WRITE_CONCURRENCY: usize = 16;
 /// opaque `surrealdb::Error`.
 pub(crate) fn is_retryable_conflict(e: &crate::Error) -> bool {
     let s = e.to_string();
-    s.contains("Resource busy") || s.contains("can be retried") || s.contains("Transaction conflict")
+    s.contains("Resource busy")
+        || s.contains("can be retried")
+        || s.contains("Transaction conflict")
 }
 
 /// Run `op`, retrying on a retryable transaction conflict with a growing (dispersing) backoff.

@@ -25,8 +25,8 @@
 //! through struct fields and stays uncovered for the same reason: partial coverage
 //! is worse than none.
 
-use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
+use std::sync::Arc;
 
 use crate::context::ResolutionContext;
 use crate::families::same_language_family;
@@ -97,7 +97,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     if r.reference_name.starts_with("this.") {
         return None;
     }
-    let ref_lang = Language::from_wire(&r.language)?;
+    let ref_lang = r.language;
 
     // --- a qualified member pointer: `&Widget::on_click` ----------------------
     // Exempt from BARE_FN_ONLY — `&Cls::m` is an EXPLICIT member reference, and its
@@ -110,8 +110,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
             .into_iter()
             .filter(|n| {
                 matches!(n.kind, NodeKind::Function | NodeKind::Method)
-                    && Language::from_wire(&n.language)
-                        .is_some_and(|nl| same_language_family(nl, ref_lang))
+                    && same_language_family(n.language, ref_lang)
                     && n.id != r.from_node_id
                     && (n.qualified_name == r.reference_name
                         || n.qualified_name
@@ -147,8 +146,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
         .into_iter()
         .filter(|n| {
             (n.kind == NodeKind::Function || (!bare_fn_only && n.kind == NodeKind::Method))
-                && Language::from_wire(&n.language)
-                    .is_some_and(|nl| same_language_family(nl, ref_lang))
+                && same_language_family(n.language, ref_lang)
                 // A function registering ITSELF is not a dependency edge.
                 && n.id != r.from_node_id
         })

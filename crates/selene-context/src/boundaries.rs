@@ -165,7 +165,7 @@ pub fn render_boundaries(boundaries: &[Boundary]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use selene_core::NodeKind;
+    use selene_core::{Language, NodeKind};
 
     fn node(id: &str, name: &str, file: &str) -> Node {
         Node {
@@ -174,7 +174,7 @@ mod tests {
             name: name.into(),
             qualified_name: name.into(),
             file_path: file.into(),
-            language: "typescript".into(),
+            language: Language::Typescript,
             start_line: 1,
             end_line: 2,
             start_column: 0,

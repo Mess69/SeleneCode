@@ -24,7 +24,7 @@ fn r(name: &str, kind: &str, file: &str, lang: Language) -> UnresolvedRef {
         column: Some(0),
         candidates: vec![],
         file_path: file.into(),
-        language: lang.as_str().into(),
+        language: lang,
         status: RefStatus::Pending,
         name_tail: name.rsplit(['.', ':']).next().unwrap_or(name).into(),
     }

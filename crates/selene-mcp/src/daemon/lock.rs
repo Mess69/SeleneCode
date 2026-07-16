@@ -63,7 +63,9 @@ pub fn acquire(pid_path: &Path, record: &PidRecord) -> std::io::Result<Acquire> 
 
     match link_result {
         Ok(()) => Ok(Acquire::Acquired),
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(Acquire::Taken(read(pid_path))),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            Ok(Acquire::Taken(read(pid_path)))
+        }
         // No-hardlink filesystem: fall back to an atomic O_EXCL create straight onto the pidfile.
         Err(_) => match std::fs::OpenOptions::new()
             .write(true)
@@ -92,7 +94,12 @@ pub fn read(pid_path: &Path) -> Option<PidRecord> {
         return Some(rec);
     }
     let pid: i32 = text.trim().parse().ok()?;
-    Some(PidRecord { pid, version: "unknown".into(), socket_path: String::new(), started_at: 0 })
+    Some(PidRecord {
+        pid,
+        version: "unknown".into(),
+        socket_path: String::new(),
+        started_at: 0,
+    })
 }
 
 /// Remove the pidfile **only if** it still names `expected_dead_pid` and that pid is dead. Returns
@@ -140,9 +147,14 @@ mod tests {
     fn first_acquire_wins_second_sees_taken() {
         let tmp = tempfile::tempdir().unwrap();
         let pid = tmp.path().join(".selene/daemon.pid");
-        assert!(matches!(acquire(&pid, &rec(own_pid())).unwrap(), Acquire::Acquired));
+        assert!(matches!(
+            acquire(&pid, &rec(own_pid())).unwrap(),
+            Acquire::Acquired
+        ));
         match acquire(&pid, &rec(424242)).unwrap() {
-            Acquire::Taken(Some(r)) => assert_eq!(r.pid, own_pid(), "the holder's record is returned"),
+            Acquire::Taken(Some(r)) => {
+                assert_eq!(r.pid, own_pid(), "the holder's record is returned")
+            }
             other => panic!("expected Taken, got {other:?}"),
         }
     }
@@ -168,7 +180,10 @@ mod tests {
         // A dead holder is cleared — but only when the expected pid matches.
         std::fs::remove_file(&pid).unwrap();
         acquire(&pid, &rec(424242)).unwrap(); // 424242: astronomically unlikely to be alive
-        assert!(!clear_stale(&pid, 999999), "wrong expected pid → left alone");
+        assert!(
+            !clear_stale(&pid, 999999),
+            "wrong expected pid → left alone"
+        );
         assert!(clear_stale(&pid, 424242), "matching dead pid → cleared");
         assert!(!pid.exists());
     }

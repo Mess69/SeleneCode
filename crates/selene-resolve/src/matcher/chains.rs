@@ -115,9 +115,7 @@ pub fn is_deferrable_chain(r: &UnresolvedRef) -> bool {
     if r.reference_kind != "calls" {
         return false;
     }
-    let Some(lang) = Language::from_wire(&r.language) else {
-        return false;
-    };
+    let lang = r.language;
     if CHAIN_LANGUAGES.contains(&lang) && CHAIN_SHAPE.is_match(&r.reference_name) {
         return true;
     }
@@ -127,7 +125,7 @@ pub fn is_deferrable_chain(r: &UnresolvedRef) -> bool {
 /// Is this the PHP property shape (which resolves through `match_method_call`,
 /// not through a chain resolver)?
 pub fn is_php_prop_chain(r: &UnresolvedRef) -> bool {
-    r.language == Language::Php.as_str() && PHP_PROP_SHAPE.is_match(&r.reference_name)
+    r.language == Language::Php && PHP_PROP_SHAPE.is_match(&r.reference_name)
 }
 
 /// Does this language's chain receiver use `::`?
@@ -210,7 +208,7 @@ pub fn match_dotted_call_chain<C: ResolutionContext>(
     r: &UnresolvedRef,
     ctx: &C,
 ) -> Option<ResolvedRef> {
-    let lang = Language::from_wire(&r.language)?;
+    let lang = r.language;
     let (inner, method) = split_chain(&r.reference_name)?;
 
     let Some(last_dot) = inner.rfind('.').filter(|i| *i > 0) else {
@@ -322,7 +320,7 @@ mod tests {
             column: Some(0),
             candidates: vec![],
             file_path: "a.rs".into(),
-            language: lang.as_str().into(),
+            language: lang,
             status: RefStatus::Pending,
             name_tail: name.into(),
         }

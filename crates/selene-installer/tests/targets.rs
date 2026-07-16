@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 use selene_installer::{Action, Ctx, Location, install, resolve_target_flag, uninstall};
 
 fn ctx(home: &Path, cwd: &Path) -> Ctx {
-    Ctx { home: home.to_path_buf(), cwd: cwd.to_path_buf(), env: BTreeMap::new() }
+    Ctx {
+        home: home.to_path_buf(),
+        cwd: cwd.to_path_buf(),
+        env: BTreeMap::new(),
+    }
 }
 
 fn bin() -> PathBuf {
@@ -20,7 +24,10 @@ fn action_for<'a>(
     results: &'a [selene_installer::TargetResult],
     id: &str,
 ) -> &'a selene_installer::TargetResult {
-    results.iter().find(|r| r.id == id).expect("target in results")
+    results
+        .iter()
+        .find(|r| r.id == id)
+        .expect("target in results")
 }
 
 #[test]
@@ -29,7 +36,11 @@ fn codex_toml_install_preserves_siblings_and_uninstall_takes_only_selene() {
     let cwd = tempfile::tempdir().unwrap();
     let cfg = home.path().join(".codex/config.toml");
     std::fs::create_dir_all(cfg.parent().unwrap()).unwrap();
-    std::fs::write(&cfg, "# mine\nmodel = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n").unwrap();
+    std::fs::write(
+        &cfg,
+        "# mine\nmodel = \"x\"\n\n[mcp_servers.other]\ncommand = \"o\"\n",
+    )
+    .unwrap();
 
     let c = ctx(home.path(), cwd.path());
     let r = install(&["codex".into()], Location::Global, &bin(), &c);
@@ -38,7 +49,10 @@ fn codex_toml_install_preserves_siblings_and_uninstall_takes_only_selene() {
     let after = std::fs::read_to_string(&cfg).unwrap();
     assert!(after.contains("# mine"), "comment kept");
     assert!(after.contains("model = \"x\""), "sibling key kept");
-    assert!(after.contains("[mcp_servers.other]"), "neighbor server kept");
+    assert!(
+        after.contains("[mcp_servers.other]"),
+        "neighbor server kept"
+    );
     assert!(after.contains("[mcp_servers.selene]"), "selene added");
 
     // Idempotent.
@@ -49,7 +63,10 @@ fn codex_toml_install_preserves_siblings_and_uninstall_takes_only_selene() {
     let u = uninstall(&["codex".into()], Location::Global, &c);
     assert_eq!(action_for(&u, "codex").action, Action::Removed);
     let after = std::fs::read_to_string(&cfg).unwrap();
-    assert!(after.contains("[mcp_servers.other]"), "neighbor survives uninstall");
+    assert!(
+        after.contains("[mcp_servers.other]"),
+        "neighbor survives uninstall"
+    );
     assert!(!after.contains("selene"), "selene gone");
 }
 
@@ -74,7 +91,10 @@ fn hermes_yaml_install_adds_server_and_toolset() {
     assert_eq!(action_for(&u, "hermes").action, Action::Removed);
     let after = std::fs::read_to_string(&cfg).unwrap();
     assert!(after.contains("  other:"), "neighbor survives");
-    assert!(!after.contains("selene"), "selene gone from both server and toolset");
+    assert!(
+        !after.contains("selene"),
+        "selene gone from both server and toolset"
+    );
 }
 
 #[test]
@@ -93,10 +113,19 @@ fn opencode_jsonc_install_preserves_comments() {
 
     let after = std::fs::read_to_string(cwd.path().join("opencode.jsonc")).unwrap();
     assert!(after.contains("// keep me"), "comment preserved: {after}");
-    assert!(after.contains("\"theme\": \"dark\""), "neighbor key preserved");
-    assert!(after.contains("\"mcp\""), "the opencode `mcp` container is used, not mcpServers");
+    assert!(
+        after.contains("\"theme\": \"dark\""),
+        "neighbor key preserved"
+    );
+    assert!(
+        after.contains("\"mcp\""),
+        "the opencode `mcp` container is used, not mcpServers"
+    );
     assert!(after.contains("\"selene\""), "selene added");
-    assert!(after.contains("\"type\": \"local\""), "opencode entry shape");
+    assert!(
+        after.contains("\"type\": \"local\""),
+        "opencode entry shape"
+    );
 }
 
 #[test]
@@ -108,10 +137,15 @@ fn claude_json_local_install_and_uninstall() {
     let r = install(&["claude".into()], Location::Local, &bin(), &c);
     assert_eq!(action_for(&r, "claude").action, Action::Created);
     let mcp = cwd.path().join(".mcp.json");
-    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&mcp).unwrap()).unwrap();
+    let v: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&mcp).unwrap()).unwrap();
     assert_eq!(v["mcpServers"]["selene"]["command"], "/abs/selene");
     // local bakes in --path
-    assert!(v["mcpServers"]["selene"]["args"].to_string().contains("--path"));
+    assert!(
+        v["mcpServers"]["selene"]["args"]
+            .to_string()
+            .contains("--path")
+    );
 
     let u = uninstall(&["claude".into()], Location::Local, &c);
     assert_eq!(action_for(&u, "claude").action, Action::Removed);
@@ -124,7 +158,11 @@ fn global_only_targets_are_unsupported_locally() {
     let c = ctx(home.path(), cwd.path());
     for id in ["codex", "hermes", "antigravity"] {
         let r = install(&[id.into()], Location::Local, &bin(), &c);
-        assert_eq!(action_for(&r, id).action, Action::Unsupported, "{id} is global-only");
+        assert_eq!(
+            action_for(&r, id).action,
+            Action::Unsupported,
+            "{id} is global-only"
+        );
     }
 }
 
@@ -135,21 +173,41 @@ fn install_writes_instruction_files_and_uninstall_removes_them() {
     let c = ctx(home.path(), cwd.path());
 
     // claude → a CLAUDE.md block; cursor → an owned .cursor/rules/selene.mdc.
-    let r = install(&["claude".into(), "cursor".into()], Location::Local, &bin(), &c);
-    assert!(r.iter().any(|x| x.action == Action::Created), "something was created: {r:?}");
+    let r = install(
+        &["claude".into(), "cursor".into()],
+        Location::Local,
+        &bin(),
+        &c,
+    );
+    assert!(
+        r.iter().any(|x| x.action == Action::Created),
+        "something was created: {r:?}"
+    );
 
     let claude_md = cwd.path().join("CLAUDE.md");
     assert!(claude_md.exists(), "claude instruction block written");
     let md = std::fs::read_to_string(&claude_md).unwrap();
-    assert!(md.contains("## SeleneCode") && md.contains("explore"), "instructions present");
+    assert!(
+        md.contains("## SeleneCode") && md.contains("explore"),
+        "instructions present"
+    );
 
     let mdc = cwd.path().join(".cursor/rules/selene.mdc");
     assert!(mdc.exists(), "cursor owns a rules file");
 
     // A user's own CLAUDE.md prose must survive an install.
-    std::fs::write(&claude_md, format!("# Mine\n\n{}", std::fs::read_to_string(&claude_md).unwrap())).unwrap();
+    std::fs::write(
+        &claude_md,
+        format!("# Mine\n\n{}", std::fs::read_to_string(&claude_md).unwrap()),
+    )
+    .unwrap();
     install(&["claude".into()], Location::Local, &bin(), &c);
-    assert!(std::fs::read_to_string(&claude_md).unwrap().contains("# Mine"), "user's prose kept");
+    assert!(
+        std::fs::read_to_string(&claude_md)
+            .unwrap()
+            .contains("# Mine"),
+        "user's prose kept"
+    );
 
     // Uninstall removes our block (CLAUDE.md kept for the user's prose) and deletes the owned file.
     uninstall(&["claude".into(), "cursor".into()], Location::Local, &c);
@@ -165,14 +223,27 @@ fn target_flag_resolution() {
     let cwd = tempfile::tempdir().unwrap();
     let c = ctx(home.path(), cwd.path());
 
-    assert_eq!(resolve_target_flag("all", &c, Location::Global).unwrap().len(), 8);
-    assert!(resolve_target_flag("none", &c, Location::Global).unwrap().is_empty());
+    assert_eq!(
+        resolve_target_flag("all", &c, Location::Global)
+            .unwrap()
+            .len(),
+        8
+    );
+    assert!(
+        resolve_target_flag("none", &c, Location::Global)
+            .unwrap()
+            .is_empty()
+    );
     assert_eq!(
         resolve_target_flag("claude,cursor", &c, Location::Local).unwrap(),
         vec!["claude", "cursor"]
     );
     // auto with no configs present → empty.
-    assert!(resolve_target_flag("auto", &c, Location::Global).unwrap().is_empty());
+    assert!(
+        resolve_target_flag("auto", &c, Location::Global)
+            .unwrap()
+            .is_empty()
+    );
     // unknown id is the one hard error.
     assert!(resolve_target_flag("bogus", &c, Location::Global).is_err());
 }

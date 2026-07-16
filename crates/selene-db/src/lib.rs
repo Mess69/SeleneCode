@@ -94,12 +94,12 @@ pub use schema::SCHEMA_VERSION;
 // The extraction row records live in `selene-core` (their producer is
 // `selene-extract`, which must not depend on this crate); re-exported here
 // so store-side code and tests keep the `selene_db::FileRecord` paths.
+#[cfg(feature = "kv-ladybug")]
+pub use ladybug::LadybugStore;
 pub use selene_core::{FileRecord, RefStatus, UnresolvedRef};
+pub use semantic::embedding_text;
 pub use store::{
     Direction, GraphStats, GraphStore, NeighborEntry, ReplaceStats, SearchCandidate, Subgraph,
     TraversalOptions, UnresolvedKey,
 };
-pub use semantic::embedding_text;
 pub use surreal::{DATABASE_DIRNAME, SurrealStore};
-#[cfg(feature = "kv-ladybug")]
-pub use ladybug::LadybugStore;

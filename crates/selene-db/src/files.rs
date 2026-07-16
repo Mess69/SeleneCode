@@ -57,7 +57,7 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use selene_core::{Edge, Node, NodeKind};
+use selene_core::{Edge, Language, Node, NodeKind};
 use surrealdb::types::RecordId;
 
 use crate::unresolved::name_tail;
@@ -322,8 +322,8 @@ impl SurrealStore {
             .map(|(edge, ref_name, ref_kind)| {
                 let (file_path, language) = sources
                     .get(&edge.source)
-                    .map(|n| (n.file_path.clone(), n.language.clone()))
-                    .unwrap_or_else(|| (String::new(), "unknown".to_string()));
+                    .map(|n| (n.file_path.clone(), n.language))
+                    .unwrap_or_else(|| (String::new(), Language::Unknown));
                 UnresolvedRef {
                     from_node_id: edge.source.clone(),
                     reference_name: ref_name.clone(),

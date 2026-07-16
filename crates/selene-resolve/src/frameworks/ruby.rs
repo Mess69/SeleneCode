@@ -41,7 +41,7 @@ use selene_core::{Language, Node, NodeKind, RefStatus, UnresolvedRef};
 
 use crate::context::ResolutionContext;
 use crate::frameworks::{
-    FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, route_node_in,
+    FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, route_node,
 };
 use crate::strip_comments::strip_comments_for_regex;
 use crate::types::{ResolvedBy, ResolvedRef};
@@ -197,7 +197,7 @@ impl FrameworkResolver for Rails {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if Language::from_wire(&r.language) != Some(Language::Ruby) {
+        if r.language != Language::Ruby {
             return None;
         }
         let name = r.reference_name.as_str();
@@ -235,9 +235,9 @@ fn push(
     handler: &str,
     line: u32,
 ) {
-    let node = route_node_in(
+    let node = route_node(
         &RouteSpec::new(RAILS, Some(verb), route_path, file, line),
-        Language::Ruby.as_str(),
+        Language::Ruby,
         NO_CLOCK,
     );
     out.refs.push(UnresolvedRef {
@@ -248,7 +248,7 @@ fn push(
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: Language::Ruby.as_str().to_string(),
+        language: Language::Ruby,
         status: RefStatus::Pending,
         name_tail: handler.to_string(),
     });

@@ -671,7 +671,7 @@ impl<S: GraphStore> Indexer<S> {
                             extraction
                                 .unresolved
                                 .iter()
-                                .map(|u| to_db_ref(u, &input.rel, input.language.as_str())),
+                                .map(|u| to_db_ref(u, &input.rel, input.language)),
                         );
                         pending_files.push(Self::file_record_of(input, extraction, content_hash));
                         result.nodes_created += extraction.nodes.len() as u64;
@@ -791,7 +791,7 @@ impl<S: GraphStore> Indexer<S> {
         let unresolved: Vec<UnresolvedRef> = extraction
             .unresolved
             .iter()
-            .map(|u| to_db_ref(u, &input.rel, input.language.as_str()))
+            .map(|u| to_db_ref(u, &input.rel, input.language))
             .collect();
         self.store
             .replace_file_extraction(
@@ -890,7 +890,7 @@ fn guarded_extract(input: &ParseInput) -> ExtractionResult {
 /// denormalized `file_path`/`language` (a block-delegating extractor's own
 /// values win when set), `status: Pending`, empty candidates, `name_tail` =
 /// the last `.`/`::` segment of the reference name.
-fn to_db_ref(u: &UnresolvedReference, file_path: &str, language: &str) -> UnresolvedRef {
+fn to_db_ref(u: &UnresolvedReference, file_path: &str, language: Language) -> UnresolvedRef {
     UnresolvedRef {
         from_node_id: u.from_node_id.clone(),
         reference_name: u.reference_name.clone(),
@@ -899,7 +899,7 @@ fn to_db_ref(u: &UnresolvedReference, file_path: &str, language: &str) -> Unreso
         column: u.column,
         candidates: Vec::new(),
         file_path: u.file_path.clone().unwrap_or_else(|| file_path.to_string()),
-        language: u.language.clone().unwrap_or_else(|| language.to_string()),
+        language: u.language.unwrap_or(language),
         status: RefStatus::Pending,
         name_tail: name_tail(&u.reference_name),
     }

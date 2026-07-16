@@ -8,8 +8,8 @@
 //! binds to, silently, across every repo. A resolver that binds a reference to
 //! the *wrong* target is worse than one that binds nothing.
 
+use selene_core::{Node, NodeKind, UnresolvedRef};
 use std::sync::Arc;
-use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::families::{crosses_known_family, same_language_family};
 
@@ -45,24 +45,16 @@ pub fn ambiguous_name_ceiling() -> usize {
 /// everything else (`calls`, `extends`, …) passes, because cross-language
 /// `calls` bridges are real.
 pub fn apply_language_gate(candidates: Vec<Arc<Node>>, r: &UnresolvedRef) -> Vec<Arc<Node>> {
-    let Some(ref_lang) = Language::from_wire(&r.language) else {
-        return candidates;
-    };
+    let ref_lang = r.language;
 
     match r.reference_kind.as_str() {
         "references" | "function_ref" => candidates
             .into_iter()
-            .filter(|c| {
-                Language::from_wire(&c.language)
-                    .is_some_and(|cl| same_language_family(cl, ref_lang))
-            })
+            .filter(|c| same_language_family(c.language, ref_lang))
             .collect(),
         "imports" => candidates
             .into_iter()
-            .filter(|c| {
-                Language::from_wire(&c.language)
-                    .is_none_or(|cl| !crosses_known_family(cl, ref_lang))
-            })
+            .filter(|c| !crosses_known_family(c.language, ref_lang))
             .collect(),
         _ => candidates,
     }
@@ -146,14 +138,15 @@ pub fn pick_closest_file_node(candidates: &[Arc<Node>], r: &UnresolvedRef) -> Op
         same_dir
     };
 
-    let ref_lang = Language::from_wire(&r.language);
+    let ref_lang = r.language;
     let mut best: Option<&Arc<Node>> = None;
     let mut best_score = i32::MIN;
 
     for c in pool {
-        let family_bonus = match (Language::from_wire(&c.language), ref_lang) {
-            (Some(cl), Some(rl)) if same_language_family(cl, rl) => 5,
-            _ => 0,
+        let family_bonus = if same_language_family(c.language, ref_lang) {
+            5
+        } else {
+            0
         };
         let score = path_proximity(&r.file_path, &c.file_path) + family_bonus;
         // Strictly greater: FIRST-WINS on ties (candidate order is insertion order).
@@ -266,7 +259,7 @@ pub fn find_best_match(candidates: &[Arc<Node>], r: &UnresolvedRef) -> Option<Ar
 #[allow(clippy::unwrap_used, clippy::expect_used)]
 mod tests {
     use super::*;
-    use selene_core::RefStatus;
+    use selene_core::{Language, RefStatus};
 
     fn node(id: &str, kind: NodeKind, name: &str, file: &str, lang: Language) -> Arc<Node> {
         Arc::new(Node {
@@ -275,7 +268,7 @@ mod tests {
             name: name.into(),
             qualified_name: name.into(),
             file_path: file.into(),
-            language: lang.as_str().into(),
+            language: lang,
             start_line: 10,
             end_line: 20,
             start_column: 0,
@@ -306,7 +299,7 @@ mod tests {
             column: Some(0),
             candidates: vec![],
             file_path: file.into(),
-            language: lang.as_str().into(),
+            language: lang,
             status: RefStatus::Pending,
             name_tail: name.into(),
         }

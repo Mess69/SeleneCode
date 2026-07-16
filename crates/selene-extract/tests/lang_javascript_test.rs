@@ -20,7 +20,7 @@ fn exported_async_arrow_extracts_as_function() {
     let r = extract("api.js", code);
     let f = find(&r, NodeKind::Function, "fetchData").unwrap();
     assert_eq!(f.is_exported, Some(true));
-    assert_eq!(f.language, "javascript");
+    assert_eq!(f.language.as_str(), "javascript");
 }
 
 #[test]

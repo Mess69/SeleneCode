@@ -61,7 +61,7 @@ use selene_core::{Language, NodeKind, RefStatus, UnresolvedRef};
 
 use crate::context::ResolutionContext;
 use crate::frameworks::{
-    FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, route_node_in,
+    FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, line_of, route_node,
 };
 use crate::strip_comments::strip_comments_for_regex;
 use crate::types::ResolvedRef;
@@ -180,7 +180,7 @@ fn handler_ref(route_id: &str, handler: &str, file: &str, line: u32) -> Unresolv
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: Language::Go.as_str().to_string(),
+        language: Language::Go,
         status: RefStatus::Pending,
         name_tail: handler.to_string(),
     }
@@ -230,9 +230,9 @@ impl FrameworkResolver for Go {
             };
 
             let line = line_of(&src, whole.start());
-            let node = route_node_in(
+            let node = route_node(
                 &RouteSpec::new(GO, Some(&method), route_path.as_str(), path, line),
-                Language::Go.as_str(),
+                Language::Go,
                 NO_CLOCK,
             );
 
@@ -249,7 +249,7 @@ impl FrameworkResolver for Go {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if Language::from_wire(&r.language) != Some(Language::Go) {
+        if r.language != Language::Go {
             return None;
         }
         let name = r.reference_name.as_str();

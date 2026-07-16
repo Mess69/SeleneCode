@@ -142,7 +142,7 @@ use std::num::NonZeroUsize;
 use std::time::Instant;
 
 use lru::LruCache;
-use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance, RefStatus, UnresolvedRef};
+use selene_core::{Edge, EdgeKind, Language, Node, NodeKind, Provenance, RefStatus, UnresolvedRef};
 use selene_db::{GraphStore, SurrealStore};
 
 // The resolver is generic over `S: GraphStore` and never names SurrealStore
@@ -179,7 +179,7 @@ fn node(id: &str, name: &str, kind: NodeKind, file: &str, qn: &str) -> Node {
         name: name.to_string(),
         qualified_name: qn.to_string(),
         file_path: file.to_string(),
-        language: "typescript".to_string(),
+        language: Language::Typescript,
         start_line: 1,
         end_line: 10,
         start_column: 0,
@@ -224,7 +224,7 @@ fn pending(from: &str, name: &str, kind: &str) -> UnresolvedRef {
         column: Some(0),
         candidates: vec![],
         file_path: "src/a.ts".to_string(),
-        language: "typescript".to_string(),
+        language: Language::Typescript,
         status: RefStatus::Pending,
         name_tail: name.to_string(),
     }
@@ -407,7 +407,7 @@ async fn f2_method_matches_shape_and_hot_name_cost() {
         .iter()
         .filter(|n| {
             n.kind == NodeKind::Method
-                && n.language == "typescript"
+                && n.language == Language::Typescript
                 && (n.qualified_name == exact || n.qualified_name.ends_with(&suffix))
         })
         .collect();

@@ -48,7 +48,10 @@ impl Embedder {
 
     /// Embed a single query string. (BGE does not require a special query prefix for retrieval.)
     pub fn embed_query(&mut self, query: &str) -> Result<Vec<f32>> {
-        let mut out = self.model.embed(vec![query.to_string()], None).context("embed query")?;
+        let mut out = self
+            .model
+            .embed(vec![query.to_string()], None)
+            .context("embed query")?;
         out.pop().context("embedding produced no vector")
     }
 }

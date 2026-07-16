@@ -187,7 +187,7 @@ fn di_conventions_cover_the_interface_spelling() {
         column: Some(0),
         candidates: vec![],
         file_path: "Controllers/ArticlesController.cs".into(),
-        language: Language::CSharp.as_str().into(),
+        language: Language::CSharp,
         status: RefStatus::Pending,
         name_tail: name.into(),
     };

@@ -37,7 +37,9 @@ pub fn register(root: &Path, pid: i32, socket: &Path) {
         version: env!("CARGO_PKG_VERSION").to_string(),
         root: root.to_string_lossy().into_owned(),
         socket_path: socket.to_string_lossy().into_owned(),
-        started_at: super::lock::read(&paths::pid_path(root)).map(|r| r.started_at).unwrap_or(0),
+        started_at: super::lock::read(&paths::pid_path(root))
+            .map(|r| r.started_at)
+            .unwrap_or(0),
     };
     if let Ok(mut text) = serde_json::to_string_pretty(&rec) {
         text.push('\n');

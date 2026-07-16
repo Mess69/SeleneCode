@@ -9,8 +9,8 @@
 use std::sync::LazyLock;
 
 use regex::Regex;
-use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
+use std::sync::Arc;
 
 use crate::context::ResolutionContext;
 use crate::matcher::scoring::{
@@ -130,8 +130,7 @@ pub fn match_by_qualified_name<C: ResolutionContext>(
             .into_iter()
             .filter(|n| {
                 !(n.kind == NodeKind::Constant
-                    && (n.language == Language::Yaml.as_str()
-                        || n.language == Language::Properties.as_str()))
+                    && (n.language == Language::Yaml || n.language == Language::Properties))
             })
             .collect()
     };

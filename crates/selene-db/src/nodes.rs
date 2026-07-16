@@ -466,7 +466,7 @@ mod tests {
 
     use std::collections::BTreeSet;
 
-    use selene_core::Visibility;
+    use selene_core::{Language, Visibility};
 
     use super::*;
 
@@ -497,7 +497,7 @@ mod tests {
             name: "full".to_string(),
             qualified_name: "src/full.rs::Widget.full".to_string(),
             file_path: "src/full.rs".to_string(),
-            language: "rust".to_string(),
+            language: Language::Rust,
             start_line: 10,
             end_line: 20,
             start_column: 2,

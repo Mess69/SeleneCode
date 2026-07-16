@@ -118,7 +118,10 @@ impl SurrealStore {
     pub async fn in_memory() -> Result<Self> {
         let db = Surreal::new::<Mem>(()).await?;
         db.use_ns(NAMESPACE).use_db(DATABASE).await?;
-        Ok(Self { db, serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) })
+        Ok(Self {
+            db,
+            serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
     }
 
     /// Open (creating if absent) an on-disk store at `dir`, using the SurrealKV
@@ -139,7 +142,10 @@ impl SurrealStore {
     pub async fn open(dir: &Path) -> Result<Self> {
         let db = connect_disk_with_lock_retry(|| Surreal::new::<SurrealKv>(dir)).await?;
         db.use_ns(NAMESPACE).use_db(DATABASE).await?;
-        Ok(Self { db, serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) })
+        Ok(Self {
+            db,
+            serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
     }
 
     /// Open (creating if absent) an on-disk store at `dir`, using RocksDB —
@@ -153,19 +159,24 @@ impl SurrealStore {
         cap_rocksdb_block_cache();
         let db = connect_disk_with_lock_retry(|| Surreal::new::<RocksDb>(dir)).await?;
         db.use_ns(NAMESPACE).use_db(DATABASE).await?;
-        Ok(Self { db, serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)) })
+        Ok(Self {
+            db,
+            serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
     }
 
     /// Serialize write chunks instead of running them concurrently — set by the indexer for a large
     /// repo to avoid the optimistic-transaction conflict storm (see the field docs). Shared across
     /// clones, so setting it once before resolve reaches every writer.
     pub fn set_serialize_writes(&self, on: bool) {
-        self.serialize_writes.store(on, std::sync::atomic::Ordering::Relaxed);
+        self.serialize_writes
+            .store(on, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Whether writes should run sequentially (see [`Self::set_serialize_writes`]).
     pub(crate) fn writes_are_serial(&self) -> bool {
-        self.serialize_writes.load(std::sync::atomic::Ordering::Relaxed)
+        self.serialize_writes
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Apply the v1 schema, idempotently. Every DDL statement is

@@ -66,7 +66,10 @@ pub struct ContextBuilder<S: GraphStore> {
 impl<S: GraphStore> ContextBuilder<S> {
     /// Wrap a query manager.
     pub fn new(qm: QueryManager<S>) -> Self {
-        Self { qm, query_vec: None }
+        Self {
+            qm,
+            query_vec: None,
+        }
     }
 
     /// Supply the query's embedding so `explore` fuses semantic candidates with lexical ones. A
@@ -121,7 +124,8 @@ impl<S: GraphStore> ContextBuilder<S> {
         let large_repo = file_count > LARGE_REPO_FILES;
         let mut opts = FindOptions::explore();
         opts.query_vec = self.query_vec.clone(); // semantic candidates when a query vector was supplied
-        let ctx = find_relevant_context(&self.qm, query, &opts, dominant.as_ref(), large_repo).await?;
+        let ctx =
+            find_relevant_context(&self.qm, query, &opts, dominant.as_ref(), large_repo).await?;
         tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), nodes = ctx.subgraph.nodes.len(), "explore/2: find_relevant_context (relevance gather)");
 
         if ctx.subgraph.nodes.is_empty() {

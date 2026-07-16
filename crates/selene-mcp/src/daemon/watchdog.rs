@@ -45,11 +45,15 @@ impl Heartbeat {
 /// Spawn the watchdog OS thread and return the [`Heartbeat`] the daemon should beat — or `None` if
 /// watching is disabled. The thread is detached and lives for the process.
 pub fn spawn(db_dir: &Path) -> Option<Heartbeat> {
-    if matches!(std::env::var(NO_WATCHDOG_ENV).ok().as_deref(), Some(v) if v != "0" && !v.is_empty()) {
+    if matches!(std::env::var(NO_WATCHDOG_ENV).ok().as_deref(), Some(v) if v != "0" && !v.is_empty())
+    {
         return None;
     }
     let timeout = Duration::from_millis(
-        std::env::var(TIMEOUT_ENV).ok().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_TIMEOUT_MS),
+        std::env::var(TIMEOUT_ENV)
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_TIMEOUT_MS),
     );
     // Heartbeat interval: brisk but not busy — min(2s, max(50ms, timeout/5)).
     let interval = timeout
@@ -57,7 +61,9 @@ pub fn spawn(db_dir: &Path) -> Option<Heartbeat> {
         .unwrap_or(Duration::from_millis(50))
         .clamp(Duration::from_millis(50), Duration::from_secs(2));
 
-    let hb = Heartbeat { ticks: Arc::new(AtomicU64::new(0)) };
+    let hb = Heartbeat {
+        ticks: Arc::new(AtomicU64::new(0)),
+    };
     let ticks = hb.ticks.clone();
     let db_dir = db_dir.to_path_buf();
 
@@ -145,7 +151,9 @@ mod tests {
 
     #[test]
     fn beat_advances_the_counter() {
-        let hb = Heartbeat { ticks: Arc::new(AtomicU64::new(0)) };
+        let hb = Heartbeat {
+            ticks: Arc::new(AtomicU64::new(0)),
+        };
         hb.beat();
         hb.beat();
         assert_eq!(hb.ticks.load(Ordering::Relaxed), 2);

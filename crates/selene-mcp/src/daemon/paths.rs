@@ -86,9 +86,16 @@ mod tests {
         let deep = "/Users/someone/".to_string() + &"nested/".repeat(15) + "project";
         let root = PathBuf::from(deep);
         let sock = socket_path(&root);
-        assert!(sock.starts_with(std::env::temp_dir()), "relocated to tmp: {}", sock.display());
+        assert!(
+            sock.starts_with(std::env::temp_dir()),
+            "relocated to tmp: {}",
+            sock.display()
+        );
         assert!(sock.to_string_lossy().contains(&root_hash(&root)));
-        assert!(sock.as_os_str().len() <= POSIX_SOCKET_PATH_LIMIT + 20, "short enough for sun_path");
+        assert!(
+            sock.as_os_str().len() <= POSIX_SOCKET_PATH_LIMIT + 20,
+            "short enough for sun_path"
+        );
     }
 
     #[test]

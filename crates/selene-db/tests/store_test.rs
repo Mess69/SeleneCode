@@ -16,7 +16,7 @@
 //! unique-index fold at the storage layer, below the typed API's own dedup.
 
 #[cfg(feature = "kv-mem")]
-use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance, Visibility};
+use selene_core::{Edge, EdgeKind, Language, Node, NodeKind, Provenance, Visibility};
 use selene_db::SurrealStore;
 #[cfg(feature = "kv-mem")]
 use selene_db::{FileRecord, RefStatus, UnresolvedRef};
@@ -153,7 +153,7 @@ fn node(name: &str, file_path: &str) -> Node {
         name: name.to_string(),
         qualified_name: format!("{file_path}::{name}"),
         file_path: file_path.to_string(),
-        language: "rust".to_string(),
+        language: Language::Rust,
         start_line: 1,
         end_line: 2,
         start_column: 0,
@@ -185,7 +185,7 @@ fn maximal_node(name: &str, file_path: &str) -> Node {
         name: name.to_string(),
         qualified_name: format!("{file_path}::Widget.{name}"),
         file_path: file_path.to_string(),
-        language: "rust".to_string(),
+        language: Language::Rust,
         start_line: 10,
         end_line: 20,
         start_column: 2,
@@ -1489,7 +1489,7 @@ fn unresolved_ref(
         column: Some(3),
         candidates: vec![serde_json::json!({ "nodeId": "function:maybe", "score": 0.5 })],
         file_path: file_path.to_string(),
-        language: "rust".to_string(),
+        language: Language::Rust,
         status,
         name_tail: name_tail(reference_name),
     }

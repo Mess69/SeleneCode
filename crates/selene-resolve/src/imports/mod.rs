@@ -19,8 +19,8 @@ use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
 use std::sync::LazyLock;
 
-use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
+use std::sync::Arc;
 
 use crate::context::ResolutionContext;
 use crate::imports::aliases::apply_aliases;
@@ -680,7 +680,7 @@ pub fn resolve_jvm_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     if r.reference_kind != "imports" {
         return None;
     }
-    let lang = Language::from_wire(&r.language)?;
+    let lang = r.language;
     if !matches!(lang, Language::Java | Language::Kotlin) {
         return None;
     }
@@ -751,7 +751,7 @@ fn pick_closest_jvm_candidate(candidates: Vec<Arc<Node>>, from_path: &str) -> Op
 /// finds no file must not then go name-matching: a wrong edge is worse than
 /// none, #660).
 pub fn resolve_via_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
-    let lang = Language::from_wire(&r.language)?;
+    let lang = r.language;
 
     // --- C/C++ `#include` → a file→file edge -------------------------------
     if matches!(lang, Language::C | Language::Cpp) && r.reference_kind == "imports" {
@@ -963,7 +963,7 @@ fn resolve_go_cross_package<C: ResolutionContext>(
         };
 
         for node in ctx.nodes_by_name(member) {
-            if node.language != Language::Go.as_str() || node.is_exported != Some(true) {
+            if node.language != Language::Go || node.is_exported != Some(true) {
                 continue;
             }
             if parent_dir(&node.file_path.replace('\\', "/")) == pkg_dir {
@@ -1012,7 +1012,7 @@ fn resolve_jvm_imported_reference<C: ResolutionContext>(
 
         let candidates = ctx.nodes_by_name(&member_name);
         for node in &candidates {
-            if node.language != lang.as_str() {
+            if node.language != lang {
                 continue;
             }
             let fp = node.file_path.replace('\\', "/");
@@ -1029,7 +1029,7 @@ fn resolve_jvm_imported_reference<C: ResolutionContext>(
         {
             let owner_path = format!("{}{ext}", imp.source[..dot].replace('.', "/"));
             for node in &candidates {
-                if node.language != lang.as_str() {
+                if node.language != lang {
                     continue;
                 }
                 let fp = node.file_path.replace('\\', "/");
@@ -1086,7 +1086,8 @@ fn resolve_python_module_member<C: ResolutionContext>(
         // import edge resolved (#578).
         let resolved = resolve_import_path(&module_path, &r.file_path, Language::Python, ctx)
             .or_else(|| {
-                find_python_module_file(&module_path, &r.file_path, ctx).map(|n| n.file_path.clone())
+                find_python_module_file(&module_path, &r.file_path, ctx)
+                    .map(|n| n.file_path.clone())
             });
 
         let Some(resolved) = resolved else { continue };

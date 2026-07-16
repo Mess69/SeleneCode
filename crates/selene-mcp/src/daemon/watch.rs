@@ -46,17 +46,18 @@ pub async fn watch_and_sync(root: PathBuf) {
     // notify's event callback runs on its own OS thread; bridge into async with an unbounded
     // channel (send is sync and thread-safe).
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<Vec<PathBuf>>();
-    let mut watcher = match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if let Ok(event) = res {
-            let _ = tx.send(event.paths);
-        }
-    }) {
-        Ok(w) => w,
-        Err(e) => {
-            eprintln!("[selene daemon] file watching unavailable: {e}");
-            return;
-        }
-    };
+    let mut watcher =
+        match notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+            if let Ok(event) = res {
+                let _ = tx.send(event.paths);
+            }
+        }) {
+            Ok(w) => w,
+            Err(e) => {
+                eprintln!("[selene daemon] file watching unavailable: {e}");
+                return;
+            }
+        };
     if let Err(e) = watcher.watch(&root, RecursiveMode::Recursive) {
         eprintln!("[selene daemon] could not watch {}: {e}", root.display());
         return;
@@ -125,9 +126,18 @@ mod tests {
 
     #[test]
     fn data_dirs_are_filtered_source_files_are_not() {
-        assert!(!relevant(Path::new("/p/.selene/daemon.pid")), ".selene/ is the feedback-loop guard");
+        assert!(
+            !relevant(Path::new("/p/.selene/daemon.pid")),
+            ".selene/ is the feedback-loop guard"
+        );
         assert!(!relevant(Path::new("/p/.git/index")), ".git/ is noise");
-        assert!(relevant(Path::new("/p/src/a.ts")), "a real source edit passes");
-        assert!(relevant(Path::new("/p/README.md")), "sync's own detection handles non-source");
+        assert!(
+            relevant(Path::new("/p/src/a.ts")),
+            "a real source edit passes"
+        );
+        assert!(
+            relevant(Path::new("/p/README.md")),
+            "sync's own detection handles non-source"
+        );
     }
 }

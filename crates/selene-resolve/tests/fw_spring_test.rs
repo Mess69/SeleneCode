@@ -118,7 +118,7 @@ fn a_ref(from: &str, name: &str, kind: &str, file: &str, lang: Language) -> Unre
         column: Some(8),
         candidates: vec![],
         file_path: file.into(),
-        language: lang.as_str().into(),
+        language: lang,
         status: RefStatus::Pending,
         name_tail: name.rsplit('.').next().unwrap_or(name).into(),
     }
@@ -381,7 +381,7 @@ fn config_values_are_never_stored() {
         secret.name.clone(),
         secret.qualified_name.clone(),
         secret.file_path.clone(),
-        secret.language.clone(),
+        secret.language.as_str().to_string(),
     ];
     carried.extend(secret.docstring.clone());
     carried.extend(secret.signature.clone());

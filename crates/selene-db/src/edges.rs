@@ -430,7 +430,8 @@ impl SurrealStore {
         let mut inserted: u64 = 0;
         if self.writes_are_serial() {
             for chunk in valid.chunks(CHUNK) {
-                inserted += crate::util::with_conflict_retry(|| self.insert_edge_chunk(chunk)).await?;
+                inserted +=
+                    crate::util::with_conflict_retry(|| self.insert_edge_chunk(chunk)).await?;
             }
         } else {
             let chunks: Vec<&[&Edge]> = valid.chunks(CHUNK).collect();

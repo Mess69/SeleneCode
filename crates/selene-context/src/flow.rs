@@ -444,6 +444,7 @@ pub fn describe_hop(edge: &Edge) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use selene_core::Language;
     use serde_json::json;
 
     fn edge(kind: EdgeKind, prov: Provenance, synth: Option<&str>) -> Edge {
@@ -466,7 +467,7 @@ mod tests {
                 name: name.into(),
                 qualified_name: name.into(),
                 file_path: "src/lib.rs".into(),
-                language: "rust".into(),
+                language: Language::Rust,
                 start_line: 1,
                 end_line: 2,
                 start_column: 0,

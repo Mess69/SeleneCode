@@ -262,8 +262,9 @@ pub struct Node {
     pub qualified_name: String,
     /// File path relative to project root.
     pub file_path: String,
-    /// Programming language (an extensible registry owned by `selene-extract`).
-    pub language: String,
+    /// Programming language. Serializes to the wire string ([`Language::as_str`])
+    /// — byte-identical to the `String` field this replaced.
+    pub language: Language,
     /// Starting line (1-indexed).
     pub start_line: u32,
     /// Ending line (1-indexed).
@@ -465,8 +466,9 @@ pub struct UnresolvedRef {
     pub candidates: Vec<serde_json::Value>,
     /// File path of the referencing node (denormalized).
     pub file_path: String,
-    /// Language of the referencing node (denormalized).
-    pub language: String,
+    /// Language of the referencing node (denormalized). Wire string via
+    /// [`Language::as_str`], exactly as when this was a `String`.
+    pub language: Language,
     /// Current resolution status.
     pub status: RefStatus,
     /// Last segment of `reference_name` (e.g. `"calculateTotal"` out of

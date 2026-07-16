@@ -130,7 +130,10 @@ async fn index_inner(path: PathBuf) -> Result<()> {
             selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
                 .await
                 .context("resolution failed")?;
-        store.bulk_load_finish().await.context("the FULLTEXT index build failed")?;
+        store
+            .bulk_load_finish()
+            .await
+            .context("the FULLTEXT index build failed")?;
         stats
     } else {
         // Overlap the FTS build with resolve on a separate worker — hidden behind the resolve on
@@ -181,7 +184,10 @@ async fn index_inner_ladybug(root: PathBuf) -> Result<()> {
     // Flush the extraction into the store as one node COPY + one edge COPY (Kuzu's fast fresh-table
     // path) BEFORE resolve reads the eager node scan. The pipeline buffered all extraction writes;
     // this is the extraction→resolve boundary.
-    store.flush_bulk().await.context("flushing the extraction to LadybugDB failed")?;
+    store
+        .flush_bulk()
+        .await
+        .context("flushing the extraction to LadybugDB failed")?;
 
     eprintln!("resolving …");
     let stats =
@@ -696,8 +702,11 @@ pub async fn embed(path: PathBuf) -> Outcome {
                 return Outcome::Failure;
             }
         };
-        let rows: Vec<(String, Vec<f32>)> =
-            chunk.iter().zip(vecs).map(|(n, v)| (n.id.clone(), v)).collect();
+        let rows: Vec<(String, Vec<f32>)> = chunk
+            .iter()
+            .zip(vecs)
+            .map(|(n, v)| (n.id.clone(), v))
+            .collect();
         if let Err(e) = store.store_embeddings(&rows).await {
             eprintln!("\nselene embed: {e:#}");
             return Outcome::Failure;

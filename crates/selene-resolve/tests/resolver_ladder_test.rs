@@ -24,7 +24,7 @@ fn r(name: &str, kind: &str, lang: Language) -> UnresolvedRef {
         column: Some(3),
         candidates: vec![],
         file_path: "src/caller.ts".into(),
-        language: lang.as_str().into(),
+        language: lang,
         status: RefStatus::Pending,
         name_tail: name.rsplit(['.', ':']).next().unwrap_or(name).into(),
     }
@@ -199,15 +199,17 @@ fn c_stdlib_names_yield_to_user_definitions_but_std_never_does() {
 }
 
 #[test]
-fn an_untypeable_language_is_never_filtered() {
+fn a_language_with_no_builtin_table_is_never_filtered() {
+    // The old "untypeable language" (an arbitrary non-wire string) is now
+    // UNREPRESENTABLE: `UnresolvedRef.language` is the `Language` enum, so the
+    // pass-through-on-unparseable branch was deleted with the type that made it
+    // reachable. The surviving guarantee is structural: a language without a
+    // builtin table (`Unknown` here) filters nothing — same protective outcome
+    // (a wrong filter is a lost edge), now by construction.
     let ctx = FakeContext::new();
     let mut odd = calls("print", Language::Python);
-    odd.language = "klingon".into();
-    assert!(
-        !is_built_in_or_external(&odd, &ctx),
-        "a language we cannot type is a language we cannot filter for — pass it \
-         through rather than guessing (a wrong filter is a lost edge)"
-    );
+    odd.language = Language::Unknown;
+    assert!(!is_built_in_or_external(&odd, &ctx));
 }
 
 // =============================================================================

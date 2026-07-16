@@ -39,7 +39,13 @@ pub struct ControlReply {
 
 impl ControlReply {
     pub fn failure(msg: impl Into<String>) -> Self {
-        Self { ok: false, changed: 0, removed: 0, unchanged: 0, error: Some(msg.into()) }
+        Self {
+            ok: false,
+            changed: 0,
+            removed: 0,
+            unchanged: 0,
+            error: Some(msg.into()),
+        }
     }
 }
 
@@ -85,7 +91,9 @@ pub async fn route_to_daemon(root: &Path, verb: &str) -> std::io::Result<Option<
     };
 
     let (rh, mut wh) = stream.into_split();
-    let req = ControlRequest { selene_control: verb.to_string() };
+    let req = ControlRequest {
+        selene_control: verb.to_string(),
+    };
     let mut line = serde_json::to_string(&req).unwrap_or_default();
     line.push('\n');
     wh.write_all(line.as_bytes()).await?;
@@ -96,7 +104,9 @@ pub async fn route_to_daemon(root: &Path, verb: &str) -> std::io::Result<Option<
     reader.read_line(&mut resp).await?;
     match serde_json::from_str::<ControlReply>(resp.trim()) {
         Ok(reply) => Ok(Some(reply)),
-        Err(e) => Ok(Some(ControlReply::failure(format!("daemon reply unparseable: {e}")))),
+        Err(e) => Ok(Some(ControlReply::failure(format!(
+            "daemon reply unparseable: {e}"
+        )))),
     }
 }
 
@@ -108,7 +118,9 @@ mod tests {
     #[test]
     fn a_control_frame_parses_and_an_mcp_message_does_not() {
         assert_eq!(
-            parse_request(r#"{"selene_control":"sync"}"#).unwrap().selene_control,
+            parse_request(r#"{"selene_control":"sync"}"#)
+                .unwrap()
+                .selene_control,
             "sync"
         );
         // A JSON-RPC initialize is not a control frame.
@@ -120,7 +132,13 @@ mod tests {
 
     #[test]
     fn reply_round_trips() {
-        let r = ControlReply { ok: true, changed: 2, removed: 1, unchanged: 5, error: None };
+        let r = ControlReply {
+            ok: true,
+            changed: 2,
+            removed: 1,
+            unchanged: 5,
+            error: None,
+        };
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<ControlReply>(&s).unwrap(), r);
     }

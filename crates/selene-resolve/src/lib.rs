@@ -359,7 +359,7 @@ pub use families::{crosses_known_family, is_known_language_family, same_language
 pub use frameworks::{
     FrameworkExtractStats, FrameworkExtraction, FrameworkResolver, REGISTRY_ORDER, RouteSpec,
     all_framework_resolvers, applicable_frameworks, detect_frameworks, detect_frameworks_among,
-    find_route, framework_resolver, route_node, route_node_in, run_framework_extract,
+    find_route, framework_resolver, route_node, run_framework_extract,
     run_framework_extract_for_files, run_post_extract,
 };
 pub use imports::aliases::{apply_aliases, load_project_aliases};

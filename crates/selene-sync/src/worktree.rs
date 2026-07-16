@@ -43,7 +43,12 @@ impl Mismatch {
 }
 
 fn git(path: &Path, args: &[&str]) -> Option<String> {
-    let out = Command::new("git").arg("-C").arg(path).args(args).output().ok()?;
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(path)
+        .args(args)
+        .output()
+        .ok()?;
     if !out.status.success() {
         return None;
     }
@@ -89,7 +94,10 @@ pub fn detect(start: &Path, index_root: &Path) -> Option<Mismatch> {
         (Some(a), Some(b)) if a != b => return None,
         _ => {}
     }
-    Some(Mismatch { worktree_root: real(&wt), index_root: index_real })
+    Some(Mismatch {
+        worktree_root: real(&wt),
+        index_root: index_real,
+    })
 }
 
 #[cfg(test)]
@@ -99,9 +107,24 @@ mod tests {
     use std::process::Command;
 
     fn git_init(dir: &Path) {
-        Command::new("git").arg("-C").arg(dir).args(["init", "-q"]).status().unwrap();
-        Command::new("git").arg("-C").arg(dir).args(["config", "user.email", "t@t.co"]).status().unwrap();
-        Command::new("git").arg("-C").arg(dir).args(["config", "user.name", "t"]).status().unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["init", "-q"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.email", "t@t.co"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(["config", "user.name", "t"])
+            .status()
+            .unwrap();
     }
 
     #[test]
@@ -123,14 +146,31 @@ mod tests {
         git_init(main.path());
         // A repo needs a commit before `git worktree add`.
         std::fs::write(main.path().join("f.txt"), "x").unwrap();
-        Command::new("git").arg("-C").arg(main.path()).args(["add", "-A"]).status().unwrap();
-        Command::new("git").arg("-C").arg(main.path()).args(["commit", "-qm", "init"]).status().unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(main.path())
+            .args(["add", "-A"])
+            .status()
+            .unwrap();
+        Command::new("git")
+            .arg("-C")
+            .arg(main.path())
+            .args(["commit", "-qm", "init"])
+            .status()
+            .unwrap();
 
         let wt = main.path().join("wt");
         let ok = Command::new("git")
             .arg("-C")
             .arg(main.path())
-            .args(["worktree", "add", "-q", wt.to_str().unwrap(), "-b", "branch2"])
+            .args([
+                "worktree",
+                "add",
+                "-q",
+                wt.to_str().unwrap(),
+                "-b",
+                "branch2",
+            ])
             .status()
             .unwrap()
             .success();

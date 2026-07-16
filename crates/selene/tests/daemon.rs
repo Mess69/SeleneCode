@@ -25,8 +25,16 @@ fn bin() -> &'static str {
 /// Index a tiny two-file project so there is a real graph for the daemon to serve.
 fn index_tiny_project(root: &Path) {
     std::fs::create_dir_all(root.join("src")).unwrap();
-    std::fs::write(root.join("src/a.ts"), "export function alpha(){ return beta() }\n").unwrap();
-    std::fs::write(root.join("src/b.ts"), "export function beta(){ return 1 }\n").unwrap();
+    std::fs::write(
+        root.join("src/a.ts"),
+        "export function alpha(){ return beta() }\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("src/b.ts"),
+        "export function beta(){ return 1 }\n",
+    )
+    .unwrap();
     let status = std::process::Command::new(bin())
         .arg("index")
         .arg(root)
@@ -66,7 +74,10 @@ async fn connect_all_tools(
         .arg("--path")
         .arg(root)
         .env("SELENE_DAEMON_IDLE_TIMEOUT_MS", "2000")
-        .env("SELENE_MCP_TOOLS", "explore,node,search,callers,callees,impact,files")
+        .env(
+            "SELENE_MCP_TOOLS",
+            "explore,node,search,callers,callees,impact,files",
+        )
         .env("HOME", home)
         .stderr(Stdio::null());
     ().serve(TokioChildProcess::new(cmd).unwrap())
@@ -100,7 +111,10 @@ async fn call(
     let mut p = CallToolRequestParams::default();
     p.name = tool.to_string().into();
     p.arguments = args.as_object().cloned();
-    let r = client.call_tool(p).await.expect("the call itself must succeed");
+    let r = client
+        .call_tool(p)
+        .await
+        .expect("the call itself must succeed");
     let text = r
         .content
         .first()
@@ -138,8 +152,14 @@ async fn a_tool_call_is_answered_by_a_spawned_daemon() {
 
     // A real query answers from the warm store — not an isError, and it names the symbol.
     let (is_err, text) = call(&client, "explore", serde_json::json!({ "query": "beta" })).await;
-    assert!(!is_err, "a found symbol is success-shaped, got isError; text: {text}");
-    assert!(text.contains("beta"), "the answer describes beta; got: {text}");
+    assert!(
+        !is_err,
+        "a found symbol is success-shaped, got isError; text: {text}"
+    );
+    assert!(
+        text.contains("beta"),
+        "the answer describes beta; got: {text}"
+    );
 
     // The proxy spawned a daemon: the pidfile exists and names a plausible pid.
     let pid = daemon_pid(root).expect("a daemon pidfile exists after a proxied session");
@@ -162,7 +182,12 @@ async fn two_launchers_share_one_daemon() {
 
     // A second, independent launcher for the same project must reuse the same daemon.
     let client_b = connect(root, home.path()).await;
-    let (is_err, _) = call(&client_b, "explore", serde_json::json!({ "query": "alpha" })).await;
+    let (is_err, _) = call(
+        &client_b,
+        "explore",
+        serde_json::json!({ "query": "alpha" }),
+    )
+    .await;
     assert!(!is_err, "the second client is served too");
     let pid_b = daemon_pid(root).expect("daemon still up");
 
@@ -188,7 +213,11 @@ async fn sync_routes_through_a_running_daemon() {
 
     // Add a new symbol on disk; advance mtime so the sync notices it.
     tokio::time::sleep(Duration::from_millis(1100)).await;
-    std::fs::write(root.join("src/c.ts"), "export function gamma(){ return 2 }\n").unwrap();
+    std::fs::write(
+        root.join("src/c.ts"),
+        "export function gamma(){ return 2 }\n",
+    )
+    .unwrap();
 
     // `selene sync` must succeed WHILE the daemon holds the lock — i.e. route through it.
     let out = std::process::Command::new(bin())
@@ -197,14 +226,26 @@ async fn sync_routes_through_a_running_daemon() {
         .env("HOME", home.path())
         .output()
         .unwrap();
-    assert!(out.status.success(), "sync succeeds via the daemon, not a lock error");
+    assert!(
+        out.status.success(),
+        "sync succeeds via the daemon, not a lock error"
+    );
     let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(stderr.contains("via daemon"), "sync was daemon-routed; stderr: {stderr}");
+    assert!(
+        stderr.contains("via daemon"),
+        "sync was daemon-routed; stderr: {stderr}"
+    );
 
     // The new symbol is queryable through the SAME warm daemon right away.
     let (is_err, text) = call(&client, "explore", serde_json::json!({ "query": "gamma" })).await;
-    assert!(!is_err, "gamma resolves after a daemon-routed sync; text: {text}");
-    assert!(text.contains("gamma"), "the fresh symbol is in the warm store; got: {text}");
+    assert!(
+        !is_err,
+        "gamma resolves after a daemon-routed sync; text: {text}"
+    );
+    assert!(
+        text.contains("gamma"),
+        "the fresh symbol is in the warm store; got: {text}"
+    );
 
     let _ = client.cancel().await;
 }
@@ -224,19 +265,27 @@ async fn daemon_auto_syncs_on_a_file_change() {
 
     // Add a brand-new symbol on disk. Do NOT run `selene sync` — the watcher must do it.
     tokio::time::sleep(Duration::from_millis(300)).await;
-    std::fs::write(root.join("src/c.ts"), "export function gamma(){ return 2 }\n").unwrap();
+    std::fs::write(
+        root.join("src/c.ts"),
+        "export function gamma(){ return 2 }\n",
+    )
+    .unwrap();
 
     // Wait past the 2s debounce plus the re-index, polling the warm store for the new symbol.
     let mut found = false;
     for _ in 0..20 {
         tokio::time::sleep(Duration::from_millis(500)).await;
-        let (is_err, text) = call(&client, "explore", serde_json::json!({ "query": "gamma" })).await;
+        let (is_err, text) =
+            call(&client, "explore", serde_json::json!({ "query": "gamma" })).await;
         if !is_err && text.contains("gamma") {
             found = true;
             break;
         }
     }
-    assert!(found, "the daemon auto-synced the new file and the symbol resolves");
+    assert!(
+        found,
+        "the daemon auto-synced the new file and the symbol resolves"
+    );
 
     let _ = client.cancel().await;
 }
@@ -267,23 +316,49 @@ async fn e2e_new_class_methods_edits_and_deletes_auto_reflect_in_the_graph() {
     )
     .unwrap();
     assert!(
-        poll_until(&client, "callers", serde_json::json!({ "symbol": "beta" }), "create", 30).await,
+        poll_until(
+            &client,
+            "callers",
+            serde_json::json!({ "symbol": "beta" }),
+            "create",
+            30
+        )
+        .await,
         "the new class's create() auto-appeared AS A CALLER of beta (class + method + call edge)"
     );
     // And the method's callee resolves back the other way.
-    let (_e, callees) = call(&client, "callees", serde_json::json!({ "symbol": "create" })).await;
-    assert!(callees.contains("beta"), "create()'s callee is beta: {callees}");
+    let (_e, callees) = call(
+        &client,
+        "callees",
+        serde_json::json!({ "symbol": "create" }),
+    )
+    .await;
+    assert!(
+        callees.contains("beta"),
+        "create()'s callee is beta: {callees}"
+    );
 
     // --- 2. MODIFY the class: create() now calls a brand-new gamma() instead ---------------------
     tokio::time::sleep(Duration::from_millis(1100)).await; // advance mtime past the debounce window
-    std::fs::write(root.join("src/gamma.ts"), "export function gamma(){ return 7 }\n").unwrap();
+    std::fs::write(
+        root.join("src/gamma.ts"),
+        "export function gamma(){ return 7 }\n",
+    )
+    .unwrap();
     std::fs::write(
         root.join("src/service.ts"),
         "export class UserService {\n  create() { return gamma() }\n  remove() { return 0 }\n}\n",
     )
     .unwrap();
     assert!(
-        poll_until(&client, "callers", serde_json::json!({ "symbol": "gamma" }), "create", 30).await,
+        poll_until(
+            &client,
+            "callers",
+            serde_json::json!({ "symbol": "gamma" }),
+            "create",
+            30
+        )
+        .await,
         "after the edit, create() now calls gamma()"
     );
 
@@ -297,13 +372,19 @@ async fn e2e_new_class_methods_edits_and_deletes_auto_reflect_in_the_graph() {
     let _ = client.cancel().await;
     // Wait for the daemon to release the exclusive lock (idle timeout 2s), then open the store.
     tokio::time::sleep(Duration::from_millis(3500)).await;
-    let store = selene_db::SurrealStore::open(&root.join(".selene")).await.unwrap();
+    let store = selene_db::SurrealStore::open(&root.join(".selene"))
+        .await
+        .unwrap();
     assert!(
         !store.get_nodes_by_name("gamma").await.unwrap().is_empty(),
         "gamma (added by the edit) persisted in the database"
     );
     assert!(
-        store.get_nodes_by_name("UserService").await.unwrap().is_empty(),
+        store
+            .get_nodes_by_name("UserService")
+            .await
+            .unwrap()
+            .is_empty(),
         "UserService is absent from the database after its file was deleted"
     );
     assert!(

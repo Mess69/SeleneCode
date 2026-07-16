@@ -4,7 +4,7 @@
 //! (`src/search.rs`) — Task 7.
 
 #[cfg(feature = "kv-mem")]
-use selene_core::{Edge, EdgeKind, Node, NodeKind, Visibility};
+use selene_core::{Edge, EdgeKind, Language, Node, NodeKind, Visibility};
 #[cfg(feature = "kv-mem")]
 use selene_db::{FileRecord, SurrealStore};
 
@@ -30,7 +30,7 @@ fn node_full(
         name: name.to_string(),
         qualified_name: qualified_name.to_string(),
         file_path: file_path.to_string(),
-        language: language.to_string(),
+        language: Language::from_wire(language).expect("test language"),
         start_line: 1,
         end_line: 2,
         start_column: 0,
@@ -210,7 +210,7 @@ async fn clear_empties_everything_but_meta_survives() {
             column: None,
             candidates: vec![],
             file_path: "src/a.rs".to_string(),
-            language: "rust".to_string(),
+            language: Language::Rust,
             status: selene_db::RefStatus::Pending,
             name_tail: "target".to_string(),
         }])

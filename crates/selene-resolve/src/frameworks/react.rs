@@ -99,12 +99,12 @@ impl FrameworkResolver for ReactResolver {
             .any(|(_, l)| matches!(l, Language::Tsx | Language::Jsx))
     }
 
-    fn extract(&self, path: &str, content: &str, _language: Language) -> FrameworkExtraction {
+    fn extract(&self, path: &str, content: &str, language: Language) -> FrameworkExtraction {
         let mut out = FrameworkExtraction::default();
         // RAW source — see the module docs.
-        self.jsx_routes(path, content, &mut out);
-        self.object_routes(path, content, &mut out);
-        self.next_file_route(path, content, &mut out);
+        self.jsx_routes(path, content, language, &mut out);
+        self.object_routes(path, content, language, &mut out);
+        self.next_file_route(path, content, language, &mut out);
         out
     }
 
@@ -142,8 +142,7 @@ impl FrameworkResolver for ReactResolver {
         // as likely to be a class or a type as a component, and binding it here
         // would out-rank the name matcher with a worse answer. Let the matcher
         // decide instead.
-        let lang = Language::from_wire(&r.language);
-        if !matches!(lang, Some(Language::Tsx) | Some(Language::Jsx)) {
+        if !matches!(r.language, Language::Tsx | Language::Jsx) {
             return None;
         }
         if !name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
@@ -166,7 +165,7 @@ impl FrameworkResolver for ReactResolver {
 
 impl ReactResolver {
     /// `<Route path="…" element={<Comp/>}/>` (v6) and `component={Comp}` (v5).
-    fn jsx_routes(&self, path: &str, src: &str, out: &mut FrameworkExtraction) {
+    fn jsx_routes(&self, path: &str, src: &str, language: Language, out: &mut FrameworkExtraction) {
         for m in ROUTE_TAG.find_iter(src) {
             let end = (m.start() + JSX_WINDOW).min(src.len());
             // Clamp to a char boundary — a byte window can land mid-UTF-8.
@@ -184,12 +183,18 @@ impl ReactResolver {
                 continue;
             };
             let line = line_of(src, m.start());
-            self.emit(path, p.as_str(), comp.as_str(), line, out);
+            self.emit(path, p.as_str(), comp.as_str(), line, language, out);
         }
     }
 
     /// `createBrowserRouter([{ path: '/x', element: <Comp/> }])`.
-    fn object_routes(&self, path: &str, src: &str, out: &mut FrameworkExtraction) {
+    fn object_routes(
+        &self,
+        path: &str,
+        src: &str,
+        language: Language,
+        out: &mut FrameworkExtraction,
+    ) {
         // Gate: without a data-router factory in the file, `path:` is just an
         // ordinary object key and pairing it with a nearby component would
         // invent routes out of config objects.
@@ -222,7 +227,7 @@ impl ReactResolver {
                 p.as_str()
             };
             let line = line_of(src, whole.start());
-            self.emit(path, route_path, comp.as_str(), line, out);
+            self.emit(path, route_path, comp.as_str(), line, language, out);
         }
     }
 
@@ -230,7 +235,13 @@ impl ReactResolver {
     ///
     /// `pages/articles/[slug].tsx` → `/articles/:slug`;
     /// `app/articles/page.tsx`     → `/articles`.
-    fn next_file_route(&self, path: &str, src: &str, out: &mut FrameworkExtraction) {
+    fn next_file_route(
+        &self,
+        path: &str,
+        src: &str,
+        language: Language,
+        out: &mut FrameworkExtraction,
+    ) {
         let Some(base) = path.rsplit('/').next() else {
             return;
         };
@@ -270,7 +281,7 @@ impl ReactResolver {
             return;
         };
         // Next.js routes are file-level: line 1.
-        self.emit(path, &route_path, comp.as_str(), 1, out);
+        self.emit(path, &route_path, comp.as_str(), 1, language, out);
     }
 
     fn emit(
@@ -279,11 +290,13 @@ impl ReactResolver {
         route_path: &str,
         component: &str,
         line: u32,
+        language: Language,
         out: &mut FrameworkExtraction,
     ) {
         // Path-only router: no HTTP verb.
         let node = route_node(
             &RouteSpec::new(self.name(), None, route_path, file, line),
+            language,
             0,
         );
         out.refs.push(UnresolvedRef {
@@ -294,7 +307,7 @@ impl ReactResolver {
             column: Some(0),
             candidates: vec![],
             file_path: file.to_string(),
-            language: Language::Tsx.as_str().to_string(),
+            language: Language::Tsx,
             status: selene_core::RefStatus::Pending,
             name_tail: component.to_string(),
         });

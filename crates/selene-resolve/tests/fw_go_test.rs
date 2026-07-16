@@ -79,7 +79,7 @@ fn go_call(from: &str, callee: &str, file: &str) -> UnresolvedRef {
         column: Some(1),
         candidates: vec![],
         file_path: file.into(),
-        language: Language::Go.as_str().into(),
+        language: Language::Go,
         status: RefStatus::Pending,
         name_tail: callee.rsplit('.').next().unwrap_or(callee).into(),
     }
@@ -265,7 +265,7 @@ fn go_conventions_prefer_the_conventional_directory_by_infix() {
         column: Some(0),
         candidates: vec![],
         file_path: ROUTER.into(),
-        language: Language::Go.as_str().into(),
+        language: Language::Go,
         status: RefStatus::Pending,
         name_tail: "ArticleHandler".into(),
     };

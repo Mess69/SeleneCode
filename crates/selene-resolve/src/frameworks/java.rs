@@ -68,7 +68,7 @@ use selene_core::{Language, Node, NodeKind, RefStatus, UnresolvedRef, node_id};
 use crate::context::ResolutionContext;
 use crate::frameworks::{
     FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, char_boundary_at_or_below,
-    line_of, manifest_mentions, route_node_in,
+    line_of, manifest_mentions, route_node,
 };
 use crate::types::{ResolvedBy, ResolvedRef};
 
@@ -228,7 +228,7 @@ fn spring_ref(from: &str, name: &str, file: &str, line: u32, language: Language)
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: language.as_str().to_string(),
+        language,
         status: RefStatus::Pending,
         name_tail: name.rsplit('.').next().unwrap_or(name).to_string(),
     }
@@ -249,7 +249,7 @@ fn constant_node(
         name: name.to_string(),
         qualified_name: qualified_name.to_string(),
         file_path: file.to_string(),
-        language: language.as_str().to_string(),
+        language,
         start_line: line,
         end_line: line,
         start_column: 0,
@@ -339,10 +339,7 @@ impl FrameworkResolver for Spring {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if !matches!(
-            Language::from_wire(&r.language),
-            Some(Language::Java | Language::Kotlin)
-        ) {
+        if !matches!(r.language, Language::Java | Language::Kotlin) {
             return None;
         }
 
@@ -488,9 +485,9 @@ fn push_route(
     end: usize,
 ) {
     let line = line_of(content, start);
-    let node = route_node_in(
+    let node = route_node(
         &RouteSpec::new(SPRING, Some(method), route_path, path, line),
-        language.as_str(),
+        language,
         NO_CLOCK,
     );
     if let Some((handler, handler_line)) = next_handler(content, end, language) {
@@ -612,10 +609,7 @@ fn extract_properties(path: &str, content: &str, out: &mut FrameworkExtraction) 
 /// none.
 fn is_config_node(n: &Node) -> bool {
     n.framework.as_deref() == Some(SPRING)
-        && matches!(
-            Language::from_wire(&n.language),
-            Some(Language::Yaml | Language::Properties)
-        )
+        && matches!(n.language, Language::Yaml | Language::Properties)
 }
 
 fn config_nodes(ctx: &dyn ResolutionContext) -> Vec<Node> {

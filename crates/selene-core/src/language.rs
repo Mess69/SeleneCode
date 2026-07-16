@@ -255,6 +255,37 @@ impl Language {
     }
 }
 
+/// The wire string, via [`Language::as_str`] — `Node.language` and
+/// `UnresolvedRef.language` serialize to exactly the bytes the `String` field
+/// they replaced produced (pinned by `serde_matches_as_str_for_every_variant`).
+impl serde::Serialize for Language {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// The exact inverse, via [`Language::from_wire`]. A string no variant spells
+/// is a **hard deserialize error**, not a silent [`Language::Unknown`]:
+/// extraction only ever writes wire strings, so a non-wire value in a store is
+/// foreign/corrupt data, and loudly refusing it beats silently rewriting it to
+/// `"unknown"` on the next upsert.
+impl<'de> serde::Deserialize<'de> for Language {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct WireVisitor;
+        impl serde::de::Visitor<'_> for WireVisitor {
+            type Value = Language;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a Language wire string (see Language::as_str)")
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Language, E> {
+                Language::from_wire(v)
+                    .ok_or_else(|| E::invalid_value(serde::de::Unexpected::Str(v), &self))
+            }
+        }
+        deserializer.deserialize_str(WireVisitor)
+    }
+}
+
 /// The five language families resolution gates on ([`Language::family`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum LanguageFamily {
@@ -304,6 +335,32 @@ mod tests {
             );
         }
         assert_eq!(seen.len(), ALL_LANGUAGES.len());
+    }
+
+    /// The serde output IS `as_str` — for every variant. This is what makes
+    /// `Node.language: Language` byte-identical on the wire to the `String` it
+    /// replaced (the 13 extraction snapshots and the DB rows all ride on it).
+    #[test]
+    fn serde_matches_as_str_for_every_variant() {
+        for &l in ALL_LANGUAGES {
+            let json = serde_json::to_string(&l).expect("serialize");
+            assert_eq!(json, format!("\"{}\"", l.as_str()));
+            let back: Language = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back, l);
+        }
+    }
+
+    /// A non-wire string is a hard deserialize error — never a silent
+    /// `Unknown`. (`"unknown"` itself IS a wire string and round-trips.)
+    #[test]
+    fn serde_rejects_a_non_wire_string() {
+        assert!(serde_json::from_str::<Language>("\"klingon\"").is_err());
+        assert!(serde_json::from_str::<Language>("\"\"").is_err());
+        assert!(serde_json::from_str::<Language>("\"Typescript\"").is_err());
+        assert_eq!(
+            serde_json::from_str::<Language>("\"unknown\"").expect("wire variant"),
+            Language::Unknown
+        );
     }
 
     #[test]

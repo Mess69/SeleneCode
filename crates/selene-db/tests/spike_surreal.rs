@@ -527,13 +527,14 @@ async fn hnsw_vector_knn_and_rrf_embedded() {
 
     // 4. HNSW-index KNN (`<|K,EF|>`, EF as a number) — uses the index we defined.
     let mut resp = db
-        .query(
-            "SELECT name FROM doc WHERE embedding <|2,40|> [1.0, 0.1, 0.0, 0.0];",
-        )
+        .query("SELECT name FROM doc WHERE embedding <|2,40|> [1.0, 0.1, 0.0, 0.0];")
         .await
         .expect("HNSW <|K,EF|> query parses");
     let hnsw: Vec<Value> = resp.take(0).expect("HNSW KNN returns rows");
-    assert!(!hnsw.is_empty(), "HNSW-backed KNN returns neighbours: {hnsw:?}");
+    assert!(
+        !hnsw.is_empty(),
+        "HNSW-backed KNN returns neighbours: {hnsw:?}"
+    );
 
     // 5. `search::rrf` hybrid fusion — fuse two ranked lists (a fake FTS list and
     //    the vector list). If this function is absent in 3.2, the test tells us and

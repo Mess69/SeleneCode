@@ -105,7 +105,7 @@ async fn a_workspace_crate_reference_resolves_to_its_lib_rs() {
         column: Some(0),
         candidates: vec![],
         file_path: "src/main.rs".into(),
-        language: Language::Rust.as_str().into(),
+        language: Language::Rust,
         status: RefStatus::Pending,
         name_tail: "blog_core".into(),
     };

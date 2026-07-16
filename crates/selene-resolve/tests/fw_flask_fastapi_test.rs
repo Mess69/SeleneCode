@@ -37,7 +37,7 @@ fn body_call(from: &str, callee: &str, file: &str) -> UnresolvedRef {
         column: Some(4),
         candidates: vec![],
         file_path: file.into(),
-        language: Language::Python.as_str().into(),
+        language: Language::Python,
         status: RefStatus::Pending,
         name_tail: callee.into(),
     }
@@ -330,7 +330,7 @@ fn fastapi_resolves_router_and_dependency_conventions() {
         column: Some(0),
         candidates: vec![],
         file_path: "app/main.py".into(),
-        language: Language::Python.as_str().into(),
+        language: Language::Python,
         status: RefStatus::Pending,
         name_tail: "articles_router".into(),
     };

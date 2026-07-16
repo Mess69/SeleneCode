@@ -76,13 +76,14 @@ impl FrameworkResolver for Fake {
     fn resolve(&self, _r: &UnresolvedRef, _ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
         None
     }
-    fn extract(&self, path: &str, _content: &str, _lang: Language) -> FrameworkExtraction {
+    fn extract(&self, path: &str, _content: &str, lang: Language) -> FrameworkExtraction {
         let Some((method, route_path)) = self.emits_route else {
             return FrameworkExtraction::default();
         };
         FrameworkExtraction {
             nodes: vec![route_node(
                 &RouteSpec::new(self.name, Some(method), route_path, path, 1),
+                lang,
                 0,
             )],
             refs: vec![],
@@ -232,10 +233,12 @@ fn a_panicking_detect_is_caught_and_excluded() {
 fn route_node_ids_are_distinct_for_two_routes_on_one_line() {
     let get = route_node(
         &RouteSpec::new("rust", Some("GET"), "/x", "src/main.rs", 12),
+        Language::Rust,
         0,
     );
     let post = route_node(
         &RouteSpec::new("rust", Some("POST"), "/x", "src/main.rs", 12),
+        Language::Rust,
         0,
     );
 
@@ -272,6 +275,7 @@ fn route_name_and_qualified_name_spellings() {
     // Verb router.
     let n = route_node(
         &RouteSpec::new("express", Some("POST"), "/users/login", "src/app.ts", 4),
+        Language::Typescript,
         0,
     );
     assert_eq!(n.name, "POST /users/login");
@@ -280,6 +284,7 @@ fn route_name_and_qualified_name_spellings() {
     // Path-only router (django path(), React Router): no method, bare path.
     let n = route_node(
         &RouteSpec::new("react", None, "/article/:slug", "src/App.tsx", 9),
+        Language::Tsx,
         0,
     );
     assert_eq!(n.name, "/article/:slug");
@@ -289,6 +294,7 @@ fn route_name_and_qualified_name_spellings() {
     // Verb-less registration.
     let n = route_node(
         &RouteSpec::new("go", Some("ANY"), "/health", "main.go", 2),
+        Language::Go,
         0,
     );
     assert_eq!(n.name, "ANY /health");
@@ -296,6 +302,7 @@ fn route_name_and_qualified_name_spellings() {
     // DRF viewset rides the verb shape.
     let n = route_node(
         &RouteSpec::new("django", Some("VIEWSET"), "/articles", "urls.py", 7),
+        Language::Python,
         0,
     );
     assert_eq!(n.name, "VIEWSET /articles");
@@ -304,7 +311,7 @@ fn route_name_and_qualified_name_spellings() {
     let mut spec = RouteSpec::new("laravel", None, "articles", "routes/api.php", 3);
     spec.name_override = Some("resource:articles");
     spec.qualified_name_override = Some("routes/api.php::RESOURCE:articles");
-    let n = route_node(&spec, 0);
+    let n = route_node(&spec, Language::Php, 0);
     assert_eq!(n.name, "resource:articles");
     assert_eq!(n.qualified_name, "routes/api.php::RESOURCE:articles");
     assert_eq!(
@@ -351,14 +358,17 @@ async fn find_route_filters_by_verb_framework_and_path() {
 
     let get = route_node(
         &RouteSpec::new("rust", Some("GET"), "/x", "src/main.rs", 12),
+        Language::Rust,
         0,
     );
     let post = route_node(
         &RouteSpec::new("rust", Some("POST"), "/x", "src/main.rs", 12),
+        Language::Rust,
         0,
     );
     let other = route_node(
         &RouteSpec::new("express", Some("GET"), "/x", "src/app.ts", 3),
+        Language::Typescript,
         0,
     );
     store
@@ -449,8 +459,10 @@ async fn framework_extract_emits_routes_and_respects_the_language_gate() {
     );
     assert_eq!(found[0].name, "POST /login");
     assert_eq!(
-        found[0].language, "typescript",
-        "the pass stamps the file's language on the route node"
+        found[0].language,
+        Language::Typescript,
+        "the route node carries the emitting file's language (threaded through \
+         `route_node` — the enum killed the empty-string sentinel + stamp pass)"
     );
 
     assert!(

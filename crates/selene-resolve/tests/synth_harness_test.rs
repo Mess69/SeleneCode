@@ -26,7 +26,7 @@ fn node(id: &str, name: &str) -> Node {
         name: name.to_string(),
         qualified_name: name.to_string(),
         file_path: "src/a.ts".to_string(),
-        language: Language::Typescript.as_str().to_string(),
+        language: Language::Typescript,
         start_line: 1,
         end_line: 2,
         start_column: 0,

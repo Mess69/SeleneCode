@@ -147,7 +147,10 @@ impl LadybugStore {
         })
         .await
         .map_err(lbug_err)??;
-        let store = Self { db: Arc::new(db), bulk: Arc::new(std::sync::Mutex::new(None)) };
+        let store = Self {
+            db: Arc::new(db),
+            bulk: Arc::new(std::sync::Mutex::new(None)),
+        };
         store.apply_schema().await?;
         Ok(store)
     }
@@ -223,7 +226,9 @@ impl LadybugStore {
 
     /// Single `INT64` scalar (row 0, col 0), or 0 if no rows.
     async fn scalar_i64(&self, sql: String) -> Result<i64> {
-        let rows = self.rows(sql, |r| Ok(r.first().map(as_i64).unwrap_or(0))).await?;
+        let rows = self
+            .rows(sql, |r| Ok(r.first().map(as_i64).unwrap_or(0)))
+            .await?;
         Ok(rows.into_iter().next().unwrap_or(0))
     }
 
@@ -356,7 +361,11 @@ impl LadybugStore {
         if kinds.is_empty() {
             return String::new();
         }
-        let list = kinds.iter().map(|k| lit(k.as_str())).collect::<Vec<_>>().join(",");
+        let list = kinds
+            .iter()
+            .map(|k| lit(k.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
         format!(" AND {col} IN [{list}]")
     }
 
@@ -364,7 +373,11 @@ impl LadybugStore {
         if kinds.is_empty() {
             return String::new();
         }
-        let list = kinds.iter().map(|k| lit(k.as_str())).collect::<Vec<_>>().join(",");
+        let list = kinds
+            .iter()
+            .map(|k| lit(k.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
         format!(" AND {col} IN [{list}]")
     }
 }
@@ -421,35 +434,29 @@ impl GraphStore for LadybugStore {
         async move { self.rows(sql, |r| from_data::<Node>(&r[0])).await }
     }
 
-    fn get_nodes_by_file(
-        &self,
-        path: &str,
-    ) -> impl Future<Output = Result<Vec<Node>>> + Send {
+    fn get_nodes_by_file(&self, path: &str) -> impl Future<Output = Result<Vec<Node>>> + Send {
         let sql = format!("MATCH (n:Node) WHERE n.file = {} {NODE_RET};", lit(path));
         async move { self.rows(sql, |r| from_data::<Node>(&r[0])).await }
     }
 
-    fn get_nodes_by_kind(
-        &self,
-        kind: NodeKind,
-    ) -> impl Future<Output = Result<Vec<Node>>> + Send {
-        let sql = format!("MATCH (n:Node) WHERE n.kind = {} {NODE_RET};", lit(kind.as_str()));
+    fn get_nodes_by_kind(&self, kind: NodeKind) -> impl Future<Output = Result<Vec<Node>>> + Send {
+        let sql = format!(
+            "MATCH (n:Node) WHERE n.kind = {} {NODE_RET};",
+            lit(kind.as_str())
+        );
         async move { self.rows(sql, |r| from_data::<Node>(&r[0])).await }
     }
 
-    fn get_nodes_by_name(
-        &self,
-        name: &str,
-    ) -> impl Future<Output = Result<Vec<Node>>> + Send {
+    fn get_nodes_by_name(&self, name: &str) -> impl Future<Output = Result<Vec<Node>>> + Send {
         let sql = format!("MATCH (n:Node) WHERE n.name = {} {NODE_RET};", lit(name));
         async move { self.rows(sql, |r| from_data::<Node>(&r[0])).await }
     }
 
-    fn get_nodes_by_name_ci(
-        &self,
-        lower: &str,
-    ) -> impl Future<Output = Result<Vec<Node>>> + Send {
-        let sql = format!("MATCH (n:Node) WHERE n.name_lower = {} {NODE_RET};", lit(lower));
+    fn get_nodes_by_name_ci(&self, lower: &str) -> impl Future<Output = Result<Vec<Node>>> + Send {
+        let sql = format!(
+            "MATCH (n:Node) WHERE n.name_lower = {} {NODE_RET};",
+            lit(lower)
+        );
         async move { self.rows(sql, |r| from_data::<Node>(&r[0])).await }
     }
 
@@ -469,7 +476,10 @@ impl GraphStore for LadybugStore {
         &self,
         qn: &str,
     ) -> impl Future<Output = Result<Vec<Node>>> + Send {
-        let sql = format!("MATCH (n:Node) WHERE n.qualified_name = {} {NODE_RET};", lit(qn));
+        let sql = format!(
+            "MATCH (n:Node) WHERE n.qualified_name = {} {NODE_RET};",
+            lit(qn)
+        );
         async move { self.rows(sql, |r| from_data::<Node>(&r[0])).await }
     }
 
@@ -484,11 +494,11 @@ impl GraphStore for LadybugStore {
         async move { Ok(self.scalar_i64(sql).await?.max(0) as u64) }
     }
 
-    fn count_nodes_named(
-        &self,
-        name: &str,
-    ) -> impl Future<Output = Result<u64>> + Send {
-        let sql = format!("MATCH (n:Node) WHERE n.name = {} RETURN count(n);", lit(name));
+    fn count_nodes_named(&self, name: &str) -> impl Future<Output = Result<u64>> + Send {
+        let sql = format!(
+            "MATCH (n:Node) WHERE n.name = {} RETURN count(n);",
+            lit(name)
+        );
         async move { Ok(self.scalar_i64(sql).await?.max(0) as u64) }
     }
 
@@ -498,7 +508,9 @@ impl GraphStore for LadybugStore {
         after: Option<&str>,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<Node>>> + Send {
-        let after_clause = after.map(|a| format!(" AND n.id > {}", lit(a))).unwrap_or_default();
+        let after_clause = after
+            .map(|a| format!(" AND n.id > {}", lit(a)))
+            .unwrap_or_default();
         let sql = format!(
             "MATCH (n:Node) WHERE n.kind = {}{after_clause} {NODE_RET} ORDER BY n.id LIMIT {limit};",
             lit(kind.as_str())
@@ -565,7 +577,10 @@ impl GraphStore for LadybugStore {
         );
         async move {
             self.rows(sql, |r| {
-                Ok(NeighborEntry { edge: from_data(&r[0])?, node: from_data(&r[1])? })
+                Ok(NeighborEntry {
+                    edge: from_data(&r[0])?,
+                    node: from_data(&r[1])?,
+                })
             })
             .await
         }
@@ -583,7 +598,10 @@ impl GraphStore for LadybugStore {
         );
         async move {
             self.rows(sql, |r| {
-                Ok(NeighborEntry { edge: from_data(&r[0])?, node: from_data(&r[1])? })
+                Ok(NeighborEntry {
+                    edge: from_data(&r[0])?,
+                    node: from_data(&r[1])?,
+                })
             })
             .await
         }
@@ -606,7 +624,13 @@ impl GraphStore for LadybugStore {
             );
             let rows = self
                 .rows(sql, |r| {
-                    Ok((as_string(&r[0]), NeighborEntry { edge: from_data(&r[1])?, node: from_data(&r[2])? }))
+                    Ok((
+                        as_string(&r[0]),
+                        NeighborEntry {
+                            edge: from_data(&r[1])?,
+                            node: from_data(&r[2])?,
+                        },
+                    ))
                 })
                 .await?;
             let mut map: HashMap<String, Vec<NeighborEntry>> = HashMap::new();
@@ -634,7 +658,13 @@ impl GraphStore for LadybugStore {
             );
             let rows = self
                 .rows(sql, |r| {
-                    Ok((as_string(&r[0]), NeighborEntry { edge: from_data(&r[1])?, node: from_data(&r[2])? }))
+                    Ok((
+                        as_string(&r[0]),
+                        NeighborEntry {
+                            edge: from_data(&r[1])?,
+                            node: from_data(&r[2])?,
+                        },
+                    ))
                 })
                 .await?;
             let mut map: HashMap<String, Vec<NeighborEntry>> = HashMap::new();
@@ -685,10 +715,7 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    fn dependent_file_paths(
-        &self,
-        path: &str,
-    ) -> impl Future<Output = Result<Vec<String>>> + Send {
+    fn dependent_file_paths(&self, path: &str) -> impl Future<Output = Result<Vec<String>>> + Send {
         let sql = format!(
             "MATCH (s:Node)-[e:Edge]->(t:Node) \
              WHERE t.file = {p} AND s.file <> {p} AND e.kind <> 'contains' \
@@ -717,10 +744,7 @@ impl GraphStore for LadybugStore {
         async move { self.upsert_files(std::slice::from_ref(&f)).await }
     }
 
-    fn upsert_files(
-        &self,
-        files: &[FileRecord],
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn upsert_files(&self, files: &[FileRecord]) -> impl Future<Output = Result<()>> + Send {
         let files = files.to_vec();
         async move {
             {
@@ -746,10 +770,7 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    fn get_file(
-        &self,
-        path: &str,
-    ) -> impl Future<Output = Result<Option<FileRecord>>> + Send {
+    fn get_file(&self, path: &str) -> impl Future<Output = Result<Option<FileRecord>>> + Send {
         let sql = format!("MATCH (x:File) WHERE x.path = {} RETURN x.data;", lit(path));
         async move {
             let mut v = self.rows(sql, |r| from_data::<FileRecord>(&r[0])).await?;
@@ -766,9 +787,14 @@ impl GraphStore for LadybugStore {
         let p = lit(path);
         async move {
             // Delete nodes in the file (DETACH removes their edges), the file row, and unresolved.
-            self.exec(format!("MATCH (n:Node) WHERE n.file = {p} DETACH DELETE n;")).await?;
-            self.exec(format!("MATCH (u:Unresolved) WHERE u.file = {p} DELETE u;")).await?;
-            self.exec(format!("MATCH (x:File) WHERE x.path = {p} DELETE x;")).await
+            self.exec(format!(
+                "MATCH (n:Node) WHERE n.file = {p} DETACH DELETE n;"
+            ))
+            .await?;
+            self.exec(format!("MATCH (u:Unresolved) WHERE u.file = {p} DELETE u;"))
+                .await?;
+            self.exec(format!("MATCH (x:File) WHERE x.path = {p} DELETE x;"))
+                .await
         }
     }
 
@@ -780,9 +806,7 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    fn distinct_file_languages(
-        &self,
-    ) -> impl Future<Output = Result<BTreeSet<String>>> + Send {
+    fn distinct_file_languages(&self) -> impl Future<Output = Result<BTreeSet<String>>> + Send {
         let sql = "MATCH (x:File) RETURN DISTINCT x.language;".to_string();
         async move {
             let v = self.rows(sql, |r| Ok(as_string(&r[0]))).await?;
@@ -812,7 +836,8 @@ impl GraphStore for LadybugStore {
             self.insert_nodes_impl(&nodes).await?;
             let edges_inserted = self.insert_edges_impl(&edges).await?;
             self.insert_unresolved(&unresolved).await?;
-            self.upsert_files(std::slice::from_ref(&file_record)).await?;
+            self.upsert_files(std::slice::from_ref(&file_record))
+                .await?;
             Ok(ReplaceStats {
                 nodes_inserted: nodes.len() as u64,
                 edges_inserted,
@@ -824,10 +849,7 @@ impl GraphStore for LadybugStore {
     }
 
     // ---- unresolved ----
-    fn insert_unresolved(
-        &self,
-        refs: &[UnresolvedRef],
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn insert_unresolved(&self, refs: &[UnresolvedRef]) -> impl Future<Output = Result<()>> + Send {
         let refs = refs.to_vec();
         async move {
             if refs.is_empty() {
@@ -893,10 +915,7 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    fn delete_resolved(
-        &self,
-        keys: &[UnresolvedKey],
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn delete_resolved(&self, keys: &[UnresolvedKey]) -> impl Future<Output = Result<()>> + Send {
         let keys = keys.to_vec();
         async move {
             for (from, name, kind) in &keys {
@@ -919,7 +938,8 @@ impl GraphStore for LadybugStore {
     ) -> impl Future<Output = Result<()>> + Send {
         let failed = failed.to_vec();
         async move {
-            self.exec("MATCH (u:Unresolved) WHERE u.status = 'pending' DELETE u;".into()).await?;
+            self.exec("MATCH (u:Unresolved) WHERE u.status = 'pending' DELETE u;".into())
+                .await?;
             let mut failed = failed;
             for r in &mut failed {
                 r.status = RefStatus::Failed;
@@ -928,10 +948,7 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    fn mark_failed(
-        &self,
-        keys: &[UnresolvedKey],
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn mark_failed(&self, keys: &[UnresolvedKey]) -> impl Future<Output = Result<()>> + Send {
         let keys = keys.to_vec();
         async move {
             for (from, name, kind) in &keys {
@@ -963,7 +980,9 @@ impl GraphStore for LadybugStore {
                 "MATCH (u:Unresolved) WHERE u.status = 'failed' AND u.reference_name IN [{list}] \
                  RETURN u.data ORDER BY u.uid;"
             );
-            let all = self.rows(sql, |r| from_data::<UnresolvedRef>(&r[0])).await?;
+            let all = self
+                .rows(sql, |r| from_data::<UnresolvedRef>(&r[0]))
+                .await?;
             let mut per: HashMap<String, usize> = HashMap::new();
             let mut out = Vec::new();
             for r in all {
@@ -982,10 +1001,7 @@ impl GraphStore for LadybugStore {
     }
 
     // ---- meta + stats ----
-    fn get_meta(
-        &self,
-        key: &str,
-    ) -> impl Future<Output = Result<Option<String>>> + Send {
+    fn get_meta(&self, key: &str) -> impl Future<Output = Result<Option<String>>> + Send {
         let sql = format!("MATCH (m:Meta) WHERE m.key = {} RETURN m.value;", lit(key));
         async move {
             let mut v = self.rows(sql, |r| Ok(as_string(&r[0]))).await?;
@@ -993,11 +1009,7 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    fn set_meta(
-        &self,
-        key: &str,
-        value: &str,
-    ) -> impl Future<Output = Result<()>> + Send {
+    fn set_meta(&self, key: &str, value: &str) -> impl Future<Output = Result<()>> + Send {
         let sql = format!(
             "MERGE (m:Meta {{key: {}}}) SET m.value = {};",
             lit(key),
@@ -1009,16 +1021,20 @@ impl GraphStore for LadybugStore {
     fn stats(&self) -> impl Future<Output = Result<GraphStats>> + Send {
         async move {
             let (nodes, edges) = self.node_edge_count().await?;
-            let files = self.scalar_i64("MATCH (x:File) RETURN count(x);".into()).await?.max(0) as u64;
+            let files = self
+                .scalar_i64("MATCH (x:File) RETURN count(x);".into())
+                .await?
+                .max(0) as u64;
             let nbk = self
                 .rows("MATCH (n:Node) RETURN n.kind, count(n);".into(), |r| {
                     Ok((as_string(&r[0]), as_i64(&r[1]).max(0) as u64))
                 })
                 .await?;
             let ebk = self
-                .rows("MATCH ()-[e:Edge]->() RETURN e.kind, count(e);".into(), |r| {
-                    Ok((as_string(&r[0]), as_i64(&r[1]).max(0) as u64))
-                })
+                .rows(
+                    "MATCH ()-[e:Edge]->() RETURN e.kind, count(e);".into(),
+                    |r| Ok((as_string(&r[0]), as_i64(&r[1]).max(0) as u64)),
+                )
                 .await?;
             let langs = self
                 .rows("MATCH (x:File) RETURN x.language, count(x);".into(), |r| {
@@ -1038,15 +1054,17 @@ impl GraphStore for LadybugStore {
 
     fn node_edge_count(&self) -> impl Future<Output = Result<(u64, u64)>> + Send {
         async move {
-            let n = self.scalar_i64("MATCH (n:Node) RETURN count(n);".into()).await?;
-            let e = self.scalar_i64("MATCH ()-[e:Edge]->() RETURN count(e);".into()).await?;
+            let n = self
+                .scalar_i64("MATCH (n:Node) RETURN count(n);".into())
+                .await?;
+            let e = self
+                .scalar_i64("MATCH ()-[e:Edge]->() RETURN count(e);".into())
+                .await?;
             Ok((n.max(0) as u64, e.max(0) as u64))
         }
     }
 
-    fn dominant_file(
-        &self,
-    ) -> impl Future<Output = Result<Option<(String, u64, u64)>>> + Send {
+    fn dominant_file(&self) -> impl Future<Output = Result<Option<(String, u64, u64)>>> + Send {
         let sql = "MATCH (s:Node)-[e:Edge]->() RETURN s.file, count(e) AS c \
                    ORDER BY c DESC LIMIT 2;"
             .to_string();
@@ -1131,7 +1149,10 @@ impl GraphStore for LadybugStore {
                 } else {
                     1.0
                 };
-                Ok(SearchCandidate { node, raw_score: raw })
+                Ok(SearchCandidate {
+                    node,
+                    raw_score: raw,
+                })
             })
             .await
         }
@@ -1183,7 +1204,10 @@ impl GraphStore for LadybugStore {
         );
         async move {
             self.rows(sql, |r| {
-                Ok(NeighborEntry { edge: from_data(&r[0])?, node: from_data(&r[1])? })
+                Ok(NeighborEntry {
+                    edge: from_data(&r[0])?,
+                    node: from_data(&r[1])?,
+                })
             })
             .await
         }
@@ -1203,7 +1227,10 @@ impl GraphStore for LadybugStore {
         );
         async move {
             self.rows(sql, |r| {
-                Ok(NeighborEntry { edge: from_data(&r[0])?, node: from_data(&r[1])? })
+                Ok(NeighborEntry {
+                    edge: from_data(&r[0])?,
+                    node: from_data(&r[1])?,
+                })
             })
             .await
         }
@@ -1223,7 +1250,11 @@ impl GraphStore for LadybugStore {
                 nodes.insert(ne.node.id.clone(), ne.node);
                 edges.push(ne.edge);
             }
-            Ok(Subgraph { nodes, edges, roots: vec![id] })
+            Ok(Subgraph {
+                nodes,
+                edges,
+                roots: vec![id],
+            })
         }
     }
 
@@ -1236,7 +1267,11 @@ impl GraphStore for LadybugStore {
         let all = if kinds.is_empty() {
             String::new()
         } else {
-            let list = kinds.iter().map(|k| lit(k.as_str())).collect::<Vec<_>>().join(",");
+            let list = kinds
+                .iter()
+                .map(|k| lit(k.as_str()))
+                .collect::<Vec<_>>()
+                .join(",");
             format!(" AND ALL(r IN rels(p) WHERE r.kind IN [{list}])")
         };
         // Bounded to avoid all-paths explosion; takes the first path (parity TODO: prove it is the
@@ -1252,7 +1287,9 @@ impl GraphStore for LadybugStore {
             let mut rows = self
                 .rows(sql, |r| Ok((as_string_list(&r[0]), as_string_list(&r[1]))))
                 .await?;
-            let Some((nds, eds)) = rows.pop() else { return Ok(None) };
+            let Some((nds, eds)) = rows.pop() else {
+                return Ok(None);
+            };
             let nodes = nds
                 .iter()
                 .map(|s| serde_json::from_str::<Node>(s).map_err(Error::from))
@@ -1289,14 +1326,20 @@ impl GraphStore for LadybugStore {
             );
             for sql in [up, down] {
                 let rows = self
-                    .rows(sql, |r| Ok((from_data::<Edge>(&r[0])?, from_data::<Node>(&r[1])?)))
+                    .rows(sql, |r| {
+                        Ok((from_data::<Edge>(&r[0])?, from_data::<Node>(&r[1])?))
+                    })
                     .await?;
                 for (edge, node) in rows {
                     nodes.insert(node.id.clone(), node);
                     edges.push(edge);
                 }
             }
-            Ok(Subgraph { nodes, edges, roots: vec![id] })
+            Ok(Subgraph {
+                nodes,
+                edges,
+                roots: vec![id],
+            })
         }
     }
 
@@ -1311,7 +1354,12 @@ impl GraphStore for LadybugStore {
         let ekf = if opts.edge_kinds.is_empty() {
             String::new()
         } else {
-            let list = opts.edge_kinds.iter().map(|k| lit(k.as_str())).collect::<Vec<_>>().join(",");
+            let list = opts
+                .edge_kinds
+                .iter()
+                .map(|k| lit(k.as_str()))
+                .collect::<Vec<_>>()
+                .join(",");
             format!(" AND ALL(r IN rels(e) WHERE r.kind IN [{list}])")
         };
         let limit = opts.limit;
@@ -1327,7 +1375,9 @@ impl GraphStore for LadybugStore {
                 lit(&start)
             );
             let rows = self
-                .rows(sql, |r| Ok((from_data::<Edge>(&r[0])?, from_data::<Node>(&r[1])?)))
+                .rows(sql, |r| {
+                    Ok((from_data::<Edge>(&r[0])?, from_data::<Node>(&r[1])?))
+                })
                 .await?;
             let mut nodes = IndexMap::new();
             let mut edges = Vec::new();
@@ -1338,7 +1388,11 @@ impl GraphStore for LadybugStore {
                 nodes.insert(node.id.clone(), node);
                 edges.push(edge);
             }
-            Ok(Subgraph { nodes, edges, roots: vec![start] })
+            Ok(Subgraph {
+                nodes,
+                edges,
+                roots: vec![start],
+            })
         }
     }
 
@@ -1400,7 +1454,13 @@ mod tests {
         let store = LadybugStore::open(&dir.path().join("db")).await.unwrap();
 
         let nodes: Vec<Node> = (0..500)
-            .map(|i| node(&format!("n{i}"), &format!("fn{i}"), &format!("f{}.rs", i % 10)))
+            .map(|i| {
+                node(
+                    &format!("n{i}"),
+                    &format!("fn{i}"),
+                    &format!("f{}.rs", i % 10),
+                )
+            })
             .collect();
         store.insert_nodes(&nodes).await.unwrap();
 
@@ -1428,7 +1488,14 @@ mod tests {
         assert_eq!(store.all_nodes().await.unwrap().len(), 500);
         assert_eq!(store.get_nodes_by_name("fn5").await.unwrap().len(), 1);
         assert_eq!(store.get_nodes_by_file("f0.rs").await.unwrap().len(), 50);
-        assert_eq!(store.get_nodes_by_qualified_name("mod::fn7").await.unwrap().len(), 1);
+        assert_eq!(
+            store
+                .get_nodes_by_qualified_name("mod::fn7")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
 
         // Adjacency.
         let out = store.outgoing("n0", &[], None).await.unwrap();

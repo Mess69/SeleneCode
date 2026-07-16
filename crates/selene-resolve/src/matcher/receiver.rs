@@ -308,7 +308,7 @@ pub fn infer_local_receiver_type<C: ResolutionContext>(
     r: &UnresolvedRef,
     ctx: &C,
 ) -> Option<String> {
-    let lang = Language::from_wire(&r.language)?;
+    let lang = r.language;
 
     // A PHP `$this->prop` receiver: the property's declaration lives OUTSIDE the
     // calling method (a promoted ctor param, a typed property, or a classic ctor

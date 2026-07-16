@@ -33,7 +33,7 @@ fn extracts_function_definitions() {
     assert_eq!(file.start_line, 1);
 
     let f = find(&r, NodeKind::Function, "calculate_total").unwrap();
-    assert_eq!(f.language, "python");
+    assert_eq!(f.language.as_str(), "python");
     assert_eq!(f.qualified_name, "calculate_total");
     assert_eq!(
         f.signature.as_deref(),

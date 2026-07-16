@@ -29,7 +29,7 @@ fn extracts_function_declarations() {
     assert_eq!(file.name, "payment.ts");
 
     let f = find(&r, NodeKind::Function, "processPayment").unwrap();
-    assert_eq!(f.language, "typescript");
+    assert_eq!(f.language.as_str(), "typescript");
     assert_eq!(f.is_exported, Some(true));
     assert!(f.signature.as_deref().unwrap().contains("amount: number"));
 }

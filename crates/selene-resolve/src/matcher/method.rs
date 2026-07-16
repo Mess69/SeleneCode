@@ -16,8 +16,8 @@
 
 use std::collections::HashSet;
 
-use std::sync::Arc;
 use selene_core::{Language, Node, NodeKind, UnresolvedRef};
+use std::sync::Arc;
 
 use crate::context::ResolutionContext;
 use crate::matcher::receiver::{
@@ -78,7 +78,7 @@ pub fn resolve_method_on_type<C: ResolutionContext>(
     preferred_fqn: Option<&str>,
     depth: u8,
 ) -> Option<ResolvedRef> {
-    let lang = Language::from_wire(&r.language)?;
+    let lang = r.language;
     let matches = ctx.method_matches(lang, type_name, method);
 
     if matches.is_empty() {
@@ -237,7 +237,7 @@ fn split_camel_case(s: &str) -> Vec<String> {
 /// | 4. the CAPITALIZED receiver names a class | **0.8** · `instance-method` |
 /// | 5. method-name fallback (unique same-language **0.7**, else word-overlap ≥ 2 **0.65**) | `instance-method` |
 pub fn match_method_call<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
-    let lang = Language::from_wire(&r.language)?;
+    let lang = r.language;
     let name = r.reference_name.as_str();
 
     // --- 0. PHP `$this->prop->method()` — an EXCLUSIVE path -------------------

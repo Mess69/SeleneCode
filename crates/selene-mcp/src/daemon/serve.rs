@@ -51,7 +51,10 @@ fn env_truthy(key: &str) -> bool {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// The `serve --mcp` entry. Dispatches to direct / daemon / proxy (see the module docs).
@@ -173,7 +176,8 @@ fn spawn_detached_daemon(root: &std::path::Path) -> Result<()> {
             cmd.stdout(f).stderr(f2);
         }
         Err(_) => {
-            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
         }
     }
     // New process group: terminal signals to the launcher do not propagate to the daemon.
@@ -205,7 +209,10 @@ async fn run_daemon(root: PathBuf) -> Result<()> {
                 break;
             }
             Acquire::Taken(Some(rec)) if is_alive(rec.pid) => {
-                eprintln!("[selene daemon] another daemon is already running (pid {})", rec.pid);
+                eprintln!(
+                    "[selene daemon] another daemon is already running (pid {})",
+                    rec.pid
+                );
                 return Ok(());
             }
             Acquire::Taken(holder) => {
@@ -330,7 +337,10 @@ async fn serve_connection(stream: UnixStream, root: PathBuf) -> Result<()> {
     let (rh, wh) = stream.into_split();
     let mut reader = BufReader::new(rh);
     let mut first = String::new();
-    reader.read_line(&mut first).await.context("read first line")?;
+    reader
+        .read_line(&mut first)
+        .await
+        .context("read first line")?;
 
     if let Some(req) = super::control::parse_request(&first) {
         return handle_control(req, root, wh).await;

@@ -252,6 +252,7 @@ impl<S: GraphStore> QueryManager<S> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use selene_core::Language;
 
     fn node(name: &str, qualified: &str, file: &str) -> Node {
         Node {
@@ -260,7 +261,7 @@ mod tests {
             name: name.to_string(),
             qualified_name: qualified.to_string(),
             file_path: file.to_string(),
-            language: "rust".to_string(),
+            language: Language::Rust,
             start_line: 1,
             end_line: 2,
             start_column: 0,

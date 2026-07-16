@@ -503,11 +503,7 @@ pub(crate) fn capitalize_ascii(s: &str) -> String {
 /// user symbols that happen to share a builtin's name.
 pub fn is_built_in_or_external<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> bool {
     let name = r.reference_name.as_str();
-    let Some(lang) = Language::from_wire(&r.language) else {
-        // A language we cannot type is a language we cannot filter for. Pass it
-        // through rather than guessing (a wrong filter is a lost edge).
-        return false;
-    };
+    let lang = r.language;
 
     let is_js_ts = matches!(
         lang,

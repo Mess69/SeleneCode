@@ -223,6 +223,7 @@ impl FrameworkResolver for ExpressResolver {
 
             let node = route_node(
                 &RouteSpec::new(self.name(), Some(&method), path_s, path, line),
+                language,
                 0,
             );
 
@@ -306,7 +307,7 @@ impl ExpressResolver {
             column: Some(0),
             candidates: vec![],
             file_path: file.to_string(),
-            language: language.as_str().to_string(),
+            language,
             status: selene_core::RefStatus::Pending,
             name_tail: name.rsplit('.').next().unwrap_or(name).to_string(),
         };

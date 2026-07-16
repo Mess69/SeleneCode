@@ -8,7 +8,7 @@
 
 use std::path::Path;
 
-use selene_core::{EdgeKind, NodeKind};
+use selene_core::{EdgeKind, Language, NodeKind};
 use selene_db::SurrealStore;
 use selene_extract::Indexer;
 use selene_resolve::{RESOLVE_BATCH, resolve_and_persist_batched, resolve_and_persist_in_memory};
@@ -184,7 +184,7 @@ async fn a_name_mutating_resolver_trips_the_guard_instead_of_looping_forever() {
             column: Some(0),
             candidates: vec![],
             file_path: "src/app.ts".into(),
-            language: "typescript".into(),
+            language: Language::Typescript,
             status: RefStatus::Pending,
             name_tail: "nothing_here_at_all".into(),
         }])

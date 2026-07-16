@@ -20,7 +20,12 @@ use exit::Outcome;
 pub async fn run(cli: Cli) -> ExitCode {
     let outcome = match cli.command {
         // -- lifecycle --
-        Command::Init { path, force, no_hooks, .. } => cmd::init(path, force, no_hooks).await,
+        Command::Init {
+            path,
+            force,
+            no_hooks,
+            ..
+        } => cmd::init(path, force, no_hooks).await,
         Command::Uninit { path, force } => cmd::uninit(path, force),
         Command::Index { path, .. } => cmd::index(path).await,
         Command::Sync { path, quiet } => cmd::sync(path, quiet).await,
@@ -51,7 +56,13 @@ pub async fn run(cli: Cli) -> ExitCode {
         } => cmd::affected(files, stdin, depth, path).await,
 
         // -- visualization --
-        Command::Viz { path, out, max_nodes, all_kinds, open } => cmd::viz(path, out, max_nodes, all_kinds, open).await,
+        Command::Viz {
+            path,
+            out,
+            max_nodes,
+            all_kinds,
+            open,
+        } => cmd::viz(path, out, max_nodes, all_kinds, open).await,
 
         // -- serve / daemon / hooks --
         Command::Serve { mcp, path, .. } => cmd::serve(mcp, path).await,
@@ -61,8 +72,15 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::PromptHook => Outcome::ExpectedNoOp,
 
         // -- installer (Phase 7) --
-        Command::Install { target, location, print_config, .. } => cmd::install(target, location, print_config).await,
-        Command::Uninstall { target, location, .. } => cmd::uninstall(target, location).await,
+        Command::Install {
+            target,
+            location,
+            print_config,
+            ..
+        } => cmd::install(target, location, print_config).await,
+        Command::Uninstall {
+            target, location, ..
+        } => cmd::uninstall(target, location).await,
 
         // -- misc --
         Command::Telemetry { .. } => cmd::not_yet("telemetry", "Phase 6 Task 21"),

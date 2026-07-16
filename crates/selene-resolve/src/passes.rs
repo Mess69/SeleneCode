@@ -29,8 +29,8 @@
 
 use std::collections::HashSet;
 
+use selene_core::{Node, NodeKind, UnresolvedRef};
 use std::sync::Arc;
-use selene_core::{Language, Node, NodeKind, UnresolvedRef};
 
 use crate::context::ResolutionContext;
 use crate::families::same_language_family;
@@ -76,9 +76,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
 
         let mut resolved = Vec::new();
         for r in &deferred {
-            let Some(lang) = Language::from_wire(&r.language) else {
-                continue;
-            };
+            let lang = r.language;
 
             // PHP `this->prop.method` resolves through declared-type inference
             // (`match_method_call`), whose `resolve_method_on_type` call now has a
@@ -138,7 +136,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     }
 
     fn resolve_one_this_member(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
-        let ref_lang = Language::from_wire(&r.language)?;
+        let ref_lang = r.language;
         let member = r
             .reference_name
             .strip_prefix("this.")
@@ -179,8 +177,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                 .into_iter()
                 .filter(|n| {
                     SUPERTYPE_BEARING.contains(&n.kind)
-                        && Language::from_wire(&n.language)
-                            .is_some_and(|nl| same_language_family(nl, ref_lang))
+                        && same_language_family(n.language, ref_lang)
                 })
                 .collect();
         }
@@ -206,8 +203,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                     let found = self.ctx.members_of(&supertype.id).into_iter().find(|m| {
                         m.name == member
                             && matches!(m.kind, NodeKind::Function | NodeKind::Method)
-                            && Language::from_wire(&m.language)
-                                .is_some_and(|ml| same_language_family(ml, ref_lang))
+                            && same_language_family(m.language, ref_lang)
                     });
                     if let Some(target) = found {
                         return Some(ResolvedRef {

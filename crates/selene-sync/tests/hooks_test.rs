@@ -8,7 +8,13 @@ use std::process::Command;
 use selene_sync::hooks;
 
 fn git(root: &Path, args: &[&str]) {
-    let ok = Command::new("git").arg("-C").arg(root).args(args).status().unwrap().success();
+    let ok = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(args)
+        .status()
+        .unwrap()
+        .success();
     assert!(ok, "git {args:?}");
 }
 
@@ -33,18 +39,28 @@ fn install_preserves_a_users_hook_and_remove_takes_only_our_block() {
     let pc = std::fs::read_to_string(dir.join("post-commit")).unwrap();
     assert!(pc.contains("echo mine"), "user's line survives");
     assert!(hooks::has_block(&pc), "our block is present");
-    assert!(std::fs::read_to_string(dir.join("post-merge")).unwrap().contains(hooks::MARKER_BEGIN));
+    assert!(
+        std::fs::read_to_string(dir.join("post-merge"))
+            .unwrap()
+            .contains(hooks::MARKER_BEGIN)
+    );
 
     // Reinstall is idempotent (all unchanged).
     let again = hooks::install(root, &bin()).unwrap();
-    assert!(again.iter().all(|r| r.action == "unchanged"), "reinstall is a no-op: {again:?}");
+    assert!(
+        again.iter().all(|r| r.action == "unchanged"),
+        "reinstall is a no-op: {again:?}"
+    );
 
     // Remove: our block gone, the user's file kept (had other content); the two we created deleted.
     hooks::remove(root).unwrap();
     let pc = std::fs::read_to_string(dir.join("post-commit")).unwrap();
     assert!(pc.contains("echo mine"), "user's line kept after remove");
     assert!(!hooks::has_block(&pc), "our block stripped");
-    assert!(!dir.join("post-merge").exists(), "a hook we created (only shebang+block) is deleted");
+    assert!(
+        !dir.join("post-merge").exists(),
+        "a hook we created (only shebang+block) is deleted"
+    );
 }
 
 #[test]

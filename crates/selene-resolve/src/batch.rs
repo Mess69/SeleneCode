@@ -198,7 +198,10 @@ async fn resolve_pending<S: GraphStore + Clone>(
         drop(ctx);
         let t = std::time::Instant::now();
         let ctx = StoreContext::new(store_handle(store), root.to_path_buf()).await?;
-        tracing::info!(ms = t.elapsed().as_millis(), "resolve/2: ctx#2 warm (rebuilt)");
+        tracing::info!(
+            ms = t.elapsed().as_millis(),
+            "resolve/2: ctx#2 warm (rebuilt)"
+        );
         ctx
     } else {
         tracing::info!("resolve/2: ctx#2 skipped (framework added no nodes)");
@@ -426,8 +429,8 @@ async fn resolve_pending<S: GraphStore + Clone>(
     );
     tracing::info!(ms = t_phase.elapsed().as_millis(), "resolve: TOTAL");
     {
-        use std::sync::atomic::Ordering::Relaxed;
         use crate::resolver::*;
+        use std::sync::atomic::Ordering::Relaxed;
         tracing::info!(
             target: "selene::index",
             prefilter_ms = NS_PREFILTER.load(Relaxed) / 1_000_000,

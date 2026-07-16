@@ -30,7 +30,7 @@ use selene_core::{Language, NodeKind, RefStatus, UnresolvedRef};
 use crate::context::ResolutionContext;
 use crate::frameworks::{
     FrameworkExtraction, FrameworkResolver, RouteSpec, by_convention, char_boundary_at_or_below,
-    line_of, route_node_in,
+    line_of, route_node,
 };
 use crate::strip_comments::strip_comments_for_regex;
 use crate::types::ResolvedRef;
@@ -177,9 +177,9 @@ impl FrameworkResolver for AspNet {
             let route_path = join_path(&prefix, sub);
             let line = line_of(&src, whole.start());
 
-            let node = route_node_in(
+            let node = route_node(
                 &RouteSpec::new(ASPNET, Some(&method), &route_path, path, line),
-                Language::CSharp.as_str(),
+                Language::CSharp,
                 NO_CLOCK,
             );
             if let Some((action, action_line)) = next_action(&src, whole.end()) {
@@ -196,7 +196,7 @@ impl FrameworkResolver for AspNet {
                 continue;
             };
             let line = line_of(&src, whole.start());
-            let node = route_node_in(
+            let node = route_node(
                 &RouteSpec::new(
                     ASPNET,
                     Some(&verb.as_str().to_uppercase()),
@@ -204,7 +204,7 @@ impl FrameworkResolver for AspNet {
                     path,
                     line,
                 ),
-                Language::CSharp.as_str(),
+                Language::CSharp,
                 NO_CLOCK,
             );
             // `HealthHandler.Check` → `Check`. A lambda names nothing and gets no
@@ -228,7 +228,7 @@ impl FrameworkResolver for AspNet {
     }
 
     fn resolve(&self, r: &UnresolvedRef, ctx: &dyn ResolutionContext) -> Option<ResolvedRef> {
-        if Language::from_wire(&r.language) != Some(Language::CSharp) {
+        if r.language != Language::CSharp {
             return None;
         }
         let name = r.reference_name.as_str();
@@ -329,7 +329,7 @@ fn cs_ref(from: &str, name: &str, file: &str, line: u32) -> UnresolvedRef {
         column: Some(0),
         candidates: vec![],
         file_path: file.to_string(),
-        language: Language::CSharp.as_str().to_string(),
+        language: Language::CSharp,
         status: RefStatus::Pending,
         name_tail: name.to_string(),
     }

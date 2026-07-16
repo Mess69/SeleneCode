@@ -266,7 +266,7 @@ mod tests {
 
     #[test]
     fn stats_tally_by_method_deterministically() {
-        use selene_core::RefStatus;
+        use selene_core::{Language, RefStatus};
         let row = |name: &str| UnresolvedRef {
             from_node_id: "function:a".into(),
             reference_name: name.into(),
@@ -275,7 +275,7 @@ mod tests {
             column: None,
             candidates: vec![],
             file_path: "src/a.ts".into(),
-            language: "typescript".into(),
+            language: Language::Typescript,
             status: RefStatus::Pending,
             name_tail: name.into(),
         };

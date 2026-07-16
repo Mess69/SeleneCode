@@ -35,7 +35,7 @@ fn extracts_class_declarations() {
 
     assert!(r.errors.is_empty(), "errors: {:?}", r.errors);
     let class = find(&r, NodeKind::Class, "UserRepository").unwrap();
-    assert_eq!(class.language, "kotlin");
+    assert_eq!(class.language.as_str(), "kotlin");
 
     let find_by_id = find(&r, NodeKind::Method, "findById").unwrap();
     assert_eq!(find_by_id.qualified_name, "UserRepository::findById");

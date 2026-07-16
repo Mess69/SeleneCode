@@ -108,7 +108,10 @@ fn install_writes_a_valid_mcp_config_and_uninstall_removes_it() {
     let text = std::fs::read_to_string(&cfg).expect(".mcp.json was written");
     let v: serde_json::Value = serde_json::from_str(&text).expect("valid JSON");
     let cmd = v["mcpServers"]["selene"]["command"].as_str().unwrap();
-    assert!(cmd.starts_with('/'), "the binary path is absolute, not bare `selene`: {cmd}");
+    assert!(
+        cmd.starts_with('/'),
+        "the binary path is absolute, not bare `selene`: {cmd}"
+    );
 
     // --print-config touches no file (idempotent inspection).
     assert_eq!(code_in(dir, &["install", "--print-config"]), 0);

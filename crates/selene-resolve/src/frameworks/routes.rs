@@ -31,7 +31,7 @@
 //! into one — `route_node_ids_are_distinct_for_two_routes_on_one_line` in
 //! `tests/fw_registry_test.rs` is the guard.
 
-use selene_core::{Node, NodeKind, node_id};
+use selene_core::{Language, Node, NodeKind, node_id};
 use selene_db::GraphStore;
 
 use crate::Result;
@@ -118,7 +118,7 @@ impl<'a> RouteSpec<'a> {
 ///
 /// The id is the ordinary hashed node id over `(file, kind, name, line)` — see
 /// the module docs for why `name` carries the verb.
-pub fn route_node(spec: &RouteSpec<'_>, updated_at: i64) -> Node {
+pub fn route_node(spec: &RouteSpec<'_>, language: Language, updated_at: i64) -> Node {
     let name = spec.derived_name();
     let id = node_id(spec.file, NodeKind::Route, &name, spec.line);
     Node {
@@ -127,11 +127,12 @@ pub fn route_node(spec: &RouteSpec<'_>, updated_at: i64) -> Node {
         name,
         qualified_name: spec.derived_qualified_name(),
         file_path: spec.file.to_string(),
-        // Left empty here: a route belongs to a framework, not to a grammar, so
-        // its `language` is simply the language of the file it was found in —
-        // which only the caller knows. `route_node_in` stamps it, and the
-        // framework extract pass always goes through that.
-        language: String::new(),
+        // A route belongs to a framework, not to a grammar, so its `language`
+        // is simply the language of the file it was found in — which the
+        // caller (a framework's `extract`) always knows. The enum made the old
+        // empty-string sentinel + stamp pass unrepresentable, so the language
+        // is now threaded explicitly instead of patched in afterwards.
+        language,
         start_line: spec.line,
         end_line: spec.line,
         start_column: 0,
@@ -151,14 +152,6 @@ pub fn route_node(spec: &RouteSpec<'_>, updated_at: i64) -> Node {
         framework: Some(spec.framework.to_string()),
         updated_at,
     }
-}
-
-/// [`route_node`] with the file's language stamped on it. The extract pass uses
-/// this; `route_node` alone is for callers that set `language` themselves.
-pub fn route_node_in(spec: &RouteSpec<'_>, language: &str, updated_at: i64) -> Node {
-    let mut n = route_node(spec, updated_at);
-    n.language = language.to_string();
-    n
 }
 
 /// Look a route up by its **semantics** — the one supported way.
