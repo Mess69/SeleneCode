@@ -85,6 +85,29 @@ overhead), typed columns instead of a JSON blob (kill the parse), storage-level 
 edges run ~1-3% high), and streaming the pipeline (the real RAM lever, DB-independent). This is a
 kept-alive experiment behind a feature flag, not a default switch.
 
+## The RAM question, definitively closed (2026-07-16)
+
+After the migration didn't move RAM, the real lever was investigated to exhaustion. **The RAM is
+fundamentally traded for speed by SeleneCode's in-memory design, and cannot be cut by the store or by
+streaming extraction.** Measured, ruled out one by one for the small/medium ~1.3 GiB (present in BOTH
+backends): RocksDB block cache + write buffers, Kuzu buffer pool (96→512 MiB all ~1.12 GiB; 64 MiB
+CRASHES), parse stacks (16 MiB × 8 = 128 MiB), rayon thread count (RAYON=1 still 1.26 GiB), the
+allocator (mimalloc, tuning inert), and data size (codegraph-src 3.8k nodes ≈ django 19k nodes).
+
+**Pipeline streaming was implemented and MEASURED (then reverted):** streaming the extraction
+(per-batch write + free, instead of accumulating the whole repo) is correct (parity gates green,
+graph byte-identical) but did NOT reduce peak RSS (VS Code 4.58→4.68 GiB) and cost ~14% time
+(400→457 s). Why: the peak is during **resolve**, not parse. The parse-phase accumulation is real but
+below the resolve peak, which is dominated by the eager node index + the 976k/1.25M-ref queue +
+resolved edges — all held in RAM *for speed*. Cutting them means streaming the resolve (store the ref
+queue, drop the eager index), which trades the speed those structures buy — exactly CodeGraph's
+design (streaming + LRU + SQLite → 0.45 GiB but slower per-ref).
+
+**Verdict: you cannot have both SeleneCode's speed and CodeGraph's RAM with this architecture — it is
+a deliberate trade.** The RAM floor is the price of the eager in-memory resolve. Reducing it is a
+resolve-phase re-architecture (stream the ref queue + lazy node reads), independent of the store, and
+it would cost speed. Not attempted — it reverses the core design decision.
+
 ## Open risks / decisions
 
 1. **FTS/vector offline packaging** — must build + bundle the `.lbug_extension` libs, or statically
