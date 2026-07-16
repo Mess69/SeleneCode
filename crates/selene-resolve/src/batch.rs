@@ -171,6 +171,39 @@ async fn resolve_pending<S: GraphStore + Clone>(
     // regression is a single opaque number and every diagnosis starts by re-deriving them.
     let t_phase = std::time::Instant::now();
 
+    // The profiling counters are process-global; reset them here so the profile
+    // lines this pass logs are PER RUN. Without this, the daemon's second
+    // auto-sync reports cumulative totals — the measuring instrument lying again.
+    {
+        use crate::resolver::*;
+        use std::sync::atomic::Ordering::Relaxed;
+        for c in [
+            &NS_PREFILTER,
+            &NS_FRAMEWORKS,
+            &NS_IMPORT,
+            &NS_NAMEMATCH,
+            &N_PASSED_PREFILTER,
+            &NS_M_FNREF,
+            &NS_M_FILEPATH,
+            &NS_M_QUALIFIED,
+            &NS_M_CHAINS,
+            &NS_M_METHOD,
+            &NS_M_EXACT,
+            &NS_M_FUZZY,
+            &N_EAGER_LOOKUPS,
+            &N_EAGER_ARCS_CLONED,
+            &NS_MM_INFER,
+            &NS_MM_CLASSNAMED,
+            &NS_MM_FALLBACK,
+            &NS_INFER_SCOPE,
+            &NS_INFER_SCAN,
+            &N_INFER_CALLS,
+            &N_INFER_LINES,
+        ] {
+            c.store(0, Relaxed);
+        }
+    }
+
     // --- (1) framework emission, BEFORE the context is built ------------------
     // The context warms `known_names` once; these nodes must already exist or every
     // reference named after one of them is pre-filtered away. See the module docs.
