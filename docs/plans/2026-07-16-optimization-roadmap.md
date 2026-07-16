@@ -226,3 +226,54 @@ That is the next measurement to run.
 The `NS_M_*`/`NS_MM_*`/`NS_INFER_*` counters and the eager-handout counters
 (`N_EAGER_LOOKUPS`/`N_EAGER_ARCS_CLONED` — 648 k lookups / 59 M Arc clones per
 django run, a candidate for ② work) are kept, same as the `NS_*` set.
+
+---
+
+# ADDENDUM 2 (2026-07-16, later still): ③ RAM — attacked, and the attribution fell AGAIN
+
+§4's claim ("RAM is a constant working-set cost of the eager in-memory resolve")
+was **wrong**. Phase-RSS logging (`rss_mib` on every phase line, via
+`selene_core::peak_rss_mib`) showed the eager index + full ref queue resident at
+only **264 MiB** on codegraph-src — the jump to 1.3 GiB happened inside the
+batch loop. dhat at t-gmax then named it exactly:
+
+**~750 MiB of the peak was COMPILED REGEXES.** 1 228 receiver-inference
+patterns × ~524 KiB each of `regex-automata` one-pass DFA transitions — the
+price of Unicode `\w`/`\b` — held live in the 2 048-slot `PATTERN_CACHE` for
+the whole run. (Two red herrings, for the record: vmmap shows mimalloc's
+VM-tag-100 regions as "IOAccelerator", which looks like a GPU leak and is not;
+and mimalloc purge knobs are inert because the peak is live bytes, not
+allocator retention.)
+
+Fix (`receiver.rs`): a dual-engine `Pattern` — every pattern ASCII-rewritten
+(`\w` → `[0-9A-Za-z_]`, `\b` → `(?-u:\b)`) on the plain `regex` crate;
+lookarounds (Lua) stay on `fancy_regex` (which cannot disable Unicode at all).
+ASCII is the parity-faithful semantics — the TS build's JavaScript `RegExp`
+`\w`/`\b` are ASCII. Gates green, graphs byte-count identical.
+
+## RAM after (cold, `/usr/bin/time -l`, vs CodeGraph TS)
+
+| corpus | before | after | CodeGraph |
+|---|---:|---:|---:|
+| codegraph-src | 1.38 GiB | **462 MB (−67%)** | 446 MB — **parity** |
+| selene-crates | 1.77 GiB | **609 MB (−66%)** | 1.14 GiB — **we are 1.9× lighter** |
+| django (3 011 f) | 3.19 GiB | **2.48 GiB (−22%)** | 0.58 GiB — still 4.3× |
+
+Speed unchanged (codegraph-src 1.8 s, django 22.1 s).
+
+## What remains of ③ (django's 2.48 GiB), measured + researched
+
+1. **RocksDB (~0.7 GiB, the libc-malloc side of vmmap).** Researched: the
+   embedded 3.2 SDK ships `ConfigMap::empty()` — block cache defaults to
+   `sysmem/2 − 1 GiB` (15 GiB allowance on a 32 GiB Mac), write buffers
+   128 MiB × 8, and **`SURREAL_ROCKSDB_*` env vars are dead in the SDK** (only
+   the server binary reads them; SDK regression vs 2.x). Fix requires
+   `surrealdb_core::kvs::Datastore::builder().with_config(...)` instead of
+   `Surreal::new::<RocksDb>` in selene-db, or a one-line `[patch]` of the SDK's
+   `run_router` (upstream-PR-worthy). Fold into the ② write-path work.
+2. **The at-scale resolve data + batch-loop churn high-water** (the rest).
+   Next levers if django RAM parity is demanded: the eager-index group-handout
+   dedup (648 k lookups / 59 M Arc clones), `Box<str>`/interned fields on
+   `Node`/`UnresolvedRef`, and only then the streaming-resolve trade §③ always
+   named. Re-attribute with dhat (`cargo build -p selene --features dhat-heap`,
+   TEMP-DHAT notes in git history) before pulling any of them.
