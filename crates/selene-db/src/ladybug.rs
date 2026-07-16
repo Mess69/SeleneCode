@@ -135,8 +135,13 @@ impl LadybugStore {
             //  - auto_checkpoint(false): Kuzu checkpoints (WAL -> main store, fsync-heavy) whenever
             //    the WAL crosses a threshold; during a many-COPY bulk load that fsync is the
             //    per-COPY overhead. Disable it and CHECKPOINT once in `bulk_load_finish`.
+            // Buffer pool cap (MiB) — env-overridable to attribute RAM. Default 512.
+            let pool_mb: u64 = std::env::var("SELENE_LBUG_BUFFER_POOL_MB")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(512);
             let cfg = lbug::SystemConfig::default()
-                .buffer_pool_size(512 * 1024 * 1024)
+                .buffer_pool_size(pool_mb * 1024 * 1024)
                 .auto_checkpoint(false);
             lbug::Database::new(&dir, cfg).map_err(lbug_err)
         })
