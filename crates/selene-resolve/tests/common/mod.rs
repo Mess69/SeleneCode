@@ -202,40 +202,44 @@ impl FakeContext {
 }
 
 impl ResolutionContext for FakeContext {
-    fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>> {
+    fn nodes_in_file(&self, path: &str) -> Arc<[Arc<Node>]> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.file_path == path)
             .map(|n| Arc::new(n.clone()))
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 
-    fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>> {
+    fn nodes_by_name(&self, name: &str) -> Arc<[Arc<Node>]> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.name == name)
             .map(|n| Arc::new(n.clone()))
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 
-    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>> {
+    fn nodes_by_lower_name(&self, lower: &str) -> Arc<[Arc<Node>]> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.name.to_lowercase() == lower)
             .map(|n| Arc::new(n.clone()))
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 
-    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>> {
+    fn nodes_by_qualified_name(&self, qn: &str) -> Arc<[Arc<Node>]> {
         self.tick();
         self.nodes
             .iter()
             .filter(|n| n.qualified_name == qn)
             .map(|n| Arc::new(n.clone()))
-            .collect()
+            .collect::<Vec<_>>()
+            .into()
     }
 
     fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Arc<Node>> {

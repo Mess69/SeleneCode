@@ -54,19 +54,21 @@ fn parse_ceiling(raw: Option<&str>) -> usize {
 /// reference's own family; `imports` must not cross two *known* families;
 /// everything else (`calls`, `extends`, …) passes, because cross-language
 /// `calls` bridges are real.
-pub fn apply_language_gate(candidates: Vec<Arc<Node>>, r: &UnresolvedRef) -> Vec<Arc<Node>> {
+pub fn apply_language_gate(candidates: &[Arc<Node>], r: &UnresolvedRef) -> Vec<Arc<Node>> {
     let ref_lang = r.language;
 
     match r.reference_kind.as_str() {
         "references" | "function_ref" => candidates
-            .into_iter()
+            .iter()
             .filter(|c| same_language_family(c.language, ref_lang))
+            .cloned()
             .collect(),
         "imports" => candidates
-            .into_iter()
+            .iter()
             .filter(|c| !crosses_known_family(c.language, ref_lang))
+            .cloned()
             .collect(),
-        _ => candidates,
+        _ => candidates.to_vec(),
     }
 }
 
@@ -549,13 +551,13 @@ mod tests {
 
         // `references` must stay inside the family.
         let refs = re("f", "references", "caller.ts", Language::Typescript);
-        let kept = apply_language_gate(vec![go.clone(), ts.clone()], &refs);
+        let kept = apply_language_gate(&[go.clone(), ts.clone()], &refs);
         assert_eq!(kept.len(), 1);
         assert_eq!(kept[0].id, "ts");
 
         // `calls` is ungated — cross-language bridges are real.
         let calls = re("f", "calls", "caller.ts", Language::Typescript);
-        assert_eq!(apply_language_gate(vec![go, ts], &calls).len(), 2);
+        assert_eq!(apply_language_gate(&[go, ts], &calls).len(), 2);
     }
 
     #[test]

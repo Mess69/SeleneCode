@@ -613,7 +613,7 @@ fn is_config_node(n: &Node) -> bool {
 }
 
 fn config_nodes(ctx: &dyn ResolutionContext) -> Vec<Node> {
-    crate::context::owned(ctx.nodes_by_kind(NodeKind::Constant))
+    crate::context::owned(&ctx.nodes_by_kind(NodeKind::Constant))
         .into_iter()
         .filter(is_config_node)
         .collect()

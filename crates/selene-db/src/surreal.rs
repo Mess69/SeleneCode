@@ -72,36 +72,45 @@ pub struct SurrealStore {
     serialize_writes: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
-/// Cap SurrealDB's RocksDB **block cache** to a sane fixed size unless the operator has set it.
+/// Cap SurrealDB's RocksDB memory to laptop-sized fixed budgets unless the operator overrides.
 ///
 /// SurrealDB sizes the block cache at `max((system_ram / 2) - 1 GiB, 16 MiB)` by default — **15 GiB
-/// on a 32 GiB machine**. The cache holds *read* pages; for `index` (a write-heavy pass over a
-/// codebase that is a few hundred MB on disk) that ceiling is pure waste — measured, it let a
-/// VS Code index's RSS climb to ~6.7 GB that was cache, not data, while the on-disk store was 524 MB.
-/// A code graph fits comfortably in a small cache: 256 MiB covers most of a real repo's hot set for
-/// the read-heavy `serve` path too, so this is a strict improvement, not a serve/index trade.
+/// on a 32 GiB machine** — and it let a VS Code index's RSS climb to ~6.7 GB that was cache, not
+/// data, while the on-disk store was 524 MB.
 ///
-/// Set via the documented env var (`SURREAL_ROCKSDB_BLOCK_CACHE_SIZE`, bytes) so an operator can
-/// still override it; we only fill it in when it is unset.
+/// ⚠ These env vars are read by the embedded engine ONLY through the vendored SDK patch
+/// (`vendor/surrealdb`, "SELENE PATCH"): the crates.io 3.2.1 SDK seeds `ConfigMap::empty()` and
+/// silently ignores every `SURREAL_*` variable (verified against the open-time
+/// "Memory manager: block cache size" log — the unpatched binary configured 15 GiB regardless).
+///
+/// # Why the cache is 768 MiB and not smaller (measured on django, 2026-07-17)
+///
+/// The memtables are **charged into the block cache** (`WriteBufferManager` built WITH the cache,
+/// `allow_stall=true`): with a 256–512 MiB cache, up to 512 MiB of memtable charges evict the
+/// actual read pages, every read misses, and the index run TRIPLES (22 s → 68–79 s, user CPU
+/// 100 s → 250+ s). 768 MiB leaves ~256 MiB of genuine read cache beside the write buffers and
+/// restores full speed (24.3 s @ 2.0 GiB vs 22.8 s @ 2.5 GiB uncapped). The cliff sits between
+/// 512 and 768 MiB at django scale — do not lower this without re-measuring.
+///
+/// The L0 triggers go back to stock RocksDB values: SurrealDB tightens them for read latency
+/// (slowdown at 8 L0 files, stop at 12 — stock is 20/36), which throttles exactly the kind of
+/// bulk write an index pass is.
 #[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
 #[allow(unsafe_code)] // the `set_var`s below; safety argued inline
 fn cap_rocksdb_block_cache() {
-    // SurrealDB sizes RocksDB from system RAM: on a 32 GiB machine the block cache defaults to 15 GiB
-    // and the memtables to ~1 GiB (128 MiB × 8). Both are read/throughput caches sized for a large
-    // server, not for indexing a few-hundred-MB code graph on a laptop. Pin them to modest fixed
-    // sizes so `index` does not balloon RSS with cache the workload never reuses. All three stay
-    // overridable — we only fill in a var the operator left unset.
-    //
-    // SAFETY (all three sets): called once at store-open, before the datastore below (the sole reader
+    // SAFETY (all sets): called once at store-open, before the datastore below (the sole reader
     // of SURREAL_ROCKSDB_* in this process) is constructed, and no other thread touches these vars —
     // so there is no concurrent-access race.
-    const DEFAULTS: [(&str, usize); 3] = [
-        // 256 MiB read cache — covers a real repo's hot pages; serve stays fast, index barely reads.
-        ("SURREAL_ROCKSDB_BLOCK_CACHE_SIZE", 256 * 1024 * 1024),
-        // 64 MiB per memtable × 4 = 256 MiB of write buffers (vs the ~1 GiB default) — enough to keep
-        // the bulk write batched without holding a gigabyte of unflushed rows resident.
-        ("SURREAL_ROCKSDB_WRITE_BUFFER_SIZE", 64 * 1024 * 1024),
+    const DEFAULTS: [(&str, usize); 6] = [
+        // Cache + memtable-charge budget (see the doc comment: memtables are charged in here).
+        ("SURREAL_ROCKSDB_BLOCK_CACHE_SIZE", 768 * 1024 * 1024),
+        // 128 MiB per memtable × 4 = 512 MiB of write buffers (the stock size, half the count).
+        ("SURREAL_ROCKSDB_WRITE_BUFFER_SIZE", 128 * 1024 * 1024),
         ("SURREAL_ROCKSDB_MAX_WRITE_BUFFER_NUMBER", 4),
+        // Stock RocksDB L0 triggers — SurrealDB's read-tuned 2/8/12 stalls bulk writes early.
+        ("SURREAL_ROCKSDB_FILE_COMPACTION_TRIGGER", 4),
+        ("SURREAL_ROCKSDB_LEVEL0_SLOWDOWN_WRITES_TRIGGER", 20),
+        ("SURREAL_ROCKSDB_LEVEL0_STOP_WRITES_TRIGGER", 36),
     ];
     for (var, bytes) in DEFAULTS {
         if std::env::var_os(var).is_none() {

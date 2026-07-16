@@ -366,7 +366,7 @@ fn php_property_patterns(r: &str) -> Vec<String> {
 fn enclosing_scope_start_line<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> u32 {
     let Some(line) = r.line else { return 1 };
     let mut start = 1u32;
-    for n in ctx.nodes_in_file(&r.file_path) {
+    for n in ctx.nodes_in_file(&r.file_path).iter() {
         if !matches!(n.kind, NodeKind::Function | NodeKind::Method) || n.language != r.language {
             continue;
         }
@@ -563,7 +563,7 @@ pub fn infer_java_field_receiver_type<C: ResolutionContext>(
 
     // The class enclosing the call — the TIGHTEST one (the latest start).
     let mut enclosing: Option<&Arc<Node>> = None;
-    for n in &in_file {
+    for n in in_file.iter() {
         if !matches!(n.kind, NodeKind::Class | NodeKind::Interface) || n.language != r.language {
             continue;
         }
@@ -811,12 +811,13 @@ pub(crate) fn lookup_callee_return_type<C: ResolutionContext>(
 
     let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_name(method)
-        .into_iter()
+        .iter()
         .filter(|n| {
             matches!(n.kind, NodeKind::Method | NodeKind::Function)
                 && n.language == r.language
                 && n.return_type.is_some()
         })
+        .cloned()
         .collect();
 
     match cls {

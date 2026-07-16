@@ -301,13 +301,15 @@ impl DjangoResolver {
         // frontier: the choice is made at runtime, so silence is the right answer.)
         let class = ctx
             .nodes_by_name(MODEL_ITERABLE)
-            .into_iter()
-            .find(|n| n.kind == NodeKind::Class)?;
+            .iter()
+            .find(|n| n.kind == NodeKind::Class)
+            .cloned()?;
 
         // `__iter__` **on that class** — the membership test is the whole precision
         // story. Taking any `__iter__` in the project would bind the ORM's hottest
         // flow to whichever iterator the name matcher happened to see first.
-        let iter_method = ctx.nodes_by_name(DUNDER_ITER).into_iter().find(|n| {
+        let dunder_group = ctx.nodes_by_name(DUNDER_ITER);
+        let iter_method = dunder_group.iter().find(|n| {
             n.kind == NodeKind::Method
                 && n.file_path == class.file_path
                 && n.start_line >= class.start_line
@@ -346,11 +348,8 @@ impl DjangoResolver {
         dirs: &[&str],
         confidence: f64,
     ) -> Option<ResolvedRef> {
-        let hits: Vec<_> = ctx
-            .nodes_by_name(&r.reference_name)
-            .into_iter()
-            .filter(|n| kinds.contains(&n.kind))
-            .collect();
+        let group = ctx.nodes_by_name(&r.reference_name);
+        let hits: Vec<_> = group.iter().filter(|n| kinds.contains(&n.kind)).collect();
 
         let chosen = if let Some(n) = hits.iter().find(|n| {
             dirs.iter().any(|d| {

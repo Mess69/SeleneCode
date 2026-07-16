@@ -118,11 +118,8 @@ pub(crate) fn by_convention<C: ResolutionContext + ?Sized>(
     dirs: &[&str],
     confidence: f64,
 ) -> Option<ResolvedRef> {
-    let candidates: Vec<_> = ctx
-        .nodes_by_name(&r.reference_name)
-        .into_iter()
-        .filter(|n| kinds.contains(&n.kind))
-        .collect();
+    let group = ctx.nodes_by_name(&r.reference_name);
+    let candidates: Vec<_> = group.iter().filter(|n| kinds.contains(&n.kind)).collect();
     if candidates.is_empty() {
         return None;
     }

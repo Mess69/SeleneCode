@@ -166,3 +166,11 @@ dbg_macro = "warn"
 lto = "thin"
 codegen-units = 1
 strip = true
+
+# The vendored surrealdb SDK: crates.io 3.2.1 + ONE line (see
+# vendor/surrealdb/src/engine/local/native.rs "SELENE PATCH") making the
+# embedded engine read `SURREAL_*` env config like the server binary does —
+# without it every SURREAL_ROCKSDB_* cap is silently ignored (measured: a
+# 15 GiB block-cache allowance on a 32 GiB laptop). Upstream-PR candidate.
+[patch.crates-io]
+surrealdb = { path = "vendor/surrealdb" }

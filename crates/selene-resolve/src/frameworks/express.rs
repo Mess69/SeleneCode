@@ -258,9 +258,9 @@ impl FrameworkResolver for ExpressResolver {
         }
         // Middleware, by name convention.
         if MIDDLEWARE.is_match(name) {
-            let hits: Vec<_> = ctx
-                .nodes_by_name(name)
-                .into_iter()
+            let group = ctx.nodes_by_name(name);
+            let hits: Vec<_> = group
+                .iter()
                 .filter(|n| {
                     matches!(
                         n.kind,
@@ -359,11 +359,12 @@ impl ExpressResolver {
     ) -> Option<ResolvedRef> {
         let class = ctx
             .nodes_by_name(class_name)
-            .into_iter()
-            .find(|n| n.kind == selene_core::NodeKind::Class)?;
-        let hits: Vec<_> = ctx
-            .nodes_by_name(method)
-            .into_iter()
+            .iter()
+            .find(|n| n.kind == selene_core::NodeKind::Class)
+            .cloned()?;
+        let group = ctx.nodes_by_name(method);
+        let hits: Vec<_> = group
+            .iter()
             .filter(|n| {
                 n.kind == selene_core::NodeKind::Method
                     && n.file_path == class.file_path

@@ -60,8 +60,9 @@ pub fn match_by_file_path<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
 
     let file_nodes: Vec<Arc<Node>> = ctx
         .nodes_by_name(file_name)
-        .into_iter()
+        .iter()
         .filter(|n| n.kind == NodeKind::File)
+        .cloned()
         .collect();
     if file_nodes.is_empty() {
         return None;
@@ -122,20 +123,21 @@ pub fn match_by_qualified_name<C: ResolutionContext>(
         return None;
     }
 
-    let keep = |nodes: Vec<Arc<Node>>| -> Vec<Arc<Node>> {
+    let keep = |nodes: &[Arc<Node>]| -> Vec<Arc<Node>> {
         if r.reference_kind != "calls" {
-            return nodes;
+            return nodes.to_vec();
         }
         nodes
-            .into_iter()
+            .iter()
             .filter(|n| {
                 !(n.kind == NodeKind::Constant
                     && (n.language == Language::Yaml || n.language == Language::Properties))
             })
+            .cloned()
             .collect()
     };
 
-    let candidates = keep(ctx.nodes_by_qualified_name(name));
+    let candidates = keep(&ctx.nodes_by_qualified_name(name));
 
     if candidates.len() == 1 {
         return Some(hit(r, &candidates[0].id, 0.95, ResolvedBy::QualifiedName));
@@ -157,7 +159,7 @@ pub fn match_by_qualified_name<C: ResolutionContext>(
     if last.is_empty() {
         return None;
     }
-    let partial: Vec<Arc<Node>> = keep(ctx.nodes_by_name(last))
+    let partial: Vec<Arc<Node>> = keep(&ctx.nodes_by_name(last))
         .into_iter()
         .filter(|n| n.qualified_name.ends_with(name))
         .collect();
@@ -193,7 +195,7 @@ pub fn match_by_exact_name<C: ResolutionContext>(
     r: &UnresolvedRef,
     ctx: &C,
 ) -> Option<ResolvedRef> {
-    let candidates: Vec<Arc<Node>> = apply_language_gate(ctx.nodes_by_name(&r.reference_name), r)
+    let candidates: Vec<Arc<Node>> = apply_language_gate(&ctx.nodes_by_name(&r.reference_name), r)
         .into_iter()
         .filter(|n| n.kind != NodeKind::Import)
         .collect();
@@ -246,15 +248,16 @@ pub fn match_fuzzy<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<R
     let lower = r.reference_name.to_lowercase();
 
     let callable: Vec<Arc<Node>> = apply_language_gate(
-        ctx.nodes_by_lower_name(&lower)
-            .into_iter()
+        &ctx.nodes_by_lower_name(&lower)
+            .iter()
             .filter(|n| {
                 matches!(
                     n.kind,
                     NodeKind::Function | NodeKind::Method | NodeKind::Class
                 )
             })
-            .collect(),
+            .cloned()
+            .collect::<Vec<_>>(),
         r,
     );
 

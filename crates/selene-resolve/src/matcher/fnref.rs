@@ -110,7 +110,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
         let scoped_suffix = format!("::{}", r.reference_name);
         let scoped: Vec<Arc<Node>> = ctx
             .nodes_by_name(member)
-            .into_iter()
+            .iter()
             .filter(|n| {
                 matches!(n.kind, NodeKind::Function | NodeKind::Method)
                     && same_language_family(n.language, ref_lang)
@@ -118,6 +118,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
                     && (n.qualified_name == r.reference_name
                         || n.qualified_name.ends_with(&scoped_suffix))
             })
+            .cloned()
             .collect();
         if scoped.is_empty() {
             return None;
@@ -145,13 +146,14 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
 
     let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_name(&r.reference_name)
-        .into_iter()
+        .iter()
         .filter(|n| {
             (n.kind == NodeKind::Function || (!bare_fn_only && n.kind == NodeKind::Method))
                 && same_language_family(n.language, ref_lang)
                 // A function registering ITSELF is not a dependency edge.
                 && n.id != r.from_node_id
         })
+        .cloned()
         .collect();
     if candidates.is_empty() {
         return None;
@@ -226,12 +228,13 @@ pub fn resolve_this_member_fn_ref<C: ResolutionContext>(
 
     let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_qualified_name(&format!("{class_prefix}::{member}"))
-        .into_iter()
+        .iter()
         .filter(|n| {
             matches!(n.kind, NodeKind::Function | NodeKind::Method)
                 && n.file_path == r.file_path
                 && n.id != r.from_node_id
         })
+        .cloned()
         .collect();
 
     match earliest(&candidates) {

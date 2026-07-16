@@ -163,8 +163,9 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
         let mut frontier: Vec<Arc<Node>> = self
             .ctx
             .nodes_by_name(&class_name)
-            .into_iter()
+            .iter()
             .filter(|n| SUPERTYPE_BEARING.contains(&n.kind) && n.file_path == r.file_path)
+            .cloned()
             .collect();
 
         if frontier.is_empty() {
@@ -174,11 +175,12 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
             frontier = self
                 .ctx
                 .nodes_by_name(&class_name)
-                .into_iter()
+                .iter()
                 .filter(|n| {
                     SUPERTYPE_BEARING.contains(&n.kind)
                         && same_language_family(n.language, ref_lang)
                 })
+                .cloned()
                 .collect();
         }
 

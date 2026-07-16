@@ -156,7 +156,7 @@ fn supertype_names_of<C: ResolutionContext>(
     let mut out = Vec::new();
     let mut seen = HashSet::new();
 
-    for node in ctx.nodes_by_name(type_name) {
+    for node in ctx.nodes_by_name(type_name).iter() {
         if !SUPERTYPE_BEARING.contains(&node.kind) || node.language != r.language {
             continue;
         }
@@ -454,14 +454,12 @@ fn method_in_class_named<C: ResolutionContext>(
         {
             continue;
         }
-        let found = ctx
-            .nodes_in_file(&class_node.file_path)
-            .into_iter()
-            .find(|n| {
-                n.kind == NodeKind::Method
-                    && n.name == method
-                    && n.qualified_name.contains(&class_node.name)
-            });
+        let in_file = ctx.nodes_in_file(&class_node.file_path);
+        let found = in_file.iter().find(|n| {
+            n.kind == NodeKind::Method
+                && n.name == method
+                && n.qualified_name.contains(&class_node.name)
+        });
         if let Some(m) = found {
             return Some(bind(r, &m.id, confidence, by));
         }
@@ -494,8 +492,9 @@ fn method_name_fallback<C: ResolutionContext>(
     }
 
     let methods: Vec<Arc<Node>> = candidates
-        .into_iter()
+        .iter()
         .filter(|n| n.kind == NodeKind::Method && n.name == method)
+        .cloned()
         .collect();
 
     let same_language: Vec<Arc<Node>> = methods

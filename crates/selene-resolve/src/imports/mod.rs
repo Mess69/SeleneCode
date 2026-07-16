@@ -699,8 +699,8 @@ pub fn resolve_jvm_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     let candidates = ctx.nodes_by_qualified_name(&format!("{pkg}::{sym}"));
     let best = match candidates.len() {
         0 => return None,
-        1 => candidates.into_iter().next()?,
-        _ => pick_closest_jvm_candidate(candidates, &r.file_path)?,
+        1 => candidates.first().cloned()?,
+        _ => pick_closest_jvm_candidate(&candidates, &r.file_path)?,
     };
     Some(imported(r, &best.id, 0.95))
 }
@@ -712,7 +712,7 @@ pub fn resolve_jvm_import<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
 /// across source sets (commonMain / androidMain / appleMain). Taking the first
 /// candidate let a single platform `actual` absorb every common-side import, so
 /// the `expect` — the canonical API a commonMain file imports — looked unused.
-fn pick_closest_jvm_candidate(candidates: Vec<Arc<Node>>, from_path: &str) -> Option<Arc<Node>> {
+fn pick_closest_jvm_candidate(candidates: &[Arc<Node>], from_path: &str) -> Option<Arc<Node>> {
     let from_dirs: Vec<&str> = from_path.split('/').collect();
     let from_dirs = &from_dirs[..from_dirs.len().saturating_sub(1)];
 
@@ -727,20 +727,20 @@ fn pick_closest_jvm_candidate(candidates: Vec<Arc<Node>>, from_path: &str) -> Op
     };
     let is_expect = |n: &Node| n.decorators.iter().any(|d| d == "expect");
 
-    let mut best: Option<Arc<Node>> = None;
+    let mut best: Option<&Arc<Node>> = None;
     let mut best_prox = 0usize;
     for c in candidates {
         let prox = shared_prefix(&c.file_path);
-        let take = match &best {
+        let take = match best {
             None => true,
-            Some(b) => prox > best_prox || (prox == best_prox && is_expect(&c) && !is_expect(b)),
+            Some(b) => prox > best_prox || (prox == best_prox && is_expect(c) && !is_expect(b)),
         };
         if take {
             best_prox = prox;
             best = Some(c);
         }
     }
-    best
+    best.cloned()
 }
 
 /// Bind a reference through the imports its file declares.
@@ -962,7 +962,7 @@ fn resolve_go_cross_package<C: ResolutionContext>(
             continue;
         };
 
-        for node in ctx.nodes_by_name(member) {
+        for node in ctx.nodes_by_name(member).iter() {
             if node.language != Language::Go || node.is_exported != Some(true) {
                 continue;
             }
@@ -1018,7 +1018,7 @@ fn resolve_jvm_imported_reference<C: ResolutionContext>(
         };
 
         let candidates = ctx.nodes_by_name(&member_name);
-        for node in &candidates {
+        for node in candidates.iter() {
             if node.language != lang {
                 continue;
             }
@@ -1039,7 +1039,7 @@ fn resolve_jvm_imported_reference<C: ResolutionContext>(
             && dot > 0
         {
             let owner_path = format!("{}{ext}", imp.source[..dot].replace('.', "/"));
-            for node in &candidates {
+            for node in candidates.iter() {
                 if node.language != lang {
                     continue;
                 }
@@ -1110,7 +1110,8 @@ fn resolve_python_module_member<C: ResolutionContext>(
             continue;
         }
 
-        let target = ctx.nodes_in_file(&resolved).into_iter().find(|n| {
+        let group = ctx.nodes_in_file(&resolved);
+        let target = group.iter().find(|n| {
             n.name == member
                 && matches!(
                     n.kind,
@@ -1160,21 +1161,25 @@ fn find_python_module_file<C: ResolutionContext>(
 
     let module_file = ctx
         .nodes_by_name(&format!("{last_seg}.py"))
-        .into_iter()
+        .iter()
         .find(|n| {
             n.kind == NodeKind::File
                 && n.file_path != exclude
                 && ends_with(&n.file_path, &format!("{rel}.py"))
-        });
+        })
+        .cloned();
     if module_file.is_some() {
         return module_file;
     }
 
-    ctx.nodes_by_name("__init__.py").into_iter().find(|n| {
-        n.kind == NodeKind::File
-            && n.file_path != exclude
-            && ends_with(&n.file_path, &format!("{rel}/__init__.py"))
-    })
+    ctx.nodes_by_name("__init__.py")
+        .iter()
+        .find(|n| {
+            n.kind == NodeKind::File
+                && n.file_path != exclude
+                && ends_with(&n.file_path, &format!("{rel}/__init__.py"))
+        })
+        .cloned()
 }
 
 /// Rust `crate::m::Item` / `self::sub::Item` / `super::m::func` → the leaf symbol
@@ -1202,7 +1207,8 @@ fn resolve_rust_path_reference<C: ResolutionContext>(
         return None;
     }
 
-    let target = ctx.nodes_in_file(&file).into_iter().find(|n| {
+    let group = ctx.nodes_in_file(&file);
+    let target = group.iter().find(|n| {
         n.name == leaf
             && matches!(
                 n.kind,
@@ -1496,8 +1502,9 @@ fn resolve_static_member<C: ResolutionContext>(
 
     let candidates: Vec<Arc<Node>> = ctx
         .nodes_by_qualified_name(&format!("{}::{member}", container.qualified_name))
-        .into_iter()
+        .iter()
         .filter(|n| n.file_path == container.file_path)
+        .cloned()
         .collect();
     if candidates.is_empty() {
         return None;
@@ -1518,6 +1525,7 @@ fn resolve_static_member<C: ResolutionContext>(
 /// The `file`-kind node at `path`.
 fn file_node_at<C: ResolutionContext>(path: &str, ctx: &C) -> Option<Arc<Node>> {
     ctx.nodes_in_file(path)
-        .into_iter()
+        .iter()
         .find(|n| n.kind == NodeKind::File)
+        .cloned()
 }

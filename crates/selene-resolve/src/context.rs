@@ -76,23 +76,25 @@ pub trait ResolutionContext: Send + Sync {
 
     /// Every node attributed to `path`.
     ///
-    /// Returns `Arc<Node>`, not `Node`: the ladder calls these accessors millions of times and a
-    /// deep `Vec<Node>` clone per call (each `Node` is ~half a dozen heap `String`s) is the hot cost
-    /// — `resolve/3` was 189 s on VS Code. An `Arc` clone is a refcount bump, the same cheap
-    /// reference-passing the TS original got free from its GC (~15× on a 10k-element group). The
-    /// eager index stores each node once behind an `Arc`.
-    fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>>;
+    /// Returns a SHARED frozen slice (`Arc<[Arc<Node>]>`), not a fresh `Vec`:
+    /// the ladder calls these accessors ~650 k times per medium index, and the
+    /// old `Vec<Arc<Node>>` handout was one allocation + K refcount bumps per
+    /// call — 59 M contended Arc clones per django run, measured by
+    /// `N_EAGER_ARCS_CLONED`. A group handout is now ONE refcount bump; the
+    /// deep `Node` bytes were already shared (each node lives once behind its
+    /// own `Arc`).
+    fn nodes_in_file(&self, path: &str) -> Arc<[Arc<Node>]>;
 
     /// Every node whose `name` matches exactly (case-sensitive).
-    fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>>;
+    fn nodes_by_name(&self, name: &str) -> Arc<[Arc<Node>]>;
 
     /// Every node whose lower-cased `name` equals `lower` (fuzzy matching,
     /// Task 7). `lower` is expected **pre-lowercased** by the caller.
-    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>>;
+    fn nodes_by_lower_name(&self, lower: &str) -> Arc<[Arc<Node>]>;
 
     /// Every node whose `qualified_name` matches exactly (overloads can share
     /// one, so this is a `Vec`, not an `Option`).
-    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>>;
+    fn nodes_by_qualified_name(&self, qn: &str) -> Arc<[Arc<Node>]>;
 
     /// Every node of exactly `kind`.
     fn nodes_by_kind(&self, kind: NodeKind) -> Vec<Arc<Node>>;
@@ -273,10 +275,10 @@ pub struct StoreContext<S: GraphStore> {
     known_names: HashSet<String>,
 
     // LRU caches (maps/resolution.md §Caches).
-    node_cache: SyncLru<String, Vec<Arc<Node>>>, // file → nodes
-    name_cache: SyncLru<String, Vec<Arc<Node>>>, // name → nodes
-    lower_name_cache: SyncLru<String, Vec<Arc<Node>>>, // lower(name) → nodes
-    qualified_name_cache: SyncLru<String, Vec<Arc<Node>>>,
+    node_cache: SyncLru<String, Arc<[Arc<Node>]>>, // file → nodes
+    name_cache: SyncLru<String, Arc<[Arc<Node>]>>, // name → nodes
+    lower_name_cache: SyncLru<String, Arc<[Arc<Node>]>>, // lower(name) → nodes
+    qualified_name_cache: SyncLru<String, Arc<[Arc<Node>]>>,
     method_match_cache: SyncLru<String, Vec<Arc<Node>>>, // "{lang} {ty}::{method}"
     node_by_id_cache: SyncLru<String, Option<Arc<Node>>>,
 
@@ -333,10 +335,19 @@ const EAGER_MAX: usize = 2_000_000;
 /// change verifies, rather than assumes.
 struct EagerIndex {
     by_id: HashMap<String, Arc<Node>>,
-    by_name: HashMap<String, Vec<Arc<Node>>>,
-    by_lower: HashMap<String, Vec<Arc<Node>>>,
-    by_qname: HashMap<String, Vec<Arc<Node>>>,
-    by_file: HashMap<String, Vec<Arc<Node>>>,
+    // Frozen (`Arc<[..]>`) after build: a lookup hands the group out with ONE
+    // refcount bump — no per-call Vec allocation, no K per-element bumps.
+    by_name: HashMap<String, Arc<[Arc<Node>]>>,
+    by_lower: HashMap<String, Arc<[Arc<Node>]>>,
+    by_qname: HashMap<String, Arc<[Arc<Node>]>>,
+    by_file: HashMap<String, Arc<[Arc<Node>]>>,
+}
+
+/// The shared empty group every miss returns — never re-allocated.
+fn empty_group() -> Arc<[Arc<Node>]> {
+    static EMPTY: std::sync::LazyLock<Arc<[Arc<Node>]>> =
+        std::sync::LazyLock::new(|| Arc::from(Vec::new()));
+    Arc::clone(&EMPTY)
 }
 
 /// Deref-clone a group slice into the owned `Vec<Node>` the `ResolutionContext` trait returns.
@@ -348,46 +359,61 @@ fn arc_vec(v: Option<Vec<Node>>) -> Vec<Arc<Node>> {
     v.unwrap_or_default().into_iter().map(Arc::new).collect()
 }
 
+/// [`arc_vec`], frozen into the shared-slice shape the group accessors return.
+fn arc_group(v: Option<Vec<Node>>) -> Arc<[Arc<Node>]> {
+    Arc::from(arc_vec(v))
+}
+
 /// Deref-clone an `Arc<Node>` group back into owned `Node`s — the CONTAINMENT boundary for the cold
 /// resolvers (framework/synth passes) that still work in owned `Node`s. The hot ladder path works in
 /// `Arc<Node>` end-to-end (no clone); these rarely-hit paths pay the deep copy here to stay simple.
-pub(crate) fn owned(v: Vec<Arc<Node>>) -> Vec<Node> {
-    v.into_iter().map(|a| a.as_ref().clone()).collect()
+pub(crate) fn owned(v: &[Arc<Node>]) -> Vec<Node> {
+    v.iter().map(|a| a.as_ref().clone()).collect()
 }
 
 impl EagerIndex {
     fn build(nodes: Vec<Node>) -> Self {
-        let mut ix = EagerIndex {
-            by_id: HashMap::with_capacity(nodes.len()),
-            by_name: HashMap::new(),
-            by_lower: HashMap::new(),
-            by_qname: HashMap::new(),
-            by_file: HashMap::new(),
-        };
+        let mut by_id: HashMap<String, Arc<Node>> = HashMap::with_capacity(nodes.len());
+        let mut by_name: HashMap<String, Vec<Arc<Node>>> = HashMap::new();
+        let mut by_lower: HashMap<String, Vec<Arc<Node>>> = HashMap::new();
+        let mut by_qname: HashMap<String, Vec<Arc<Node>>> = HashMap::new();
+        let mut by_file: HashMap<String, Vec<Arc<Node>>> = HashMap::new();
         for n in nodes {
             // One heap Node per symbol; the four groups + by_id share it by refcount.
             let n = Arc::new(n);
-            ix.by_name
+            by_name
                 .entry(n.name.clone())
                 .or_default()
                 .push(Arc::clone(&n));
-            ix.by_lower
+            by_lower
                 .entry(n.name.to_lowercase())
                 .or_default()
                 .push(Arc::clone(&n));
             if !n.qualified_name.is_empty() {
-                ix.by_qname
+                by_qname
                     .entry(n.qualified_name.clone())
                     .or_default()
                     .push(Arc::clone(&n));
             }
-            ix.by_file
+            by_file
                 .entry(n.file_path.clone())
                 .or_default()
                 .push(Arc::clone(&n));
-            ix.by_id.insert(n.id.clone(), n);
+            by_id.insert(n.id.clone(), n);
         }
-        ix
+        // Freeze: insertion order inside each group is preserved verbatim
+        // (Vec -> Arc<[..]> keeps element order), so the tie-break contract
+        // above still holds.
+        fn freeze(m: HashMap<String, Vec<Arc<Node>>>) -> HashMap<String, Arc<[Arc<Node>]>> {
+            m.into_iter().map(|(k, v)| (k, Arc::from(v))).collect()
+        }
+        EagerIndex {
+            by_id,
+            by_name: freeze(by_name),
+            by_lower: freeze(by_lower),
+            by_qname: freeze(by_qname),
+            by_file: freeze(by_file),
+        }
     }
 }
 
@@ -594,9 +620,9 @@ impl<S: GraphStore> StoreContext<S> {
     }
 }
 
-/// TEMP profiling: one eager-group handout = one Vec alloc + `len` Arc-refcount
-/// bumps (and the matching decrements when the caller drops it). The counters
-/// say how much of that the ladder buys per run.
+/// TEMP profiling: group handouts are ONE refcount bump now (`Arc<[..]>`);
+/// `N_EAGER_ARCS_CLONED` records the element volume those handouts USED to
+/// clone per call (59 M/django before the freeze) for before/after comparison.
 fn count_handout(len: usize) {
     use crate::resolver::{N_EAGER_ARCS_CLONED, N_EAGER_LOOKUPS};
     N_EAGER_LOOKUPS.fetch_add(1, Ordering::Relaxed);
@@ -604,52 +630,52 @@ fn count_handout(len: usize) {
 }
 
 impl<S: GraphStore> ResolutionContext for StoreContext<S> {
-    fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>> {
+    fn nodes_in_file(&self, path: &str) -> Arc<[Arc<Node>]> {
         if let Some(ix) = &self.eager {
-            let out = ix.by_file.get(path).cloned().unwrap_or_default();
+            let out = ix.by_file.get(path).cloned().unwrap_or_else(empty_group);
             count_handout(out.len());
             return out;
         }
         self.node_cache.get_or_insert_with(path.to_string(), || {
-            arc_vec(self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path)))
+            arc_group(self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path)))
         })
     }
 
-    fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>> {
+    fn nodes_by_name(&self, name: &str) -> Arc<[Arc<Node>]> {
         if let Some(ix) = &self.eager {
-            let out = ix.by_name.get(name).cloned().unwrap_or_default();
+            let out = ix.by_name.get(name).cloned().unwrap_or_else(empty_group);
             count_handout(out.len());
             return out;
         }
         self.name_cache.get_or_insert_with(name.to_string(), || {
-            arc_vec(self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name)))
+            arc_group(self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name)))
         })
     }
 
-    fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>> {
+    fn nodes_by_lower_name(&self, lower: &str) -> Arc<[Arc<Node>]> {
         if let Some(ix) = &self.eager {
-            let out = ix.by_lower.get(lower).cloned().unwrap_or_default();
+            let out = ix.by_lower.get(lower).cloned().unwrap_or_else(empty_group);
             count_handout(out.len());
             return out;
         }
         self.lower_name_cache
             .get_or_insert_with(lower.to_string(), || {
-                arc_vec(self.blocking(
+                arc_group(self.blocking(
                     "get_nodes_by_name_ci",
                     self.store.get_nodes_by_name_ci(lower),
                 ))
             })
     }
 
-    fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>> {
+    fn nodes_by_qualified_name(&self, qn: &str) -> Arc<[Arc<Node>]> {
         if let Some(ix) = &self.eager {
-            let out = ix.by_qname.get(qn).cloned().unwrap_or_default();
+            let out = ix.by_qname.get(qn).cloned().unwrap_or_else(empty_group);
             count_handout(out.len());
             return out;
         }
         self.qualified_name_cache
             .get_or_insert_with(qn.to_string(), || {
-                arc_vec(self.blocking(
+                arc_group(self.blocking(
                     "get_nodes_by_qualified_name",
                     self.store.get_nodes_by_qualified_name(qn),
                 ))
@@ -710,12 +736,13 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
             let exact = format!("{ty}::{method}");
             let suffix = format!("::{ty}::{method}");
             self.nodes_by_name(method)
-                .into_iter()
+                .iter()
                 .filter(|n| {
                     n.kind == NodeKind::Method
                         && n.language == language
                         && (n.qualified_name == exact || n.qualified_name.ends_with(&suffix))
                 })
+                .cloned()
                 .collect()
         })
     }

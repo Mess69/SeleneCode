@@ -325,11 +325,8 @@ impl ReactResolver {
         prefer_dirs: &[&str],
         confidence: f64,
     ) -> Option<ResolvedRef> {
-        let hits: Vec<_> = ctx
-            .nodes_by_name(&r.reference_name)
-            .into_iter()
-            .filter(|n| kinds.contains(&n.kind))
-            .collect();
+        let group = ctx.nodes_by_name(&r.reference_name);
+        let hits: Vec<_> = group.iter().filter(|n| kinds.contains(&n.kind)).collect();
         if hits.is_empty() {
             return None;
         }

@@ -118,9 +118,9 @@ pub async fn run<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext) -> Resul
                     };
                     let line = idx.line_at(whole.start());
                     // Resolve the handler NAME to a node. Ambiguous ⇒ skip.
-                    let hits: Vec<_> = ctx
-                        .nodes_by_name(name.as_str())
-                        .into_iter()
+                    let group = ctx.nodes_by_name(name.as_str());
+                    let hits: Vec<_> = group
+                        .iter()
                         .filter(|n| matches!(n.kind, NodeKind::Function | NodeKind::Method))
                         .collect();
                     if hits.len() != 1 {

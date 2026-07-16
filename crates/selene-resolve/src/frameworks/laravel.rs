@@ -333,7 +333,7 @@ fn resolve_controller_action(
     } else {
         // A controller in a subdirectory (`Api/V1/ArticleController.php`) or a
         // non-standard layout — but it must still BE a controller.
-        crate::context::owned(ctx.nodes_by_name(class))
+        crate::context::owned(&ctx.nodes_by_name(class))
             .into_iter()
             .find(|n| n.kind == NodeKind::Class && n.file_path.contains("Controllers"))
             .map(|n| n.file_path)
@@ -376,13 +376,13 @@ fn resolve_model(
 }
 
 fn method_in_file(ctx: &dyn ResolutionContext, file: &str, name: &str) -> Option<Node> {
-    crate::context::owned(ctx.nodes_by_name(name))
+    crate::context::owned(&ctx.nodes_by_name(name))
         .into_iter()
         .find(|n| n.file_path == file && matches!(n.kind, NodeKind::Method | NodeKind::Function))
 }
 
 fn class_in_file(ctx: &dyn ResolutionContext, file: &str, name: &str) -> Option<Node> {
-    crate::context::owned(ctx.nodes_by_name(name))
+    crate::context::owned(&ctx.nodes_by_name(name))
         .into_iter()
         .find(|n| n.file_path == file && n.kind == NodeKind::Class)
 }

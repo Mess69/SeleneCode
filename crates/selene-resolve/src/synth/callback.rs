@@ -148,9 +148,9 @@ pub async fn run<S: GraphStore>(store: &S, ctx: &dyn ResolutionContext) -> Resul
             for (caller_file, line, arg) in sites.into_iter().take(MAX_CALLBACKS_PER_CHANNEL) {
                 // Resolve the arg by name. AMBIGUOUS ⇒ SKIP — never guess which
                 // `triggerRender` was meant.
-                let hits: Vec<_> = ctx
-                    .nodes_by_name(&arg)
-                    .into_iter()
+                let group = ctx.nodes_by_name(&arg);
+                let hits: Vec<_> = group
+                    .iter()
                     .filter(|n| matches!(n.kind, NodeKind::Method | NodeKind::Function))
                     .collect();
                 if hits.len() != 1 {
