@@ -190,11 +190,24 @@ gates green, graph byte-count identical (61 838 / 197 168 / 137 928 on django).
 | index total | 26.96 s | **22.65 s** |
 | peak RSS | 3.26 GiB | 3.16 GiB (unchanged — RAM is ③, not ①) |
 
-Small corpora after: codegraph-src 1.9 s, selene-crates 2.5 s (procedure differs
-from the §3 table — do not cross-compare; re-run `scripts/bench-vs-codegraph.sh`
-for a TS head-to-head). **VS Code has NOT been re-measured** (deliberately —
-resource constraint); expect the 189 s ladder share to collapse but the 82 s
-persist (②) and RAM (③) to stand. That is the next measurement to run.
+## Head-to-head vs CodeGraph after ① (2026-07-16, `scripts/bench-vs-codegraph.sh`, best-of-3, cold, source-only)
+
+| corpus | selene | codegraph TS | speed gap | selene RSS | TS RSS |
+|---|---:|---:|---:|---:|---:|
+| codegraph-src (TS, 162 f) | 1.79 s | 2.28 s | **0.78×** | 1.38 GiB | 0.45 GiB |
+| selene-crates (Rust) | 2.28 s | 3.03 s | **0.75×** | 1.77 GiB | 1.14 GiB |
+| django (Python, full 3 011 f) | 21.8 s | 24.0 s | **0.91×** | 3.19 GiB | 0.58 GiB |
+
+**SeleneCode is now faster than CodeGraph on ALL THREE corpora — including the
+Python corpus, where it lost 1.10× before ①** (django here is the FULL repo incl.
+tests, not the old 931-file subset; same copy for both tools, so the gap is fair
+while the absolute times are not comparable to the old table). **RAM is still
+3–5.5× worse** — untouched by ①, exactly as predicted: it is the eager in-RAM
+resolve (③), the one lever this pass deliberately did not pull.
+
+**VS Code has NOT been re-measured** (deliberately — resource constraint); expect
+the 189 s ladder share to collapse but the 82 s persist (②) and RAM (③) to stand.
+That is the next measurement to run.
 
 ## What ① bought and what it did not
 
