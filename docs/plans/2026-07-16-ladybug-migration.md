@@ -58,6 +58,33 @@ is memory-lean. Risk: pre-1.0, young (<1yr), effectively one maintainer.
 - [ ] **Phase 6 — Wire + measure**: select `LadybugStore` in `selene-cli` index path under the feature;
   run the graph-identity gates; head-to-head RAM+speed vs SurrealDB on all corpora. Moment of truth.
 
+## RESULTS (2026-07-16) — honest head-to-head, and it does NOT beat SurrealDB
+
+The backend is complete (full 62-method trait, wired into `index` via `SELENE_BACKEND=ladybug`,
+graph correct) and heavily write-optimized (per-table bulk `COPY` buffering: django pipeline write
+5.8s→0.35s). Measured, release, best-of-2:
+
+| corpus | LadybugDB | SurrealDB | CodeGraph | verdict |
+|---|---|---|---|---|
+| codegraph-src (TS, 162f) | 3.4 s, 1.30 GiB | 1.6 s, 1.28 GiB | 2.4 s, 0.43 GiB | 2.1× SLOWER, = RAM |
+| selene-crates (Rust, 344f) | 4.1 s, 1.62 GiB | 1.1 s, 1.58 GiB | 2.9 s, 1.05 GiB | 3.7× SLOWER, = RAM |
+| django (Python, 931f) | 8.3 s, 1.19 GiB | 6.4 s, 1.35 GiB | 5.8 s, 0.45 GiB | 1.3× SLOWER, ~12% lighter |
+
+**The forecast was wrong on both axes, for two measured reasons:**
+1. **RAM:** the ~1.3 GiB is SeleneCode's in-RAM pipeline (extraction buffers, 976k-ref queue, eager
+   index), NOT the DB — so swapping the DB barely moves it. Worse, the bulk-COPY buffer now holds the
+   whole extraction in RAM too, adding to the peak. The DB was never the RAM story on small/medium.
+2. **Speed:** Kuzu's `COPY` is the bulk win, but the resolve's per-batch edge writes CAN'T buffer
+   (cross-batch visibility), so they pay temp-CSV `COPY` overhead (ms_persist ~3.1 s on django);
+   and `all_nodes` parsing 19k JSON `data` blobs is ~2 s. SurrealDB's tuned concurrent-write path
+   beats this. The spike's 128ms/50k was a 4-column table into an empty table — not this workload.
+
+**Bottom line: the migration is functionally complete and correct but does not deliver the forecast
+win.** Making it competitive needs (uncertain, substantial): Arrow in-memory ingestion (kill temp-CSV
+overhead), typed columns instead of a JSON blob (kill the parse), storage-level edge dedup (parity —
+edges run ~1-3% high), and streaming the pipeline (the real RAM lever, DB-independent). This is a
+kept-alive experiment behind a feature flag, not a default switch.
+
 ## Open risks / decisions
 
 1. **FTS/vector offline packaging** — must build + bundle the `.lbug_extension` libs, or statically
