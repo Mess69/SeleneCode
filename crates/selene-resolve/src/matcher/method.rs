@@ -115,10 +115,15 @@ pub fn resolve_method_on_type<C: ResolutionContext>(
             ".java"
         };
         let fqn_path = format!("{}{ext}", fqn.replace('.', "/"));
-        if let Some(chosen) = matches
-            .iter()
-            .find(|m| m.file_path.replace('\\', "/").ends_with(&fqn_path))
-        {
+        if let Some(chosen) = matches.iter().find(|m| {
+            // The '\\'-normalization allocated per candidate; paths only carry
+            // '\\' on Windows-indexed repos, so pay it only when present.
+            if m.file_path.contains('\\') {
+                m.file_path.replace('\\', "/").ends_with(&fqn_path)
+            } else {
+                m.file_path.ends_with(&fqn_path)
+            }
+        }) {
             return Some(bind(r, &chosen.id, confidence, resolved_by));
         }
     }
@@ -264,13 +269,20 @@ pub fn match_method_call<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Op
 
     let (receiver, method, inferable) = parse_receiver(name, lang)?;
 
+    // TEMP profiling (see resolver.rs NS_MM_*).
+    use crate::resolver::{NS_MM_CLASSNAMED, NS_MM_FALLBACK, NS_MM_INFER};
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::Instant;
+
     // --- 1. Local receiver inference (#1108) ---------------------------------
     if inferable {
+        let t = Instant::now();
         let inferred = if lang == Language::Cpp {
             infer_cpp_receiver_type(&receiver, r, ctx, 0)
         } else {
             infer_local_receiver_type(&receiver, r, ctx)
         };
+        NS_MM_INFER.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
 
         if let Some(ty) = inferred {
             // Java/Kotlin: when two classes share a simple name, the file's import
@@ -323,9 +335,11 @@ pub fn match_method_call<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Op
     // `Logger.log()` where a `Logger` exists in both `a/` and `b/`: the call site's
     // own file wins, or the first-indexed class does and a call in `b/` resolves
     // to `a/` (#1079).
+    let t = Instant::now();
     if let Some(hit) =
         method_in_class_named(&receiver, &method, r, ctx, 0.85, ResolvedBy::QualifiedName)
     {
+        NS_MM_CLASSNAMED.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
         return Some(hit);
     }
 
@@ -342,11 +356,16 @@ pub fn match_method_call<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Op
             ResolvedBy::InstanceMethod,
         )
     {
+        NS_MM_CLASSNAMED.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
         return Some(hit);
     }
+    NS_MM_CLASSNAMED.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
 
     // --- 5. Method-name fallback ----------------------------------------------
-    method_name_fallback(&receiver, &method, r, ctx)
+    let t = Instant::now();
+    let hit = method_name_fallback(&receiver, &method, r, ctx);
+    NS_MM_FALLBACK.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    hit
 }
 
 /// `this->prop.method` → (`this->prop`, `method`). A DEEPER chain

@@ -100,10 +100,20 @@ fn compiled(pattern: &str) -> Option<Arc<Regex>> {
     })
 }
 
-/// Capture group 1 of the first pattern that matches `line`.
-fn capture(patterns: &[String], line: &str) -> Option<String> {
-    for p in patterns {
-        let Some(re) = compiled(p) else { continue };
+/// Compile `patterns` once, in order, dropping any that fail to compile —
+/// exactly the per-pattern `continue` the old per-line path took, paid ONCE.
+///
+/// The per-LINE scans must never touch [`compiled`]'s cache: one probe is a
+/// `String` alloc + a globally-locked LRU hit, and the backward scans run it
+/// millions of times per index across every rayon thread. Measured on django:
+/// 44 s of a 46 s name-match lived here, at ~18 µs per scanned line.
+fn compile_all(patterns: &[String]) -> Vec<Arc<Regex>> {
+    patterns.iter().filter_map(|p| compiled(p)).collect()
+}
+
+/// Capture group 1 of the first pre-compiled pattern that matches `line`.
+fn capture_compiled(patterns: &[Arc<Regex>], line: &str) -> Option<String> {
+    for re in patterns {
         if let Ok(Some(caps)) = re.captures(line)
             && let Some(m) = caps.get(1)
         {
@@ -111,6 +121,15 @@ fn capture(patterns: &[String], line: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Capture group 1 of the first pattern that matches `line`.
+///
+/// Convenience for one-shot callers and tests. Anything that scans LINES in a
+/// loop must hoist with [`compile_all`] + [`capture_compiled`] instead.
+#[cfg(test)]
+fn capture(patterns: &[String], line: &str) -> Option<String> {
+    capture_compiled(&compile_all(patterns), line)
 }
 
 /// Regex-escape a receiver name before it is spliced into a pattern.
@@ -334,6 +353,13 @@ pub fn infer_local_receiver_type<C: ResolutionContext>(
     if patterns.is_empty() {
         return None;
     }
+    // Compiled ONCE per reference; the scan below runs per LINE.
+    let compiled_patterns = compile_all(&patterns);
+
+    // TEMP profiling (see resolver.rs NS_INFER_*).
+    use crate::resolver::{N_INFER_CALLS, N_INFER_LINES, NS_INFER_SCAN, NS_INFER_SCOPE};
+    use std::sync::atomic::Ordering::Relaxed;
+    N_INFER_CALLS.fetch_add(1, Relaxed);
 
     let lines = ctx.file_lines(&r.file_path)?;
     if lines.is_empty() {
@@ -341,11 +367,14 @@ pub fn infer_local_receiver_type<C: ResolutionContext>(
     }
 
     let call_idx = (r.line.unwrap_or(1).saturating_sub(1) as usize).min(lines.len() - 1);
+    let t_scope = std::time::Instant::now();
     let start_idx = if whole_file {
         0
     } else {
         (enclosing_scope_start_line(r, ctx).saturating_sub(1)) as usize
     };
+    NS_INFER_SCOPE.fetch_add(t_scope.elapsed().as_nanos() as u64, Relaxed);
+    let t_scan = std::time::Instant::now();
 
     let match_line = |i: usize| -> Option<String> {
         let line = lines.get(i)?;
@@ -355,17 +384,28 @@ pub fn infer_local_receiver_type<C: ResolutionContext>(
         if line.len() > 10_000 {
             return None;
         }
-        capture(&patterns, line).and_then(|raw| normalize_inferred_type_name(&raw))
+        // Every pattern embeds the literal receiver, so a line without that
+        // substring can match none of them — a memchr scan instead of a regex
+        // run on the (vast) majority of lines.
+        if !line.contains(scan_receiver.as_str()) {
+            return None;
+        }
+        capture_compiled(&compiled_patterns, line)
+            .and_then(|raw| normalize_inferred_type_name(&raw))
     };
 
     // NEAREST DECLARATION WINS: backward, from the call to the scope's start.
     let mut i = call_idx as isize;
     while i >= start_idx as isize {
         if let Some(t) = match_line(i as usize) {
+            N_INFER_LINES.fetch_add((call_idx as isize - i + 1) as u64, Relaxed);
+            NS_INFER_SCAN.fetch_add(t_scan.elapsed().as_nanos() as u64, Relaxed);
             return Some(t);
         }
         i -= 1;
     }
+    N_INFER_LINES.fetch_add((call_idx as isize - start_idx as isize + 1) as u64, Relaxed);
+    NS_INFER_SCAN.fetch_add(t_scan.elapsed().as_nanos() as u64, Relaxed);
 
     // A field's declaration is position-independent (a constructor may sit *below*
     // the calling method), so a whole-file scan sweeps forward too.
@@ -418,16 +458,18 @@ fn infer_php_assigned_property_type(
 
     // Type `$var` from its declaration, bounded by the enclosing `function` line.
     let escaped_var = escape(&var);
-    let decl = vec![
+    let decl = compile_all(&[
         format!(r"\b([A-Za-z_\\][\w\\]*)\s+&?\${escaped_var}\b"), // a typed parameter
         format!(r"\${escaped_var}\b\s*=\s*new\s+([A-Za-z_\\][\w\\]*)"), // a local `new`
-    ];
+    ]);
     let function_line = compiled(r"\bfunction\b")?;
 
     let mut i = assign_idx as isize;
     while i >= 0 {
         let line = &lines[i as usize];
-        if let Some(t) = capture(&decl, line).and_then(|raw| normalize_inferred_type_name(&raw)) {
+        if let Some(t) =
+            capture_compiled(&decl, line).and_then(|raw| normalize_inferred_type_name(&raw))
+        {
             return Some(t);
         }
         // The enclosing `function` line is CHECKED (above) and then STOPS the scan.
@@ -566,7 +608,7 @@ pub fn infer_cpp_receiver_type<C: ResolutionContext>(
 
     let escaped = escape(receiver);
     let receiver_re = compiled(&format!(r"\b{escaped}\b"))?;
-    let declarator = cpp_declarator_pattern(&escaped);
+    let declarator = compile_all(std::slice::from_ref(&cpp_declarator_pattern(&escaped)));
     let call_idx = (r.line.unwrap_or(1).saturating_sub(1) as usize).min(lines.len() - 1);
 
     let mut i = call_idx as isize;
@@ -574,7 +616,7 @@ pub fn infer_cpp_receiver_type<C: ResolutionContext>(
         let line = &lines[i as usize];
         if line.len() <= 10_000
             && receiver_re.is_match(line).unwrap_or(false)
-            && let Some(raw) = capture(std::slice::from_ref(&declarator), line)
+            && let Some(raw) = capture_compiled(&declarator, line)
         {
             match normalize_cpp_type_name(&raw).as_deref() {
                 // `auto x = Foo::instance();` — the type is deduced, so recover it
@@ -609,7 +651,7 @@ pub fn infer_cpp_receiver_type<C: ResolutionContext>(
             if line.len() > 10_000 || !receiver_re.is_match(line).unwrap_or(false) {
                 continue;
             }
-            if let Some(raw) = capture(std::slice::from_ref(&declarator), line)
+            if let Some(raw) = capture_compiled(&declarator, line)
                 && let Some(t) = normalize_cpp_type_name(&raw)
                 && t != "auto"
             {
@@ -730,13 +772,17 @@ pub(crate) fn lookup_callee_return_type<C: ResolutionContext>(
             // stored node (`details::registry::instance` vs `registry::instance`)
             // or LESS. Accept an exact match, or either being a namespace-suffix
             // of the other — the shared `::<class>::<method>` tail keeps it
-            // specific.
+            // specific. (Suffix checks are alloc-free: the old per-candidate
+            // `format!("::…")` pair was two mallocs per candidate.)
+            let want_suffix = format!("::{want}");
             candidates
                 .into_iter()
                 .find(|n| {
                     n.qualified_name == want
-                        || n.qualified_name.ends_with(&format!("::{want}"))
-                        || want.ends_with(&format!("::{}", n.qualified_name))
+                        || n.qualified_name.ends_with(&want_suffix)
+                        || want
+                            .strip_suffix(n.qualified_name.as_str())
+                            .is_some_and(|rest| rest.ends_with("::"))
                 })
                 .and_then(|n| n.return_type.clone())
         }

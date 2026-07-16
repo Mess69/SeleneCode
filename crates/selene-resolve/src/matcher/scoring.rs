@@ -28,11 +28,21 @@ pub const DEFAULT_AMBIGUOUS_NAME_CEILING: usize = 500;
 /// resolution, it never fails a run).
 pub const AMBIGUOUS_NAME_CEILING_ENV: &str = "SELENE_AMBIGUOUS_NAME_CEILING";
 
-/// The configured ceiling.
+/// The configured ceiling. Read from the environment **once per process**
+/// (it is consulted per reference, under rayon — a live `std::env::var` there
+/// serializes the whole pool on the env lock).
 pub fn ambiguous_name_ceiling() -> usize {
-    std::env::var(AMBIGUOUS_NAME_CEILING_ENV)
-        .ok()
-        .and_then(|v| v.trim().parse::<usize>().ok())
+    static CEILING: std::sync::LazyLock<usize> = std::sync::LazyLock::new(|| {
+        parse_ceiling(std::env::var(AMBIGUOUS_NAME_CEILING_ENV).ok().as_deref())
+    });
+    *CEILING
+}
+
+/// [`ambiguous_name_ceiling`]'s parse rule, split out so the fallback contract
+/// stays testable without mutating process env: a positive integer, anything
+/// else falls back to the default.
+fn parse_ceiling(raw: Option<&str>) -> usize {
+    raw.and_then(|v| v.trim().parse::<usize>().ok())
         .filter(|n| *n > 0)
         .unwrap_or(DEFAULT_AMBIGUOUS_NAME_CEILING)
 }
@@ -66,13 +76,18 @@ pub fn apply_language_gate(candidates: Vec<Arc<Node>>, r: &UnresolvedRef) -> Vec
 /// caller splits it **once** and scores every candidate against it. Re-splitting
 /// per candidate was a measured hot spot (#915).
 pub fn path_proximity_from_dirs(ref_dirs: &[&str], other: &str) -> i32 {
-    let parts: Vec<&str> = other.split('/').collect();
-    let other_dirs = &parts[..parts.len().saturating_sub(1)];
-
+    // The candidate's dirs are everything before its last '/'. No '/' means no
+    // directory segments at all (`y.ts` shares nothing with anything) — NOT one
+    // empty segment. Sliced and zipped, never collected: this is the
+    // per-candidate loop body, and the old `Vec<&str>` collect here was one
+    // malloc/free per candidate, millions of times per index.
+    let Some(last) = other.rfind('/') else {
+        return 0;
+    };
     let shared = ref_dirs
         .iter()
-        .zip(other_dirs.iter())
-        .take_while(|(a, b)| a == b)
+        .zip(other[..last].split('/'))
+        .take_while(|(a, b)| **a == *b)
         .count();
 
     ((shared as i32) * 15).min(80)
@@ -80,9 +95,17 @@ pub fn path_proximity_from_dirs(ref_dirs: &[&str], other: &str) -> i32 {
 
 /// `path_proximity_from_dirs` for a single pair of paths.
 pub fn path_proximity(from: &str, to: &str) -> i32 {
-    let parts: Vec<&str> = from.split('/').collect();
-    let dirs = &parts[..parts.len().saturating_sub(1)];
-    path_proximity_from_dirs(dirs, to)
+    // Either side without a '/' has no directory segments → nothing shared.
+    let (Some(f), Some(t)) = (from.rfind('/'), to.rfind('/')) else {
+        return 0;
+    };
+    let shared = from[..f]
+        .split('/')
+        .zip(to[..t].split('/'))
+        .take_while(|(a, b)| a == b)
+        .count();
+
+    ((shared as i32) * 15).min(80)
 }
 
 /// Move the candidates declared in the call site's **own file** to the front
@@ -120,12 +143,12 @@ pub fn prefer_call_site_file(nodes: &[Arc<Node>], call_site_file: &str) -> Vec<A
 /// `#include "X.h"` resolves relative to the including file — never to an
 /// arbitrary same-named header on another platform.
 pub fn pick_closest_file_node(candidates: &[Arc<Node>], r: &UnresolvedRef) -> Option<Arc<Node>> {
-    let dir_of = |p: &str| -> String {
-        match p.rfind('/') {
-            Some(i) => p[..i].to_string(),
-            None => String::new(),
-        }
-    };
+    // "" spells both "no directory part" and "root-level slash", exactly as the
+    // old String-building closure did — but as a borrow, not an alloc per
+    // candidate.
+    fn dir_of(p: &str) -> &str {
+        p.rfind('/').map_or("", |i| &p[..i])
+    }
     let ref_dir = dir_of(&r.file_path);
 
     let same_dir: Vec<&Arc<Node>> = candidates
@@ -537,19 +560,16 @@ mod tests {
 
     #[test]
     fn the_ceiling_env_override_parses_or_falls_back() {
-        // SAFETY: this is the only test in the crate touching this variable, and
-        // it restores it before returning.
-        #[allow(unsafe_code)]
-        unsafe {
-            std::env::remove_var(AMBIGUOUS_NAME_CEILING_ENV);
-            assert_eq!(ambiguous_name_ceiling(), DEFAULT_AMBIGUOUS_NAME_CEILING);
-            std::env::set_var(AMBIGUOUS_NAME_CEILING_ENV, "50");
-            assert_eq!(ambiguous_name_ceiling(), 50);
-            std::env::set_var(AMBIGUOUS_NAME_CEILING_ENV, "0");
-            assert_eq!(ambiguous_name_ceiling(), DEFAULT_AMBIGUOUS_NAME_CEILING);
-            std::env::set_var(AMBIGUOUS_NAME_CEILING_ENV, "nonsense");
-            assert_eq!(ambiguous_name_ceiling(), DEFAULT_AMBIGUOUS_NAME_CEILING);
-            std::env::remove_var(AMBIGUOUS_NAME_CEILING_ENV);
-        }
+        // The env var is read ONCE per process now (per-ref reads under rayon
+        // serialized the pool on the env lock), so the parse rule is what's
+        // testable — no unsafe set_var/remove_var, no ordering hazard.
+        assert_eq!(parse_ceiling(None), DEFAULT_AMBIGUOUS_NAME_CEILING);
+        assert_eq!(parse_ceiling(Some("50")), 50);
+        assert_eq!(parse_ceiling(Some(" 50 ")), 50, "whitespace-tolerant");
+        assert_eq!(parse_ceiling(Some("0")), DEFAULT_AMBIGUOUS_NAME_CEILING);
+        assert_eq!(
+            parse_ceiling(Some("nonsense")),
+            DEFAULT_AMBIGUOUS_NAME_CEILING
+        );
     }
 }

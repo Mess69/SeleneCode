@@ -593,10 +593,21 @@ impl<S: GraphStore> StoreContext<S> {
     }
 }
 
+/// TEMP profiling: one eager-group handout = one Vec alloc + `len` Arc-refcount
+/// bumps (and the matching decrements when the caller drops it). The counters
+/// say how much of that the ladder buys per run.
+fn count_handout(len: usize) {
+    use crate::resolver::{N_EAGER_ARCS_CLONED, N_EAGER_LOOKUPS};
+    N_EAGER_LOOKUPS.fetch_add(1, Ordering::Relaxed);
+    N_EAGER_ARCS_CLONED.fetch_add(len as u64, Ordering::Relaxed);
+}
+
 impl<S: GraphStore> ResolutionContext for StoreContext<S> {
     fn nodes_in_file(&self, path: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_file.get(path).cloned().unwrap_or_default();
+            let out = ix.by_file.get(path).cloned().unwrap_or_default();
+            count_handout(out.len());
+            return out;
         }
         self.node_cache.get_or_insert_with(path.to_string(), || {
             arc_vec(self.blocking("get_nodes_by_file", self.store.get_nodes_by_file(path)))
@@ -605,7 +616,9 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn nodes_by_name(&self, name: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_name.get(name).cloned().unwrap_or_default();
+            let out = ix.by_name.get(name).cloned().unwrap_or_default();
+            count_handout(out.len());
+            return out;
         }
         self.name_cache.get_or_insert_with(name.to_string(), || {
             arc_vec(self.blocking("get_nodes_by_name", self.store.get_nodes_by_name(name)))
@@ -614,7 +627,9 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn nodes_by_lower_name(&self, lower: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_lower.get(lower).cloned().unwrap_or_default();
+            let out = ix.by_lower.get(lower).cloned().unwrap_or_default();
+            count_handout(out.len());
+            return out;
         }
         self.lower_name_cache
             .get_or_insert_with(lower.to_string(), || {
@@ -627,7 +642,9 @@ impl<S: GraphStore> ResolutionContext for StoreContext<S> {
 
     fn nodes_by_qualified_name(&self, qn: &str) -> Vec<Arc<Node>> {
         if let Some(ix) = &self.eager {
-            return ix.by_qname.get(qn).cloned().unwrap_or_default();
+            let out = ix.by_qname.get(qn).cloned().unwrap_or_default();
+            count_handout(out.len());
+            return out;
         }
         self.qualified_name_cache
             .get_or_insert_with(qn.to_string(), || {

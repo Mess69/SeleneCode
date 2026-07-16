@@ -41,12 +41,23 @@ use crate::types::ResolvedRef;
 /// Step 10 of the `resolve_one` ladder — the last strategy before a reference is
 /// given up on (or deferred to a conformance pass).
 pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Option<ResolvedRef> {
+    // TEMP profiling, same pattern as resolver.rs's NS_*: which STRATEGY inside
+    // the name matcher owns the time. Logged by the batch loop.
+    use crate::resolver::{
+        NS_M_CHAINS, NS_M_EXACT, NS_M_FILEPATH, NS_M_FNREF, NS_M_FUZZY, NS_M_METHOD, NS_M_QUALIFIED,
+    };
+    use std::sync::atomic::Ordering::Relaxed;
+    use std::time::Instant;
+
     // --- `function_ref` short-circuits ---------------------------------------
     // A function-as-value reference resolves ONLY through its dedicated matcher —
     // never through the qualified/exact/fuzzy fallthrough below. A wrong callback
     // edge is worse than none: it claims a registration that does not exist.
     if r.reference_kind == "function_ref" {
-        return match_function_ref(r, ctx);
+        let t = Instant::now();
+        let hit = match_function_ref(r, ctx);
+        NS_M_FNREF.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+        return hit;
     }
 
     // Wave 2 (Phase 8), both in this position and both NO-FALLTHROUGH:
@@ -59,12 +70,18 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     //     resolved to an unrelated `-define(supervisor, …)` macro.
 
     // --- (0) a path-like name → a file node ----------------------------------
-    if let Some(hit) = match_by_file_path(r, ctx) {
+    let t = Instant::now();
+    let hit = match_by_file_path(r, ctx);
+    NS_M_FILEPATH.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    if let Some(hit) = hit {
         return Some(hit);
     }
 
     // --- (1) a qualified name -------------------------------------------------
-    if let Some(hit) = match_by_qualified_name(r, ctx) {
+    let t = Instant::now();
+    let hit = match_by_qualified_name(r, ctx);
+    NS_M_QUALIFIED.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    if let Some(hit) = hit {
         return Some(hit);
     }
 
@@ -76,9 +93,11 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     let lang = r.language;
 
     // --- (1b) C/C++: `Foo::instance().bar` -----------------------------------
+    let t = Instant::now();
     if matches!(lang, Language::C | Language::Cpp)
         && let Some(hit) = match_cpp_call_chain(r, ctx)
     {
+        NS_M_CHAINS.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
         return Some(hit);
     }
 
@@ -86,6 +105,7 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
     if matches!(lang, Language::Php | Language::Rust)
         && let Some(hit) = match_scoped_call_chain(r, ctx)
     {
+        NS_M_CHAINS.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
         return Some(hit);
     }
 
@@ -97,22 +117,33 @@ pub fn match_reference<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> Opti
         Language::Java | Language::Kotlin | Language::CSharp | Language::Go
     ) && let Some(hit) = match_dotted_call_chain(r, ctx)
     {
+        NS_M_CHAINS.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
         return Some(hit);
     }
+    NS_M_CHAINS.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
 
     // --- (2) a method call on an inferred receiver type ----------------------
     // The receiver's type is inferred from its local declaration and then
     // VALIDATED (the method must exist on it) — so a mis-inference yields no
     // edge, never a wrong one.
-    if let Some(hit) = match_method_call(r, ctx) {
+    let t = Instant::now();
+    let hit = match_method_call(r, ctx);
+    NS_M_METHOD.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    if let Some(hit) = hit {
         return Some(hit);
     }
 
     // --- (3) an exact name ----------------------------------------------------
-    if let Some(hit) = match_by_exact_name(r, ctx) {
+    let t = Instant::now();
+    let hit = match_by_exact_name(r, ctx);
+    NS_M_EXACT.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    if let Some(hit) = hit {
         return Some(hit);
     }
 
     // --- (4) fuzzy: the last resort, unique-or-nothing ------------------------
-    match_fuzzy(r, ctx)
+    let t = Instant::now();
+    let hit = match_fuzzy(r, ctx);
+    NS_M_FUZZY.fetch_add(t.elapsed().as_nanos() as u64, Relaxed);
+    hit
 }

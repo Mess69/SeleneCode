@@ -440,6 +440,30 @@ async fn resolve_pending<S: GraphStore + Clone>(
             passed_prefilter = N_PASSED_PREFILTER.load(Relaxed),
             "classify: per-step profile (where the ladder time goes)"
         );
+        tracing::info!(
+            target: "selene::index",
+            fnref_ms = NS_M_FNREF.load(Relaxed) / 1_000_000,
+            filepath_ms = NS_M_FILEPATH.load(Relaxed) / 1_000_000,
+            qualified_ms = NS_M_QUALIFIED.load(Relaxed) / 1_000_000,
+            chains_ms = NS_M_CHAINS.load(Relaxed) / 1_000_000,
+            method_ms = NS_M_METHOD.load(Relaxed) / 1_000_000,
+            exact_ms = NS_M_EXACT.load(Relaxed) / 1_000_000,
+            fuzzy_ms = NS_M_FUZZY.load(Relaxed) / 1_000_000,
+            eager_lookups = N_EAGER_LOOKUPS.load(Relaxed),
+            eager_arcs_cloned = N_EAGER_ARCS_CLONED.load(Relaxed),
+            "match_reference: per-strategy profile (where namematch_ms goes)"
+        );
+        tracing::info!(
+            target: "selene::index",
+            infer_ms = NS_MM_INFER.load(Relaxed) / 1_000_000,
+            classnamed_ms = NS_MM_CLASSNAMED.load(Relaxed) / 1_000_000,
+            fallback_ms = NS_MM_FALLBACK.load(Relaxed) / 1_000_000,
+            infer_scope_ms = NS_INFER_SCOPE.load(Relaxed) / 1_000_000,
+            infer_scan_ms = NS_INFER_SCAN.load(Relaxed) / 1_000_000,
+            infer_calls = N_INFER_CALLS.load(Relaxed),
+            infer_lines = N_INFER_LINES.load(Relaxed),
+            "match_method_call: sub-strategy profile (where method_ms goes)"
+        );
     }
     if synthesized > 0 {
         stats

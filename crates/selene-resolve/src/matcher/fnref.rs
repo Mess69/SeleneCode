@@ -105,6 +105,9 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
     // scope-anchored: a `Decoy::handle` can never match a `KtHandlers::handle` ref.
     if r.reference_name.contains("::") {
         let member = &r.reference_name[r.reference_name.rfind("::")? + 2..];
+        // Hoisted: this suffix is per-REFERENCE, and building it inside the
+        // filter was one format! alloc per candidate.
+        let scoped_suffix = format!("::{}", r.reference_name);
         let scoped: Vec<Arc<Node>> = ctx
             .nodes_by_name(member)
             .into_iter()
@@ -113,8 +116,7 @@ pub fn match_function_ref<C: ResolutionContext>(r: &UnresolvedRef, ctx: &C) -> O
                     && same_language_family(n.language, ref_lang)
                     && n.id != r.from_node_id
                     && (n.qualified_name == r.reference_name
-                        || n.qualified_name
-                            .ends_with(&format!("::{}", r.reference_name)))
+                        || n.qualified_name.ends_with(&scoped_suffix))
             })
             .collect();
         if scoped.is_empty() {

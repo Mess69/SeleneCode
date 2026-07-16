@@ -30,6 +30,30 @@ pub static NS_IMPORT: AtomicU64 = AtomicU64::new(0);
 pub static NS_NAMEMATCH: AtomicU64 = AtomicU64::new(0);
 pub static N_PASSED_PREFILTER: AtomicU64 = AtomicU64::new(0);
 
+// TEMP profiling, one level deeper: which STRATEGY inside `match_reference`
+// owns NS_NAMEMATCH (accumulated in `matcher/mod.rs`), and how many candidate
+// Arcs the eager index hands out (accumulated in `context.rs` — the group-Vec
+// clone per lookup is a suspect the step timers alone cannot see).
+pub static NS_M_FNREF: AtomicU64 = AtomicU64::new(0);
+pub static NS_M_FILEPATH: AtomicU64 = AtomicU64::new(0);
+pub static NS_M_QUALIFIED: AtomicU64 = AtomicU64::new(0);
+pub static NS_M_CHAINS: AtomicU64 = AtomicU64::new(0);
+pub static NS_M_METHOD: AtomicU64 = AtomicU64::new(0);
+pub static NS_M_EXACT: AtomicU64 = AtomicU64::new(0);
+pub static NS_M_FUZZY: AtomicU64 = AtomicU64::new(0);
+pub static N_EAGER_LOOKUPS: AtomicU64 = AtomicU64::new(0);
+pub static N_EAGER_ARCS_CLONED: AtomicU64 = AtomicU64::new(0);
+
+// TEMP profiling, level 3: inside `match_method_call` (99% of namematch on
+// django) — which sub-strategy, and inside receiver inference, which loop.
+pub static NS_MM_INFER: AtomicU64 = AtomicU64::new(0);
+pub static NS_MM_CLASSNAMED: AtomicU64 = AtomicU64::new(0);
+pub static NS_MM_FALLBACK: AtomicU64 = AtomicU64::new(0);
+pub static NS_INFER_SCOPE: AtomicU64 = AtomicU64::new(0);
+pub static NS_INFER_SCAN: AtomicU64 = AtomicU64::new(0);
+pub static N_INFER_CALLS: AtomicU64 = AtomicU64::new(0);
+pub static N_INFER_LINES: AtomicU64 = AtomicU64::new(0);
+
 use selene_core::{Edge, EdgeKind, Language, NodeKind, Provenance, UnresolvedRef};
 use serde_json::{Map, Value, json};
 

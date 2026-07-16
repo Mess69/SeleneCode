@@ -1,6 +1,9 @@
 # SeleneCode — the optimization roadmap to the final, right-stacked version
 
-**Date: 2026-07-16. Status: the bottleneck is finally MEASURED, not guessed.**
+**Date: 2026-07-16. Status: ① EXECUTED and re-measured — see the addendum at the bottom.
+The ladder bottleneck is FIXED (django name-match 46.4 s → 6.0 s CPU), but the fix was NOT
+what this doc predicted: §TL;DR's attribution was wrong one level down. Read the addendum
+before trusting the analysis below.**
 
 This doc is the durable output of a long measurement session. It records (1) what was measured, (2)
 the single finding that matters, and (3) exactly what remains to reach the final optimized version on
@@ -154,3 +157,59 @@ profiled step-by-step. **The lesson: instrument first, fix second.** Every futur
 should start by measuring where the time actually goes — the intuition-from-architecture was wrong
 ~3× on both speed and RAM. The profiling counters live in `resolver.rs` (`NS_*`), logged by the batch
 loop; keep them.
+
+---
+
+# ADDENDUM (2026-07-16, later): ① executed — and the doc's own attribution was wrong
+
+The lesson above struck again, one level down. This doc said the ladder cost was
+"`Language::from_wire` + a path `split` per candidate". Both were implemented
+(the `Language` enum on `Node`/`UnresolvedRef`; zero-alloc `path_proximity`) —
+**and the django ladder did not move** (47.6 → 46.2 s CPU). Two more levels of
+counters (`NS_M_*` per strategy, then `NS_MM_*`/`NS_INFER_*` inside the method
+matcher) pinned the real cost:
+
+**`match_method_call` was 99% of the name matcher, and ~all of it was the
+receiver-inference backward line scan — `capture()` re-probed the global
+mutex'd regex LRU (a `String` alloc + lock per pattern PER LINE), ~4.9 M probes
+per django index, contended across every rayon thread (~18 µs/line).**
+
+The fix (`receiver.rs`): compile the patterns ONCE per reference
+(`compile_all` + `capture_compiled`), plus a substring pre-gate (every pattern
+embeds the literal receiver, so `line.contains(receiver)` is a sound skip).
+Same treatment for the PHP-property and C++ scans. Behavior-identical: both
+gates green, graph byte-count identical (61 838 / 197 168 / 137 928 on django).
+
+## Measured after (django, full repo 3 011 files, cold, same machine)
+
+| metric | before (baseline this session) | after ① + fixes |
+|---|---:|---:|
+| name-match CPU | 46 391 ms | **6 039 ms (7.7×)** |
+| infer line-scan CPU | 43 961 ms | **1 677 ms (26×)** |
+| ladder wall (`ms_ladder`) | ~5 s | **1.8 s** |
+| index total | 26.96 s | **22.65 s** |
+| peak RSS | 3.26 GiB | 3.16 GiB (unchanged — RAM is ③, not ①) |
+
+Small corpora after: codegraph-src 1.9 s, selene-crates 2.5 s (procedure differs
+from the §3 table — do not cross-compare; re-run `scripts/bench-vs-codegraph.sh`
+for a TS head-to-head). **VS Code has NOT been re-measured** (deliberately —
+resource constraint); expect the 189 s ladder share to collapse but the 82 s
+persist (②) and RAM (③) to stand. That is the next measurement to run.
+
+## What ① bought and what it did not
+
+- The `Language` enum + zero-alloc scoring are kept: correct, wire-byte-identical
+  (13 snapshots pin it), and they remove real per-candidate work — they were just
+  not the wall on django. The wall may sit elsewhere per corpus family
+  (python's `self.method()` density is what made receiver inference dominate).
+- **Full `Symbol(u32)` path interning (§①.2) is now unjustified on time** — exact/
+  fuzzy/gate strategies total ~250 ms CPU on django after the fix. Its remaining
+  case is RAM (③): `file_path`/`name` duplication across 61 k nodes. Re-argue it
+  against ③'s streaming option with a VS Code measurement, not from this doc.
+- New top costs on django after the ladder fix: **persist 7.4 s wall (②),
+  synthesis 4.8 s, bulk node write ~4.7 s** — ② is now the #1 lever, as the
+  large-repo table always said.
+
+The `NS_M_*`/`NS_MM_*`/`NS_INFER_*` counters and the eager-handout counters
+(`N_EAGER_LOOKUPS`/`N_EAGER_ARCS_CLONED` — 648 k lookups / 59 M Arc clones per
+django run, a candidate for ② work) are kept, same as the `NS_*` set.

@@ -966,7 +966,14 @@ fn resolve_go_cross_package<C: ResolutionContext>(
             if node.language != Language::Go || node.is_exported != Some(true) {
                 continue;
             }
-            if parent_dir(&node.file_path.replace('\\', "/")) == pkg_dir {
+            // '\\' only appears in Windows-indexed paths — skip the per-candidate
+            // alloc when absent (the common case).
+            let same_pkg = if node.file_path.contains('\\') {
+                parent_dir(&node.file_path.replace('\\', "/")) == pkg_dir
+            } else {
+                parent_dir(&node.file_path) == pkg_dir
+            };
+            if same_pkg {
                 return Some(imported(r, &node.id, 0.9));
             }
         }
@@ -1015,7 +1022,11 @@ fn resolve_jvm_imported_reference<C: ResolutionContext>(
             if node.language != lang {
                 continue;
             }
-            let fp = node.file_path.replace('\\', "/");
+            let fp: std::borrow::Cow<'_, str> = if node.file_path.contains('\\') {
+                node.file_path.replace('\\', "/").into()
+            } else {
+                node.file_path.as_str().into()
+            };
             if fp.ends_with(&fqn_path) {
                 return Some(imported(r, &node.id, 0.9));
             }
@@ -1032,7 +1043,11 @@ fn resolve_jvm_imported_reference<C: ResolutionContext>(
                 if node.language != lang {
                     continue;
                 }
-                let fp = node.file_path.replace('\\', "/");
+                let fp: std::borrow::Cow<'_, str> = if node.file_path.contains('\\') {
+                    node.file_path.replace('\\', "/").into()
+                } else {
+                    node.file_path.as_str().into()
+                };
                 if fp.ends_with(&owner_path) {
                     return Some(imported(r, &node.id, 0.9));
                 }
