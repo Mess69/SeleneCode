@@ -37,10 +37,20 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 type UnresolvedKey = (String, String, String);
 
+/// Nodes + edges + file records accumulated during bulk-load mode, flushed as one `COPY` each at
+/// the extraction→resolve boundary. Kuzu's `COPY` is the fast path only into a fresh table; the
+/// per-batch alternative is slow — and `upsert_files` in particular was 931 sequential `MERGE`s.
+/// Buffering the whole extraction into one `COPY` per table restores the fast path.
+type BulkBuf = (Vec<Node>, Vec<Edge>, Vec<FileRecord>);
+
 /// The LadybugDB-backed graph store.
 #[derive(Clone)]
 pub struct LadybugStore {
     db: Arc<lbug::Database>,
+    /// `Some` between `bulk_load_begin` and `bulk_load_finish` — writes accumulate here instead of
+    /// issuing a `COPY` per call. `None` = direct-write mode (single-file sync, and the resolve
+    /// phase where per-batch edge visibility is required).
+    bulk: Arc<std::sync::Mutex<Option<BulkBuf>>>,
 }
 
 fn lbug_err(e: impl std::fmt::Display) -> Error {
@@ -119,11 +129,20 @@ impl LadybugStore {
     pub async fn open(dir: &Path) -> Result<Self> {
         let dir = dir.to_path_buf();
         let db = tokio::task::spawn_blocking(move || {
-            lbug::Database::new(&dir, lbug::SystemConfig::default()).map_err(lbug_err)
+            // Two knobs matter for an indexing workload:
+            //  - buffer_pool_size: default auto-detects a large fraction of system RAM (like
+            //    SurrealDB's RocksDB block cache). A code graph is a few hundred MB, so cap it.
+            //  - auto_checkpoint(false): Kuzu checkpoints (WAL -> main store, fsync-heavy) whenever
+            //    the WAL crosses a threshold; during a many-COPY bulk load that fsync is the
+            //    per-COPY overhead. Disable it and CHECKPOINT once in `bulk_load_finish`.
+            let cfg = lbug::SystemConfig::default()
+                .buffer_pool_size(512 * 1024 * 1024)
+                .auto_checkpoint(false);
+            lbug::Database::new(&dir, cfg).map_err(lbug_err)
         })
         .await
         .map_err(lbug_err)??;
-        let store = Self { db: Arc::new(db) };
+        let store = Self { db: Arc::new(db), bulk: Arc::new(std::sync::Mutex::new(None)) };
         store.apply_schema().await?;
         Ok(store)
     }
@@ -140,6 +159,41 @@ impl LadybugStore {
         })
         .await
         .map_err(lbug_err)?
+    }
+
+    /// Flush the bulk-load write buffer as one node `COPY` + one edge `COPY`, and leave bulk mode.
+    ///
+    /// Call this at the extraction→resolve boundary (the indexer does). It must NOT be tied to reads
+    /// generically: the pipeline issues `get_meta`/`get_file` reads *during* extraction, and draining
+    /// the buffer on those would exit bulk mode before extraction writes anything — defeating the
+    /// batching (measured: ms_bulk stayed 7.3 s). Idempotent: a no-op once drained (`None`).
+    pub async fn flush_bulk(&self) -> Result<()> {
+        let taken = self.bulk.lock().unwrap_or_else(|p| p.into_inner()).take();
+        if let Some((nodes, edges, files)) = taken {
+            self.insert_files_impl(&files).await?; // nodes/edges are independent of File
+            self.insert_nodes_impl(&nodes).await?;
+            self.insert_edges_impl(&edges).await?; // after nodes (endpoint referential integrity)
+        }
+        Ok(())
+    }
+
+    /// Bulk-insert fresh file records via `COPY` (the `Some` bulk path; the direct path MERGEs).
+    async fn insert_files_impl(&self, files: &[FileRecord]) -> Result<()> {
+        if files.is_empty() {
+            return Ok(());
+        }
+        let mut csv = String::new();
+        for f in files {
+            let data = serde_json::to_string(f)?;
+            csv.push_str(&format!(
+                "{},{},{},{}\n",
+                csv_q(&f.path),
+                csv_q(&f.language),
+                f.indexed_at,
+                csv_q(&data),
+            ));
+        }
+        self.copy_into("File", csv).await
     }
 
     /// Run a read query and map each result row through `f`.
@@ -321,7 +375,16 @@ impl GraphStore for LadybugStore {
     // ---- nodes: writes ----
     fn insert_nodes(&self, nodes: &[Node]) -> impl Future<Output = Result<()>> + Send {
         let nodes = nodes.to_vec();
-        async move { self.insert_nodes_impl(&nodes).await }
+        async move {
+            {
+                let mut g = self.bulk.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(b) = g.as_mut() {
+                    b.0.extend(nodes);
+                    return Ok(());
+                }
+            }
+            self.insert_nodes_impl(&nodes).await
+        }
     }
 
     // ---- nodes: reads ----
@@ -461,7 +524,17 @@ impl GraphStore for LadybugStore {
     // ---- edges ----
     fn insert_edges(&self, edges: &[Edge]) -> impl Future<Output = Result<u64>> + Send {
         let edges = edges.to_vec();
-        async move { self.insert_edges_impl(&edges).await }
+        async move {
+            {
+                let mut g = self.bulk.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(b) = g.as_mut() {
+                    let n = edges.len() as u64;
+                    b.1.extend(edges);
+                    return Ok(n);
+                }
+            }
+            self.insert_edges_impl(&edges).await
+        }
     }
 
     fn outgoing(
@@ -645,9 +718,16 @@ impl GraphStore for LadybugStore {
     ) -> impl Future<Output = Result<()>> + Send {
         let files = files.to_vec();
         async move {
+            {
+                let mut g = self.bulk.lock().unwrap_or_else(|p| p.into_inner());
+                if let Some(b) = g.as_mut() {
+                    b.2.extend(files);
+                    return Ok(());
+                }
+            }
+            // Direct path (incremental sync): MERGE = upsert on the PK, one per file.
             for f in &files {
                 let data = serde_json::to_string(f)?;
-                // MERGE = upsert on the PK.
                 let sql = format!(
                     "MERGE (x:File {{path: {}}}) SET x.language = {}, x.indexed_at = {}, x.data = {};",
                     lit(&f.path),
@@ -985,12 +1065,24 @@ impl GraphStore for LadybugStore {
         }
     }
 
-    // ---- bulk load (FTS deferred — no-op for now) ----
+    // ---- bulk load ----
     fn bulk_load_begin(&self) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+        // Enter buffering mode: writes accumulate in memory instead of a COPY per call.
+        async move {
+            *self.bulk.lock().unwrap_or_else(|p| p.into_inner()) =
+                Some((Vec::new(), Vec::new(), Vec::new()));
+            Ok(())
+        }
     }
     fn bulk_load_finish(&self) -> impl Future<Output = Result<()>> + Send {
-        async move { Ok(()) }
+        // Flush the buffered extraction as ONE node COPY + ONE edge COPY (Kuzu's fast fresh-table
+        // path), then fold the WAL into the main store. Best-effort checkpoint — a failure is not
+        // data loss (the WAL replays on next open), so it must not fail the index.
+        async move {
+            self.flush_bulk().await?; // idempotent; usually already drained by the first read
+            let _ = self.exec("CHECKPOINT;".into()).await;
+            Ok(())
+        }
     }
 
     // ---- search (FTS/vector deferred; name-LIKE native) ----

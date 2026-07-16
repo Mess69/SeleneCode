@@ -178,6 +178,11 @@ async fn index_inner_ladybug(root: PathBuf) -> Result<()> {
         result.files_indexed, result.nodes_created
     );
 
+    // Flush the extraction into the store as one node COPY + one edge COPY (Kuzu's fast fresh-table
+    // path) BEFORE resolve reads the eager node scan. The pipeline buffered all extraction writes;
+    // this is the extraction→resolve boundary.
+    store.flush_bulk().await.context("flushing the extraction to LadybugDB failed")?;
+
     eprintln!("resolving …");
     let stats =
         selene_resolve::resolve_and_persist_in_memory(&store, &root, result.unresolved, None)
