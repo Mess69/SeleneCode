@@ -26,6 +26,10 @@ futures = { workspace = true }
 # sleeps too). Costs nothing extra — surrealdb's embedded engines already
 # require a tokio runtime, so tokio is in every build's dependency graph anyway.
 tokio = { workspace = true }
+# LadybugDB (Kuzu-successor embedded property-graph DB) — the migration store, OPTIONAL and
+# off by default (its C++ core is a ~minutes cmake build). Enabled by `kv-ladybug`. See
+# docs/plans/2026-07-16-ladybug-migration.md and `ladybug.rs`.
+lbug = { version = "0.18", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
@@ -61,6 +65,8 @@ default = ["kv-mem", "kv-rocksdb"]
 kv-mem = ["surrealdb/kv-mem"]
 kv-surrealkv = ["surrealdb/kv-surrealkv"]
 kv-rocksdb = ["surrealdb/kv-rocksdb"]
+# The LadybugDB backend (`LadybugStore`). Off by default — pulls the `lbug` C++ core build.
+kv-ladybug = ["dep:lbug"]
 bench-support = []
 
 # One criterion bench target. `harness = false` hands `fn main` to

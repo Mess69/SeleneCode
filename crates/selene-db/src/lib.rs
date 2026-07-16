@@ -75,6 +75,8 @@ pub mod bench_support;
 mod edges;
 mod error;
 mod files;
+#[cfg(feature = "kv-ladybug")]
+mod ladybug;
 mod meta;
 mod nodes;
 mod schema;
@@ -99,3 +101,5 @@ pub use store::{
 };
 pub use semantic::embedding_text;
 pub use surreal::{DATABASE_DIRNAME, SurrealStore};
+#[cfg(feature = "kv-ladybug")]
+pub use ladybug::LadybugStore;
