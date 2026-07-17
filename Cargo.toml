@@ -170,6 +170,11 @@ lto = "thin"
 codegen-units = 1
 strip = true
 
+# The profile `dist` builds releases with (see dist-workspace.toml). Identical
+# to release — defined separately because dist refuses to build without it.
+[profile.dist]
+inherits = "release"
+
 # The vendored surrealdb SDK: crates.io 3.2.1 + ONE line (see
 # vendor/surrealdb/src/engine/local/native.rs "SELENE PATCH") making the
 # embedded engine read `SURREAL_*` env config like the server binary does —
