@@ -420,6 +420,10 @@ const TEMPLATE: &str = r####"<!doctype html>
     box-shadow: 0 6px 24px rgba(0,0,0,0.5); transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1);
     pointer-events: none; z-index: 30; }
   #toast.show { transform: translateX(-50%) translateY(0); }
+  #mem { display: flex; align-items: center; gap: 10px; }
+  /* the global canvas rule above stretches to 100% — pin the sparkline down */
+  #mem canvas { width: 110px; height: 18px; opacity: 0.9; cursor: default; }
+  #mem b.warm { color: #e3b341; }
 </style>
 </head>
 <body>
@@ -430,6 +434,7 @@ const TEMPLATE: &str = r####"<!doctype html>
     <h1>selene galaxy <span id="live" style="display:none"><span class="dot"></span><span id="live-txt">live</span></span></h1>
     <div class="sub" id="root"></div>
     <div class="counts" id="counts"></div>
+    <div class="counts" id="mem" style="display:none"><span id="mem-txt"></span><canvas id="spark" width="110" height="18"></canvas></div>
     <div class="hint" id="hint">click a module = drill in · scroll = zoom · drag = pan/move</div>
   </div>
 
@@ -1153,6 +1158,37 @@ function applyUpdate(d) {
   followUntil = now + 3000 + newborn.length * 120;
 }
 
+// ---- memory: index-on-disk + live RAM, with a rolling sparkline ------------
+const ramHist = [];
+function fmtBytes(b) {
+  if (!b) return "0 MB";
+  return b >= 1073741824 ? (b / 1073741824).toFixed(2) + " GB"
+                         : Math.max(1, Math.round(b / 1048576)) + " MB";
+}
+function updateMem(m) {
+  const el = document.getElementById("mem");
+  el.style.display = "";
+  ramHist.push(m.rss || 0);
+  if (ramHist.length > 120) ramHist.shift();
+  const who = m.src === "daemon" ? "daemon" : "viz server";
+  document.getElementById("mem-txt").innerHTML =
+    "index <b>" + fmtBytes(m.index) + "</b> · RAM <b>" + fmtBytes(m.rss) + "</b> <span style=\"color:#97a0b8\">(" + who + ")</span>";
+  const sc = document.getElementById("spark"), c2 = sc.getContext("2d");
+  c2.clearRect(0, 0, sc.width, sc.height);
+  if (ramHist.length > 1) {
+    let lo = Math.min(...ramHist), hi = Math.max(...ramHist);
+    if (hi - lo < hi * 0.02) { lo = lo * 0.98; hi = hi * 1.02 || 1; }
+    c2.strokeStyle = "#3fb950"; c2.lineWidth = 1.4; c2.beginPath();
+    ramHist.forEach((v, i) => {
+      const x = (i / (ramHist.length - 1)) * (sc.width - 2) + 1;
+      const y = sc.height - 2 - ((v - lo) / (hi - lo || 1)) * (sc.height - 4);
+      i === 0 ? c2.moveTo(x, y) : c2.lineTo(x, y);
+    });
+    c2.stroke();
+  }
+}
+if (DATA.mem) updateMem(DATA.mem);
+
 function setLive(ok) {
   const el = document.getElementById("live");
   el.classList.toggle("stale", !ok);
@@ -1166,6 +1202,7 @@ if ((DATA.meta || {}).watch) {
       const r = await fetch("/data?known=" + curGen);
       const d = await r.json();
       if (d.nodes) { curGen = d.gen || curGen + 1; applyUpdate(d); }
+      if (d.mem) updateMem(d.mem);
       setLive(true);
     } catch (err) { setLive(false); }
   }, 1500);

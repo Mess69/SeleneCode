@@ -643,6 +643,47 @@ fn index_fingerprint(selene_dir: &Path) -> u64 {
     h.finish()
 }
 
+/// Total bytes on disk under `dir`, recursively. Cheap for `.selene/` (a flat
+/// RocksDB dir plus a handful of daemon files).
+fn dir_size(dir: &Path) -> u64 {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .map(|e| match e.metadata() {
+            Ok(md) if md.is_dir() => dir_size(&e.path()),
+            Ok(md) => md.len(),
+            Err(_) => 0,
+        })
+        .sum()
+}
+
+/// Current RSS of a process in bytes, via `ps` (KiB on both macOS and Linux).
+fn rss_of(pid: i32) -> Option<u64> {
+    let out = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .trim()
+        .parse::<u64>()
+        .ok()
+        .map(|kib| kib * 1024)
+}
+
+/// The live memory line the watch page shows: the index's on-disk footprint,
+/// and the RAM of whoever is actually holding the graph — the daemon when one
+/// is up (the number that matters while an agent works), else this server.
+fn memory_probe(root: &Path) -> serde_json::Value {
+    let index_bytes = dir_size(&root.join(".selene"));
+    if let Some(rss) = selene_mcp::daemon::running_pid(root).and_then(rss_of) {
+        return serde_json::json!({ "index": index_bytes, "rss": rss, "src": "daemon" });
+    }
+    let own = rss_of(std::process::id() as i32).unwrap_or(0);
+    serde_json::json!({ "index": index_bytes, "rss": own, "src": "server" })
+}
+
 /// `selene viz --watch` — serve the live map over local HTTP. The page polls
 /// `/data`; every index change (agent edits, syncs, commits) re-reads the graph
 /// and bumps the generation, and the page animates the difference in place.
@@ -664,9 +705,13 @@ async fn viz_watch(root: PathBuf, max_nodes: usize, all_kinds: bool, open: bool)
             return Outcome::Failure;
         }
     };
-    let data = crate::viz::build_data(&nodes, &edges, &opts);
-    let html = crate::viz::render(&data.json, &opts.root_label);
+    let mut data = crate::viz::build_data(&nodes, &edges, &opts);
+    // The compare/serve line stays mem-free (memory is spliced in fresh at
+    // serve time — inside `last_content` it would fake graph changes); the
+    // initial page embed gets it so the first paint shows memory immediately.
     let data_line = serde_json::to_string(&data.json).unwrap_or_default();
+    data.json["mem"] = memory_probe(&root);
+    let html = crate::viz::render(&data.json, &opts.root_label);
 
     let listener = match tokio::net::TcpListener::bind(("127.0.0.1", 0)).await {
         Ok(l) => l,
@@ -703,14 +748,16 @@ async fn viz_watch(root: PathBuf, max_nodes: usize, all_kinds: bool, open: bool)
         let generation = generation.clone();
         let latest = latest.clone();
         let html = html.clone();
+        let probe_root = root.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((stream, _)) = listener.accept().await else {
                     continue;
                 };
                 let (generation, latest, html) = (generation.clone(), latest.clone(), html.clone());
+                let probe_root = probe_root.clone();
                 tokio::spawn(async move {
-                    let _ = serve_watch_conn(stream, generation, latest, html).await;
+                    let _ = serve_watch_conn(stream, generation, latest, html, probe_root).await;
                 });
             }
         });
@@ -774,6 +821,7 @@ async fn serve_watch_conn(
     generation: std::sync::Arc<std::sync::atomic::AtomicU64>,
     latest: std::sync::Arc<tokio::sync::RwLock<String>>,
     html: std::sync::Arc<String>,
+    probe_root: PathBuf,
 ) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
@@ -795,10 +843,15 @@ async fn serve_watch_conn(
         let known: Option<u64> = q
             .strip_prefix("?known=")
             .and_then(|v| v.parse().ok());
+        // Memory is spliced in FRESH on every poll — the stored data line only
+        // changes when the graph does, but RAM/disk move continuously.
+        let mem = memory_probe(&probe_root);
         if known == Some(cur) {
-            ("200 OK", "application/json", format!(r#"{{"gen":{cur}}}"#))
+            ("200 OK", "application/json", format!(r#"{{"gen":{cur},"mem":{mem}}}"#))
         } else {
-            ("200 OK", "application/json", latest.read().await.clone())
+            let stored = latest.read().await.clone();
+            // stored is a JSON object ("{...}") — prepend mem inside it.
+            ("200 OK", "application/json", format!("{{\"mem\":{mem},{}", &stored[1..]))
         }
     } else {
         ("404 Not Found", "text/plain", "not found".to_string())

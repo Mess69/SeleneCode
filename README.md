@@ -111,6 +111,10 @@ index updates through the daemon's file watcher, and the page polls and animates
 (a toast narrates: `✨ +3 functions · +1 class`). Works with or without a running daemon: when your
 agent is connected, reads go through the daemon's socket, no lock conflict. Ctrl-C stops it.
 
+The header also shows the project's live footprint — `index 42 MB · RAM 310 MB (daemon)` with a
+rolling sparkline: the index's size on disk, and the RAM of whichever process is actually holding
+the graph (the daemon while your agent works, else the viz server itself), refreshed every poll.
+
 Options:
 
 | flag | effect |
