@@ -333,6 +333,12 @@ function fit() {
   tx = cw / 2 - (minX + maxX) / 2 * scale;
   ty = ch / 2 - (minY + maxY) / 2 * scale;
 }
+// Interaction state — declared BEFORE the pre-warm below: tick() reads
+// dragNode, and `let` is temporal-dead-zone'd, so the old placement (with the
+// other listeners) threw "Cannot access 'dragNode' before initialization" on
+// the very first pre-warm tick and left the whole galaxy blank.
+let dragNode = null, panning = false, downX = 0, downY = 0, moved = false;
+
 // give the seeded disk a moment to relax, then frame it
 for (let i = 0; i < 60; i++) tick();
 fit();
@@ -468,7 +474,7 @@ function pick(sx, sy) {
 }
 
 // ---- interaction ----------------------------------------------------------
-let dragNode = null, panning = false, downX = 0, downY = 0, moved = false;
+// (state declared above the pre-warm — see the TDZ note there)
 
 canvas.addEventListener("mousedown", e => {
   const sx = e.offsetX, sy = e.offsetY;
