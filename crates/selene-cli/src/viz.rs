@@ -54,6 +54,63 @@ fn is_low_signal(kind: NodeKind) -> bool {
 /// deterministic) and truncated to `max_nodes`. Links are kept only when *both*
 /// endpoints survived, self-loops dropped, and each `(source, target, kind)`
 /// de-duplicated.
+/// Is this path test/vendored/generated noise — code a first map should not
+/// show? (The consensus default across dependency-cruiser/madge/NDepend/
+/// typescript-graph: third-party and test scaffolding are excluded up front,
+/// with the hidden count surfaced so the map is trusted.) Segment and
+/// filename checks, no regex needed.
+fn is_noise_path(path: &str) -> bool {
+    const NOISE_DIRS: [&str; 22] = [
+        "node_modules",
+        "vendor",
+        "third_party",
+        "dist",
+        "build",
+        "target",
+        "generated",
+        "__generated__",
+        "__tests__",
+        "tests",
+        "test",
+        "spec",
+        "specs",
+        "__mocks__",
+        "mocks",
+        "fixtures",
+        "fixture",
+        "e2e",
+        "examples",
+        "example",
+        "docs",
+        "doc",
+    ];
+    let file = path.rsplit('/').next().unwrap_or(path);
+    if path
+        .split('/')
+        .take(path.split('/').count().saturating_sub(1))
+        .any(|seg| NOISE_DIRS.contains(&seg))
+    {
+        return true;
+    }
+    for pat in [".test.", ".spec.", ".mock.", ".stories.", "_test.", "_spec."] {
+        if file.contains(pat) {
+            return true;
+        }
+    }
+    file.ends_with(".d.ts") || file.ends_with(".min.js")
+}
+
+/// The module (directory-prefix group) of a path at `depth` segments.
+fn module_of(path: &str, depth: usize) -> String {
+    let dir_end = path.rfind('/').unwrap_or(0);
+    let dir = &path[..dir_end];
+    if dir.is_empty() {
+        return "(root)".to_string();
+    }
+    let segs: Vec<&str> = dir.split('/').collect();
+    segs[..depth.min(segs.len())].join("/")
+}
+
 pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
     let total_nodes = nodes.len();
     let total_edges = edges.len();
@@ -66,9 +123,18 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
         *degree.entry(e.target.as_str()).or_default() += 1;
     }
 
+    // --- the noise pass -----------------------------------------------------
+    // Test/vendored/generated code never makes the first map; the count is
+    // shipped so the page can say "N hidden" instead of silently lying.
+    let noise_hidden = nodes
+        .iter()
+        .filter(|n| !is_low_signal(n.kind) && is_noise_path(&n.file_path))
+        .count();
+
     let mut kept: Vec<&Node> = nodes
         .iter()
         .filter(|n| opts.all_kinds || !is_low_signal(n.kind))
+        .filter(|n| !is_noise_path(&n.file_path))
         .collect();
     kept.sort_by(|a, b| {
         let da = degree.get(a.id.as_str()).copied().unwrap_or(0);
@@ -78,6 +144,72 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
             .then_with(|| a.id.cmp(&b.id))
     });
     kept.truncate(max_nodes);
+
+    // --- the module map (the DEFAULT view) ----------------------------------
+    // Aggregate the FULL app graph (all kept-quality nodes, not just the
+    // capped symbol set) into directory-prefix modules — the unit every
+    // surviving code-map tool defaults to. Depth auto-tunes: the deepest
+    // prefix that still lands at a readable module count.
+    let app_nodes: Vec<&Node> = nodes
+        .iter()
+        .filter(|n| !is_low_signal(n.kind) && !is_noise_path(&n.file_path))
+        .collect();
+    let mut mod_depth = 1usize;
+    for d in (1..=4).rev() {
+        let count = app_nodes
+            .iter()
+            .map(|n| module_of(&n.file_path, d))
+            .collect::<HashSet<_>>()
+            .len();
+        if count <= 36 {
+            mod_depth = d;
+            break;
+        }
+    }
+    let mut mod_index: HashMap<String, usize> = HashMap::new();
+    let mut mod_members: Vec<u32> = Vec::new();
+    let mut node_mod: HashMap<&str, usize> = HashMap::new();
+    for n in &app_nodes {
+        let m = module_of(&n.file_path, mod_depth);
+        let idx = *mod_index.entry(m).or_insert_with(|| {
+            mod_members.push(0);
+            mod_members.len() - 1
+        });
+        mod_members[idx] += 1;
+        node_mod.insert(n.id.as_str(), idx);
+    }
+    // Cross-module edge counts (directed) + intra counts, over the FULL edges.
+    let mut pair_counts: HashMap<(usize, usize), u32> = HashMap::new();
+    let mut intra_counts: Vec<u32> = vec![0; mod_members.len()];
+    for e in edges {
+        if let (Some(&sm), Some(&tm)) = (
+            node_mod.get(e.source.as_str()),
+            node_mod.get(e.target.as_str()),
+        ) {
+            if sm == tm {
+                intra_counts[sm] += 1;
+            } else {
+                *pair_counts.entry((sm, tm)).or_default() += 1;
+            }
+        }
+    }
+    let mut mod_labels: Vec<String> = vec![String::new(); mod_members.len()];
+    for (label, idx) in &mod_index {
+        mod_labels[*idx] = label.clone();
+    }
+    let modules_json: Vec<serde_json::Value> = mod_labels
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            serde_json::json!({ "p": p, "n": mod_members[i], "e": intra_counts[i] })
+        })
+        .collect();
+    let mut mod_links_sorted: Vec<((usize, usize), u32)> = pair_counts.into_iter().collect();
+    mod_links_sorted.sort_by_key(|((s, t), _)| (*s, *t)); // deterministic output
+    let mod_links_json: Vec<serde_json::Value> = mod_links_sorted
+        .iter()
+        .map(|((s, t), c)| serde_json::json!({ "s": s, "t": t, "c": c }))
+        .collect();
 
     // id -> dense index into the emitted node array.
     let mut index: HashMap<&str, usize> = HashMap::with_capacity(kept.len());
@@ -94,6 +226,7 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
                 "f": n.file_path,
                 "l": n.start_line,
                 "d": degree.get(n.id.as_str()).copied().unwrap_or(0),
+                "m": node_mod.get(n.id.as_str()).map(|i| *i as i64).unwrap_or(-1),
             })
         })
         .collect();
@@ -117,6 +250,8 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
     let data = serde_json::json!({
         "nodes": nodes_json,
         "links": links_json,
+        "modules": modules_json,
+        "modLinks": mod_links_json,
         "meta": {
             "shown": shown_nodes,
             "total": total_nodes,
@@ -125,6 +260,7 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
             "root": opts.root_label,
             "maxNodes": max_nodes,
             "allKinds": opts.all_kinds,
+            "noiseHidden": noise_hidden,
         }
     });
 
@@ -207,6 +343,7 @@ const TEMPLATE: &str = r####"<!doctype html>
     color: #cdd3e3; border-radius: 7px; padding: 6px 9px; cursor: pointer; font-size: 12px;
   }
   #controls button:hover { background: rgba(255,255,255,0.12); }
+  #controls button.on { background: rgba(110,168,254,0.25); border-color: rgba(110,168,254,0.6); color: #fff; }
 
   #legend { bottom: 12px; left: 12px; padding: 10px 12px; max-height: 46vh; overflow: auto; min-width: 130px; }
   #legend .lt { color: #97a0b8; font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; margin-bottom: 6px; }
@@ -235,16 +372,19 @@ const TEMPLATE: &str = r####"<!doctype html>
     <h1>selene galaxy</h1>
     <div class="sub" id="root"></div>
     <div class="counts" id="counts"></div>
-    <div class="hint">scroll = zoom · drag background = pan · drag node = move · click = inspect</div>
+    <div class="hint" id="hint">click a module = drill in · scroll = zoom · drag = pan/move</div>
   </div>
 
   <div id="controls" class="panel">
-    <input id="search" type="search" placeholder="search symbols…" autocomplete="off" spellcheck="false">
+    <button id="back" title="Back to the module map" style="display:none">← map</button>
+    <button id="mode-map" class="on" title="Architecture map (modules)">Map</button>
+    <button id="mode-sym" title="Every symbol">Symbols</button>
+    <input id="search" type="search" placeholder="search…" autocomplete="off" spellcheck="false">
     <button id="fit" title="Fit graph to view">Fit</button>
   </div>
 
   <div id="legend" class="panel">
-    <div class="lt">Kinds (click to toggle)</div>
+    <div class="lt" id="legend-title">Modules (click to drill in)</div>
     <div id="legend-rows"></div>
   </div>
 
@@ -269,32 +409,68 @@ const COLORS = {
   variable: "#adb5bd", parameter: "#868e96", file: "#7a8296"
 };
 const colorFor = k => COLORS[k] || "#dee2e6";
+const MODULE_PALETTE = ["#6ea8fe","#63e6be","#ffd43b","#da77f2","#ffa94d","#69db7c",
+  "#f783ac","#66d9e8","#a9e34b","#ff8787","#ffe066","#4dabf7","#e599f7","#96f2d7"];
 
 // ---- model ----------------------------------------------------------------
-const nodes = DATA.nodes.map((d, i) => ({
-  n: d.n, k: d.k, f: d.f, l: d.l, deg: d.d || 0,
-  i, x: 0, y: 0, vx: 0, vy: 0, match: false
+const symbols = DATA.nodes.map((d, i) => ({
+  n: d.n, k: d.k, f: d.f, l: d.l, deg: d.d || 0, m: d.m,
+  i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "sym"
 }));
-const links = DATA.links.map(l => ({ s: l.s, t: l.t, k: l.k }));
-const N = nodes.length;
+const symLinks = DATA.links.map(l => ({ s: l.s, t: l.t, k: l.k }));
 
-// seed positions in a disk so the first frame is already visible
-const R0 = 32 * Math.sqrt(Math.max(1, N));
-for (const nd of nodes) {
-  const a = Math.random() * Math.PI * 2, r = R0 * Math.sqrt(Math.random());
-  nd.x = Math.cos(a) * r; nd.y = Math.sin(a) * r;
+const modules = (DATA.modules || []).map((d, i) => ({
+  n: d.p, k: "module", mem: d.n, intra: d.e, deg: 0,
+  i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "mod",
+  color: MODULE_PALETTE[i % MODULE_PALETTE.length]
+}));
+const modLinks = (DATA.modLinks || []).map(l => ({ s: l.s, t: l.t, c: l.c }));
+for (const l of modLinks) { modules[l.s].deg += l.c; modules[l.t].deg += l.c; }
+
+// ---- the current view -----------------------------------------------------
+// "map"      : the architecture map — one node per module, edge width = count.
+// "symbols"  : symbol dots (all, or scoped to one module after a drill-down).
+let view = "map";
+let scopeMod = -1; // module index when drilled in, else -1
+let curNodes = [], curLinks = [];
+let PHYS = {};
+
+function seedDisk(list, spread) {
+  const R0 = spread * Math.sqrt(Math.max(1, list.length));
+  for (const nd of list) {
+    const a = Math.random() * Math.PI * 2, r = R0 * Math.sqrt(Math.random());
+    nd.x = Math.cos(a) * r; nd.y = Math.sin(a) * r; nd.vx = 0; nd.vy = 0;
+  }
 }
 
-// ---- physics constants ----------------------------------------------------
-const REPULSE = 620;          // repulsion strength
-const RANGE = 220;            // repulsion cutoff (world units) == grid cell size
-const RANGE2 = RANGE * RANGE;
-const SPRING = 0.012;         // edge stiffness
-const REST = 46;              // edge rest length
-const GRAVITY = 0.012;        // pull toward origin
-const VELOCITY_DECAY = 0.82;
-const ALPHA_DECAY = 0.018;
-const ALPHA_MIN = 0.004;
+function setView(v, modIdx) {
+  view = v; scopeMod = (modIdx === undefined ? -1 : modIdx);
+  selected = null; hovered = null; document.getElementById("details").classList.remove("show");
+  if (view === "map") {
+    curNodes = modules; curLinks = modLinks;
+    PHYS = { REPULSE: 5200, RANGE: 620, SPRING: 0.02, REST: 170, GRAVITY: 0.03 };
+    seedDisk(curNodes, 60);
+  } else {
+    const scoped = scopeMod >= 0 ? symbols.filter(nd => nd.m === scopeMod) : symbols;
+    const keep = new Set(scoped.map(nd => nd.i));
+    curNodes = scoped;
+    curLinks = symLinks.filter(l => keep.has(l.s) && keep.has(l.t))
+      .map(l => ({ s: l.s, t: l.t, k: l.k }));
+    PHYS = { REPULSE: 620, RANGE: 220, SPRING: 0.012, REST: 46, GRAVITY: 0.012 };
+    seedDisk(curNodes, 32);
+  }
+  byIndex = new Map(curNodes.map(nd => [nd.i, nd]));
+  alpha = 1;
+  for (let i = 0; i < 90; i++) tick();
+  fit();
+  syncChrome();
+}
+
+let byIndex = new Map();
+const nodeAt = i => byIndex.get(i);
+
+// ---- physics --------------------------------------------------------------
+const VELOCITY_DECAY = 0.82, ALPHA_DECAY = 0.018, ALPHA_MIN = 0.004;
 let alpha = 1;
 
 // ---- view / interaction state --------------------------------------------
@@ -305,6 +481,7 @@ let scale = 1, tx = 0, ty = 0;
 let hovered = null, selected = null;
 const hiddenKinds = new Set();
 let searchQ = "";
+let dragNode = null, panning = false, downX = 0, downY = 0, moved = false;
 
 function resize() {
   dpr = window.devicePixelRatio || 1;
@@ -317,54 +494,46 @@ resize();
 
 const toWorldX = sx => (sx - tx) / scale;
 const toWorldY = sy => (sy - ty) / scale;
-const radiusOf = nd => Math.min(22, 3 + Math.sqrt(nd.deg) * 1.5);
+function radiusOf(nd) {
+  if (nd.kind === "mod") return Math.min(46, 10 + Math.sqrt(nd.mem) * 1.9);
+  return Math.min(22, 3 + Math.sqrt(nd.deg) * 1.5);
+}
 
 function fit() {
-  if (!N) return;
+  if (!curNodes.length) return;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-  for (const nd of nodes) {
+  for (const nd of curNodes) {
     if (nd.x < minX) minX = nd.x; if (nd.y < minY) minY = nd.y;
     if (nd.x > maxX) maxX = nd.x; if (nd.y > maxY) maxY = nd.y;
   }
   const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
-  const pad = 60;
+  const pad = view === "map" ? 150 : 60;
   scale = Math.min((cw - pad) / w, (ch - pad) / h);
   scale = Math.max(0.02, Math.min(6, scale));
   tx = cw / 2 - (minX + maxX) / 2 * scale;
   ty = ch / 2 - (minY + maxY) / 2 * scale;
 }
-// Interaction state — declared BEFORE the pre-warm below: tick() reads
-// dragNode, and `let` is temporal-dead-zone'd, so the old placement (with the
-// other listeners) threw "Cannot access 'dragNode' before initialization" on
-// the very first pre-warm tick and left the whole galaxy blank.
-let dragNode = null, panning = false, downX = 0, downY = 0, moved = false;
-
-// give the seeded disk a moment to relax, then frame it
-for (let i = 0; i < 60; i++) tick();
-fit();
 
 // ---- simulation -----------------------------------------------------------
 function tick() {
   alpha += (0 - alpha) * ALPHA_DECAY;
+  const { REPULSE, RANGE, SPRING, REST, GRAVITY } = PHYS;
+  const RANGE2 = RANGE * RANGE;
 
-  // gravity toward origin
-  for (const nd of nodes) {
+  for (const nd of curNodes) {
     nd.vx += -nd.x * GRAVITY * alpha;
     nd.vy += -nd.y * GRAVITY * alpha;
   }
 
-  // repulsion via a uniform grid: each node is pushed by neighbours in its
-  // own cell + the 8 around it, capped so a dense cell can't blow up the frame.
   const grid = new Map();
   const key = (cx, cy) => cx + "," + cy;
-  for (const nd of nodes) {
-    const cx = Math.floor(nd.x / RANGE), cy = Math.floor(nd.y / RANGE);
-    const kk = key(cx, cy);
+  for (const nd of curNodes) {
+    const kk = key(Math.floor(nd.x / RANGE), Math.floor(nd.y / RANGE));
     let bucket = grid.get(kk);
     if (!bucket) { bucket = []; grid.set(kk, bucket); }
     bucket.push(nd);
   }
-  for (const nd of nodes) {
+  for (const nd of curNodes) {
     const cx = Math.floor(nd.x / RANGE), cy = Math.floor(nd.y / RANGE);
     let seen = 0;
     for (let gx = cx - 1; gx <= cx + 1 && seen < 80; gx++) {
@@ -385,18 +554,18 @@ function tick() {
     }
   }
 
-  // springs along edges
-  for (const l of links) {
-    const a = nodes[l.s], b = nodes[l.t];
+  for (const l of curLinks) {
+    const a = nodeAt(l.s), b = nodeAt(l.t);
+    if (!a || !b) continue;
     let dx = b.x - a.x, dy = b.y - a.y;
     let d = Math.sqrt(dx * dx + dy * dy) || 0.01;
-    const f = (d - REST) * SPRING * alpha / d;
+    const rest = view === "map" ? PHYS.REST + radiusOf(a) + radiusOf(b) : PHYS.REST;
+    const f = (d - rest) * PHYS.SPRING * alpha / d;
     a.vx += dx * f; a.vy += dy * f;
     b.vx -= dx * f; b.vy -= dy * f;
   }
 
-  // integrate
-  for (const nd of nodes) {
+  for (const nd of curNodes) {
     if (nd === dragNode) continue;
     nd.vx *= VELOCITY_DECAY; nd.vy *= VELOCITY_DECAY;
     nd.x += nd.vx; nd.y += nd.vy;
@@ -404,46 +573,94 @@ function tick() {
 }
 
 // ---- rendering ------------------------------------------------------------
-function visible(nd) { return !hiddenKinds.has(nd.k); }
+function visible(nd) { return nd.kind === "mod" || !hiddenKinds.has(nd.k); }
+
+function shortLabel(p) {
+  // Keep as many TRAILING segments as fit — "svgenie-website/src/components"
+  // and "src/components" must never collapse to the same "…/src/components".
+  if (p.length <= 32) return p;
+  const segs = p.split("/");
+  let out = segs[segs.length - 1];
+  for (let i = segs.length - 2; i >= 0; i--) {
+    if (segs[i].length + 1 + out.length > 30) break;
+    out = segs[i] + "/" + out;
+  }
+  return out.length < p.length ? "…/" + out : p;
+}
 
 function draw() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
+  const isMap = view === "map";
 
-  // edges
-  ctx.lineWidth = Math.max(0.4, 0.6 * scale);
-  for (const l of links) {
-    const a = nodes[l.s], b = nodes[l.t];
-    if (!visible(a) || !visible(b)) continue;
+  // edges — quadratic bow; on the map, width/opacity carry the pair count.
+  for (const l of curLinks) {
+    const a = nodeAt(l.s), b = nodeAt(l.t);
+    if (!a || !b || !visible(a) || !visible(b)) continue;
+    const ax = a.x * scale + tx, ay = a.y * scale + ty;
+    const bx = b.x * scale + tx, by = b.y * scale + ty;
     const hot = (selected && (a === selected || b === selected)) ||
                 (hovered && (a === hovered || b === hovered));
-    ctx.strokeStyle = hot ? "rgba(150,180,255,0.55)" : "rgba(140,152,190,0.12)";
+    if (isMap) {
+      const w = Math.min(8, 0.8 + Math.sqrt(l.c) * 0.55) * Math.min(1.4, Math.max(0.5, scale));
+      ctx.lineWidth = w;
+      ctx.strokeStyle = hot ? "rgba(150,180,255,0.8)"
+        : "rgba(140,152,190," + Math.min(0.55, 0.10 + Math.log(1 + l.c) * 0.07) + ")";
+    } else {
+      ctx.lineWidth = Math.max(0.4, 0.6 * scale);
+      ctx.strokeStyle = hot ? "rgba(150,180,255,0.55)" : "rgba(140,152,190,0.12)";
+    }
+    const mx = (ax + bx) / 2 - (by - ay) * 0.08;
+    const my = (ay + by) / 2 + (bx - ax) * 0.08;
     ctx.beginPath();
-    ctx.moveTo(a.x * scale + tx, a.y * scale + ty);
-    ctx.lineTo(b.x * scale + tx, b.y * scale + ty);
+    ctx.moveTo(ax, ay);
+    ctx.quadraticCurveTo(mx, my, bx, by);
     ctx.stroke();
   }
 
-  // nodes
   const dim = searchQ.length > 0;
-  for (const nd of nodes) {
+  for (const nd of curNodes) {
     if (!visible(nd)) continue;
     const sx = nd.x * scale + tx, sy = nd.y * scale + ty;
     const r = Math.max(1.4, radiusOf(nd) * scale);
     const active = nd === selected || nd === hovered || nd.match;
     ctx.globalAlpha = dim && !nd.match && nd !== selected ? 0.18 : 1;
-    ctx.fillStyle = colorFor(nd.k);
+    ctx.fillStyle = nd.kind === "mod" ? nd.color : colorFor(nd.k);
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
     ctx.fill();
+    if (nd.kind === "mod") {
+      ctx.globalAlpha *= 0.35;
+      ctx.lineWidth = Math.max(1.5, r * 0.16);
+      ctx.strokeStyle = nd.color;
+      ctx.beginPath();
+      ctx.arc(sx, sy, r + Math.max(2, r * 0.18), 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = dim && !nd.match && nd !== selected ? 0.18 : 1;
+    }
     if (active) {
       ctx.globalAlpha = 1;
       ctx.lineWidth = 2;
       ctx.strokeStyle = nd === selected ? "#ffffff" : "rgba(255,255,255,0.7)";
+      ctx.beginPath();
+      ctx.arc(sx, sy, r, 0, Math.PI * 2);
       ctx.stroke();
     }
-    // label when the node is big on screen, or is the focus of attention
-    if (r > 9 || active) {
+    // labels: always on the map; on symbols only when big on screen or active.
+    if (nd.kind === "mod") {
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = "rgba(240,243,250,0.95)";
+      ctx.font = "600 " + Math.max(10, Math.min(14, 11 * Math.sqrt(scale))) +
+        "px -apple-system, Segoe UI, Roboto, sans-serif";
+      const label = shortLabel(nd.n);
+      const tw = ctx.measureText(label).width;
+      ctx.fillText(label, sx - tw / 2, sy + r + 14);
+      ctx.fillStyle = "rgba(151,160,184,0.9)";
+      ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif";
+      const sub = nd.mem + " symbols";
+      const sw = ctx.measureText(sub).width;
+      ctx.fillText(sub, sx - sw / 2, sy + r + 26);
+    } else if (r > 9 || active) {
       ctx.globalAlpha = 1;
       ctx.fillStyle = "rgba(232,235,243,0.92)";
       ctx.font = "11px -apple-system, Segoe UI, Roboto, sans-serif";
@@ -463,7 +680,7 @@ function reheat(v) { alpha = Math.max(alpha, v || 0.3); }
 // ---- picking --------------------------------------------------------------
 function pick(sx, sy) {
   let best = null, bestD = Infinity;
-  for (const nd of nodes) {
+  for (const nd of curNodes) {
     if (!visible(nd)) continue;
     const nx = nd.x * scale + tx, ny = nd.y * scale + ty;
     const r = Math.max(5, radiusOf(nd) * scale + 3);
@@ -474,8 +691,6 @@ function pick(sx, sy) {
 }
 
 // ---- interaction ----------------------------------------------------------
-// (state declared above the pre-warm — see the TDZ note there)
-
 canvas.addEventListener("mousedown", e => {
   const sx = e.offsetX, sy = e.offsetY;
   downX = sx; downY = sy; moved = false;
@@ -497,8 +712,10 @@ window.addEventListener("mousemove", e => {
   }
 });
 window.addEventListener("mouseup", e => {
-  if (dragNode && !moved) select(dragNode);
-  else if (!moved && !dragNode) select(null);
+  if (dragNode && !moved) {
+    if (dragNode.kind === "mod") { setView("symbols", dragNode.i); }
+    else select(dragNode);
+  } else if (!moved && !dragNode) select(null);
   dragNode = null; panning = false; canvas.classList.remove("grabbing");
 });
 canvas.addEventListener("wheel", e => {
@@ -517,52 +734,91 @@ function select(nd) {
   selected = nd;
   if (!nd) { dEl.classList.remove("show"); return; }
   const kEl = document.getElementById("d-kind");
-  kEl.textContent = nd.k; kEl.style.background = colorFor(nd.k);
+  kEl.textContent = nd.k; kEl.style.background = nd.kind === "mod" ? nd.color : colorFor(nd.k);
   document.getElementById("d-name").textContent = nd.n;
-  document.getElementById("d-file").textContent = nd.f + ":" + nd.l;
-  document.getElementById("d-meta").innerHTML =
-    "degree <b>" + nd.deg + "</b> · " +
-    links.filter(l => nodes[l.s] === nd).length + " out · " +
-    links.filter(l => nodes[l.t] === nd).length + " in";
+  document.getElementById("d-file").textContent = nd.kind === "mod" ? "" : nd.f + ":" + nd.l;
+  document.getElementById("d-meta").innerHTML = nd.kind === "mod"
+    ? "<b>" + nd.mem + "</b> symbols · <b>" + nd.intra + "</b> internal edges"
+    : "degree <b>" + nd.deg + "</b> · " +
+      curLinks.filter(l => nodeAt(l.s) === nd).length + " out · " +
+      curLinks.filter(l => nodeAt(l.t) === nd).length + " in";
   dEl.classList.add("show");
   reheat(0.15);
 }
 document.getElementById("details-close").addEventListener("click", () => select(null));
 
-// ---- legend ---------------------------------------------------------------
-(function buildLegend() {
-  const counts = {};
-  for (const nd of nodes) counts[nd.k] = (counts[nd.k] || 0) + 1;
-  const kinds = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+// ---- legend / chrome ------------------------------------------------------
+function syncChrome() {
   const rows = document.getElementById("legend-rows");
-  for (const k of kinds) {
-    const row = document.createElement("div");
-    row.className = "lrow";
-    row.innerHTML =
-      '<span class="sw" style="background:' + colorFor(k) + '"></span>' +
-      '<span class="ln">' + k + '</span><span class="lc">' + counts[k] + '</span>';
-    row.addEventListener("click", () => {
-      if (hiddenKinds.has(k)) hiddenKinds.delete(k); else hiddenKinds.add(k);
-      row.classList.toggle("off");
-    });
-    rows.appendChild(row);
+  rows.innerHTML = "";
+  const title = document.getElementById("legend-title");
+  const back = document.getElementById("back");
+  const meta = DATA.meta || {};
+  const noise = meta.noiseHidden
+    ? " · <b>" + meta.noiseHidden + "</b> test/vendored hidden" : "";
+
+  document.getElementById("mode-map").classList.toggle("on", view === "map");
+  document.getElementById("mode-sym").classList.toggle("on", view === "symbols" && scopeMod < 0);
+  back.style.display = scopeMod >= 0 ? "" : "none";
+
+  if (view === "map") {
+    title.textContent = "Modules (click to drill in)";
+    document.getElementById("hint").textContent =
+      "click a module = drill in · scroll = zoom · drag = pan/move";
+    document.getElementById("counts").innerHTML =
+      "<b>" + modules.length + "</b> modules · <b>" + modLinks.length + "</b> dependencies · <b>" +
+      (meta.total || symbols.length) + "</b> symbols" + noise;
+    const sorted = modules.slice().sort((a, b) => b.mem - a.mem);
+    for (const m of sorted) {
+      const row = document.createElement("div");
+      row.className = "lrow";
+      row.innerHTML =
+        '<span class="sw" style="background:' + m.color + '"></span>' +
+        '<span class="ln">' + shortLabel(m.n) + '</span><span class="lc">' + m.mem + '</span>';
+      row.addEventListener("click", () => setView("symbols", m.i));
+      rows.appendChild(row);
+    }
+  } else {
+    title.textContent = "Kinds (click to toggle)";
+    document.getElementById("hint").textContent =
+      "click = inspect · scroll = zoom · drag = pan/move";
+    const scopeLabel = scopeMod >= 0 ? modules[scopeMod].n + " · " : "";
+    document.getElementById("counts").innerHTML =
+      scopeLabel + "showing <b>" + curNodes.length + "</b> symbols · <b>" +
+      curLinks.length + "</b> edges" + noise;
+    const counts = {};
+    for (const nd of curNodes) counts[nd.k] = (counts[nd.k] || 0) + 1;
+    const kinds = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+    for (const k of kinds) {
+      const row = document.createElement("div");
+      row.className = "lrow";
+      if (hiddenKinds.has(k)) row.classList.add("off");
+      row.innerHTML =
+        '<span class="sw" style="background:' + colorFor(k) + '"></span>' +
+        '<span class="ln">' + k + '</span><span class="lc">' + counts[k] + '</span>';
+      row.addEventListener("click", () => {
+        if (hiddenKinds.has(k)) hiddenKinds.delete(k); else hiddenKinds.add(k);
+        row.classList.toggle("off");
+      });
+      rows.appendChild(row);
+    }
   }
-})();
+}
 
 // ---- search ---------------------------------------------------------------
 document.getElementById("search").addEventListener("input", e => {
   searchQ = e.target.value.trim().toLowerCase();
-  for (const nd of nodes) nd.match = searchQ.length > 0 && nd.n.toLowerCase().includes(searchQ);
+  for (const nd of curNodes) nd.match = searchQ.length > 0 && nd.n.toLowerCase().includes(searchQ);
 });
 document.getElementById("fit").addEventListener("click", () => fit());
+document.getElementById("mode-map").addEventListener("click", () => setView("map"));
+document.getElementById("mode-sym").addEventListener("click", () => setView("symbols"));
+document.getElementById("back").addEventListener("click", () => setView("map"));
 
 // ---- HUD ------------------------------------------------------------------
-const meta = DATA.meta || {};
-document.getElementById("root").textContent = meta.root || "";
-document.getElementById("counts").innerHTML =
-  "showing <b>" + (meta.shown || N) + "</b> of <b>" + (meta.total || N) + "</b> nodes · <b>" +
-  (meta.edges || links.length) + "</b> of <b>" + (meta.totalEdges || links.length) + "</b> edges";
+document.getElementById("root").textContent = (DATA.meta || {}).root || "";
 
+setView(modules.length > 1 ? "map" : "symbols");
 frame();
 </script>
 </body>
