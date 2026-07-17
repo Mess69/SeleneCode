@@ -14,7 +14,7 @@ edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 authors = ["SeleneCode contributors"]
-repository = "https://github.com/taaabme/selenecode"
+repository = "https://github.com/Mess69/SeleneCode"
 
 [workspace.dependencies]
 # --- Intra-workspace crates (path deps) ---

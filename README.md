@@ -41,7 +41,7 @@ The full optimization history — every measured (and disproved) theory — is i
 
 ```bash
 # 1. ONCE PER MACHINE — no Rust, no Node, nothing to compile:
-curl -fsSL https://raw.githubusercontent.com/taaabme/selenecode/main/scripts/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/Mess69/SeleneCode/main/scripts/install.sh | sh
 #    (grabs the prebuilt static binary for your OS/arch, checksum-verified;
 #     falls back to building from source inside a checkout. `selene upgrade`
 #     updates it in place later, `selene upgrade --check` just looks.)

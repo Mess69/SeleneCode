@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # SeleneCode installer.
 #
-#   curl -fsSL https://raw.githubusercontent.com/taaabme/selenecode/main/scripts/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/Mess69/SeleneCode/main/scripts/install.sh | sh
 #
 # Downloads the prebuilt static binary for this platform from GitHub Releases
 # (checksum-verified) and installs it as `selene` on your PATH. Falls back to
@@ -10,7 +10,7 @@
 #
 #   SELENE_VERSION=v0.2.0   pin a version (default: latest)
 #   SELENE_BIN_DIR=…        install dir (default: ~/.local/bin)
-#   SELENE_GITHUB_REPO=…    owner/name override (default: taaabme/selenecode)
+#   SELENE_GITHUB_REPO=…    owner/name override (default: Mess69/SeleneCode)
 #   --uninstall             remove the installed binary
 #
 # Once installed, `selene upgrade` updates in place; `selene upgrade --check`
@@ -18,7 +18,7 @@
 # asset ships a .sha256 next to it.
 set -euo pipefail
 
-REPO="${SELENE_GITHUB_REPO:-taaabme/selenecode}"
+REPO="${SELENE_GITHUB_REPO:-Mess69/SeleneCode}"
 BIN_DIR="${SELENE_BIN_DIR:-$HOME/.local/bin}"
 
 if [ "${1:-}" = "--uninstall" ]; then
