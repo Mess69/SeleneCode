@@ -16,51 +16,109 @@ graph-native stack: a single static binary, natively-linked tree-sitter, Surreal
 
 ---
 
-## Status (2026-07-15)
+## Status (2026-07-17)
 
-**It works, and it is fast.** `selene index` builds the graph; `selene serve --mcp` answers flow
-questions over MCP; the answer includes the call-path spine, verbatim numbered source, and a blast
-radius — enough to answer without opening a file.
+**Usable end-to-end on real projects**: `selene init` builds the graph and installs git hooks that
+keep it fresh; `selene install` wires the MCP server into your agents; the CLI answers
+callers/callees/impact/explore questions directly; `selene viz` renders the graph as an interactive
+HTML galaxy.
 
 | | |
 |---|---|
-| **Indexing** | 12 languages (TS, JS, Python, Rust, Go, Java, Kotlin, C, C++, PHP, Ruby, …), deterministic |
-| **Speed** | django (931 files, 19k nodes): **index ~11 s, explore ~1–2 s**. **1.4–1.9× of the CodeGraph TS build** — see [the benchmark](docs/benchmarks/2026-07-14-rust-vs-ts-speed.md) |
-| **`explore`** | answers flow questions correctly on small/medium repos; the milestone gate (`selene-mcp/tests/dogfood_gate.rs`) drives the real binary end-to-end |
-| **Large repos** | VS Code (349k nodes): indexing works; `explore` is **~2 s steady-state** (a persistent `serve` pays a ~9 s warm-up once per session). One open limitation — semantic relevance when the query's words diverge from the code's ([details](docs/benchmarks/2026-07-phase5-dogfood.md)) |
-| **Not built yet** | the CLI beyond `index`/`serve`/`status` (`sync`), the file watcher, the daemon, and `selene install` (MCP config is wired by hand today) |
+| **Indexing** | 12 languages (TS/TSX, JS/JSX, Python, Rust, Go, Java, Kotlin, C, C++, C#, PHP, Ruby), deterministic |
+| **Speed vs CodeGraph (TS)** | **faster on every measured corpus**: codegraph-src 0.77×, selene-crates 0.77×, django (3 011 files) 0.96× — best-of-2, cold, same machine |
+| **RAM** | codegraph-src **467 MB** (parity with TS), selene-crates **~600 MB** (1.9× lighter than TS), django **2.0 GiB** (TS: 0.6 GiB — the remaining gap, tracked in the [roadmap](docs/plans/2026-07-16-optimization-roadmap.md)) |
+| **Freshness** | `selene sync` re-indexes only touched files; git hooks (installed by `init`) sync after commit/merge/checkout; the daemon watches while an agent is connected |
+| **Correctness gates** | TS↔Rust resolution parity at **tolerance 0** (edge identity), dispatch-coverage on whole flows, 13 byte-pinned extraction snapshots |
+| **Known limits** | VS Code-scale (250k+ nodes) is indexable but not yet re-benchmarked after the latest optimizations; semantic relevance when a query's words diverge from the code's ([details](docs/benchmarks/2026-07-phase5-dogfood.md), `selene embed` is the optional answer) |
 
-Honest limitations and the roadmap are in [`RESUME.md`](RESUME.md).
+The full optimization history — every measured (and disproved) theory — is in
+[`docs/plans/2026-07-16-optimization-roadmap.md`](docs/plans/2026-07-16-optimization-roadmap.md).
 
 ---
 
 ## Quick start
 
 ```bash
-# 1. Build the release binary (the debug build is ~2.4× slower — always use --release)
+# 1. Build the release binary (the debug build is much slower — always --release)
 cargo build --release -p selene
+BIN="$(pwd)/target/release/selene"
 
-# 2. Index a project (writes ./.selene/)
-./target/release/selene index /path/to/your/repo
-
-#    Per-phase timings on stderr:
-RUST_LOG=selene::index=info ./target/release/selene index /path/to/your/repo
+# 2. Initialize a project: builds ./.selene/ AND installs the git hooks that
+#    keep the index fresh after commit / merge / checkout
+cd /path/to/your/repo
+$BIN init                 # add --no-hooks to skip the git hooks
 
 # 3. See what's in the graph
-./target/release/selene status /path/to/your/repo
-#   /path/to/your/repo
-#     files:  931
-#     nodes:  19061
-#     edges:  46946
-#     languages: python (931)
-#     node kinds: function 8402, method 3211, …
+$BIN status
+#   files: 931   nodes: 19061   edges: 46946   languages: python (931)
 ```
 
-### Wire it into Claude Code (MCP)
+After that, the index maintains itself: the git hooks run `selene sync` on commit/merge/checkout,
+and the daemon re-syncs on file changes while an agent is connected. Manual refresh anytime:
 
-Until `selene install` lands, add the server by hand. In your project's `.mcp.json` (or Claude
-Code's MCP config), point at the **absolute path** of the binary — a static binary is not guaranteed
-on `PATH`, and a config naming an unrunnable command fails silently:
+```bash
+$BIN sync                 # incremental — only touched files
+$BIN index                # full rebuild from scratch
+```
+
+### Ask questions from the terminal
+
+```bash
+$BIN explore "how does a request become a database write"   # flow answer: spine + numbered source
+$BIN query UserSerializer          # find symbols by name
+$BIN node validate_password        # one symbol: source + caller/callee trail
+$BIN callers save                  # who calls this?
+$BIN callees dispatch              # what does this call?
+$BIN impact AuthMiddleware         # blast radius if this changes
+$BIN affected src/db/models.py     # files whose graph depends on these files
+```
+
+---
+
+## The visual mode — `selene viz`
+
+Render the whole code graph as a **self-contained interactive HTML "galaxy"** (zero dependencies,
+one file, works offline):
+
+```bash
+$BIN viz --open                    # writes ./selene-graph.html and opens it
+```
+
+Options:
+
+| flag | effect |
+|---|---|
+| `-o, --out <FILE>` | output path (default `./selene-graph.html`) |
+| `--max-nodes <N>` | cap the rendered nodes, most-connected first (default 2000 — keeps the page light on big repos) |
+| `--all-kinds` | also render the low-signal kinds (file / import / variable / parameter) that are dropped by default |
+| `-p, --path <DIR>` | project directory (default `.`) |
+
+The page is a force-directed graph: pan/zoom, hover for a symbol's details, click to pin its
+neighborhood. Colors are node kinds; edge types are the 12 relationship kinds (calls, imports,
+extends, …). For a first look at an unfamiliar codebase, `viz --open` is the fastest map you can get.
+
+---
+
+## Wire it into your agents (MCP)
+
+One command — the installer detects the agents on your machine and writes their MCP config
+(Claude Code, Cursor, Codex, opencode, hermes, …):
+
+```bash
+$BIN install                       # default: Claude Code, project-local config
+$BIN install -t auto               # every agent detected on this machine
+$BIN install -t claude,cursor      # explicit list
+$BIN install --print-config        # show the JSON it would write, touch nothing
+$BIN uninstall                     # remove it again
+```
+
+Then ask the agent a flow question — it calls `selene_explore` and answers from the graph instead
+of reading files. (`selene serve --mcp` is the underlying server; agents launch it themselves, you
+never run it by hand.)
+
+<details>
+<summary>Manual MCP config (if you prefer to wire it yourself)</summary>
 
 ```json
 {
@@ -72,47 +130,57 @@ on `PATH`, and a config naming an unrunnable command fails silently:
   }
 }
 ```
+Use the **absolute path** of the binary — a config naming an unrunnable command fails silently.
+</details>
 
-Then ask the agent a flow question. It calls `selene_explore` and answers from the graph.
-
-### Try it directly over MCP stdio
+### Optional: semantic search
 
 ```bash
-./scripts/ask.sh "how does an unresolved reference become a graph edge"
+cargo build --release -p selene --features semantic-search
+$BIN embed        # embeds every symbol locally (ONNX, offline) — `keypress` then finds `keybinding`
 ```
 
-`ask.sh` drives the real binary over real MCP against a dogfood copy — the only evidence that counts
-here (unit tests pass on planted fixtures while the real answer can be wrong; run the binary).
+The lexical index works without it; `embed` adds meaning-based recall on top.
+
+---
+
+## Tuning (all optional)
+
+| env var | effect |
+|---|---|
+| `RUST_LOG=info` | per-phase timings + profiling counters on stderr (`RUST_LOG=selene::index=info` for just the index lines) |
+| `SELENE_SYNC_NEVER=1` | skip per-commit WAL fsyncs during `index` (~5–10% faster). Crash-safe on clean exit; a mid-index crash just means re-running `index` |
+| `SELENE_PARSE_WORKERS=n` | parse-pool size (default: cores−1, capped at 8) |
+| `SURREAL_ROCKSDB_BLOCK_CACHE_SIZE` (bytes) | RocksDB cache+memtable budget. Default **768 MiB** — measured cliff: below ~768 MiB the memtable charges starve the read cache and the run slows 3× |
+| `SURREAL_ROCKSDB_WRITE_BUFFER_SIZE` / `_MAX_WRITE_BUFFER_NUMBER` | write buffers (default 128 MiB × 4) |
+
+These `SURREAL_*` variables work in the embedded engine because of the one-line vendored SDK patch
+in [`vendor/surrealdb`](vendor/surrealdb) — the stock crates.io SDK silently ignores them (see the
+`SELENE PATCH` note in `vendor/surrealdb/src/engine/local/native.rs`).
+
+Housekeeping: `selene daemon` lists/manages running daemons, `selene unlock` clears a stale
+app-level lock, `selene uninit` removes `.selene/` from a project, `selene telemetry status|on|off`.
 
 ---
 
 ## How it uses the stack
 
 SeleneCode is not a transpile of the TypeScript build — it leans on what a Rust + SurrealDB + Tokio
-stack does that TS + SQLite could not. Every number below is measured (see `docs/benchmarks/`):
+stack does that TS + SQLite could not. Every number below is measured (see `docs/benchmarks/` and
+the [roadmap addenda](docs/plans/2026-07-16-optimization-roadmap.md)):
 
 - **Native tree-sitter, no WASM.** Grammars are linked in; the WASM worker pool / parser-reset / OOM-
-  retry layer is deleted, not ported. Parsing 931 Python files is **0.27 s** — 0.4 % of a run.
-- **Tokio-concurrent writes.** The store is written with `buffer_unordered` / bounded `try_join_all`,
-  not one query at a time. `insert_nodes` **3.4 s → 0.8 s**, `insert_edges` **1.5 s → 0.6 s**.
-  SurrealDB reaches 300k ops/s with 128 concurrent clients; a serial caller sees none of it.
-- **FTS index, not `CONTAINS` scans.** SurrealDB's docs are explicit that `CONTAINS` never uses an
-  index. On a 349k-node repo, routing candidate generation through the FULLTEXT index (built
-  `CONCURRENTLY`, overlapped with resolution via `tokio::join!`) instead of unindexed substring scans
-  took `explore` **35.6 s → 6.5 s**.
-- **In-memory resolution.** The resolver's symbol table is loaded once (`all_nodes`) rather than
-  queried per reference — 32,524 blocking point-lookups became one 127 ms scan. And the unresolved-
-  reference queue is kept in memory instead of round-tripped through the disk between two phases of
-  the same process.
-- **`allocator` feature (mimalloc).** SurrealDB's own embedded-Rust guidance; not on by default, and
-  a `default-features = false` dependency never gets it. Worth ~10 %.
-
-The full arc — **61 s → 11 s on django in one day, 10.7× behind TS → 1.9×** — is in
-[`docs/benchmarks/2026-07-14-rust-vs-ts-speed.md`](docs/benchmarks/2026-07-14-rust-vs-ts-speed.md).
-
-The next stack lever, scoped and native: **vector search** (SurrealDB HNSW / cosine KNN) for
-semantic relevance — bridging a query's words to the code's by meaning, which prefix/FTS matching
-cannot ([why](docs/benchmarks/2026-07-phase5-dogfood.md)).
+  retry layer is deleted, not ported.
+- **In-memory resolution over an eager index.** The symbol table is one scan, groups are handed out
+  as shared slices (one refcount bump — was 59 M Arc clones per medium run), and the reference queue
+  never round-trips through disk.
+- **ASCII regex engines for receiver inference.** Unicode `\w`/`\b` DFA tables were ~750 MiB of peak
+  RSS (≈524 KiB per compiled pattern); the ASCII rewrite matches the original JS semantics and
+  collapsed them — and hoisting pattern compilation out of the per-line scan took django's
+  name-match from 46 s to 3 s of CPU.
+- **Tokio-concurrent, transaction-batched writes** with conflict-retry on every bulk writer, FTS
+  built `CONCURRENTLY` and overlapped with resolution.
+- **mimalloc** (SurrealDB's `allocator` feature) + laptop-sized RocksDB budgets by default.
 
 ---
 
@@ -122,17 +190,18 @@ A Cargo workspace of focused crates (see the PRD, §3):
 
 | crate | role | state |
 |---|---|---|
-| `selene-core` | shared types: `Node`/`Edge` (22 kinds / 12 kinds), `Provenance`, the wire contract | ✅ |
+| `selene-core` | shared types: `Node`/`Edge` (22 kinds / 12 kinds), `Language`, the wire contract | ✅ |
 | `selene-db` | `GraphStore` trait + embedded **SurrealDB** (RocksDB on disk) + FTS | ✅ |
 | `selene-extract` | native tree-sitter extraction, Rayon fan-out, ordered commit, incremental re-index | ✅ |
 | `selene-resolve` | imports, name matching, 11 framework resolvers, dynamic-dispatch synthesis | ✅ |
 | `selene-graph` | traversal (callers/callees/impact/path) + `QueryManager` | ✅ |
 | `selene-context` | `ContextBuilder` — the relevance pipeline, the Flow spine, the output the agent reads | ✅ |
 | `selene-mcp` | MCP server (rmcp): tools, `isError` discipline, input caps, server-instructions | ✅ |
-| `selene-sync` | file watcher (notify) + git-hook helpers | ⬜ stub |
-| `selene-installer` | multi-agent installer: MCP config writers | ⬜ stub |
-| `selene-cli` | CLI (clap), daemon, telemetry, upgrade | ⬜ stub |
-| `selene` | the single binary (`index`, `serve`, `status`) | ✅ |
+| `selene-sync` | file watcher (notify) + git-hook helpers | ✅ |
+| `selene-installer` | multi-agent installer: MCP config writers | ✅ |
+| `selene-cli` | CLI (clap), daemon, viz, telemetry, upgrade | ✅ |
+| `selene` | the single binary | ✅ |
+| `vendor/surrealdb` | crates.io SDK + one line: embedded engine reads `SURREAL_*` env config | ✅ |
 
 **Decision (2026-07-12):** SurrealQL-max — traversal is pushed into SurrealQL (recursive
 `.{1..n}(->calls->fn)`, shortest-path); the permissive fallback backend was dropped. `selene-db` is
@@ -161,6 +230,7 @@ The toolchain is pinned in `rust-toolchain.toml`. `rustfmt.toml` sets `max_width
 
 - **How to resume / current state** → [`RESUME.md`](RESUME.md) — the single handoff doc.
 - **Working guide for contributors and agents** → [`CLAUDE.md`](CLAUDE.md).
+- **Optimization roadmap + measured history** → [`docs/plans/2026-07-16-optimization-roadmap.md`](docs/plans/2026-07-16-optimization-roadmap.md).
 - **Benchmarks** → [`docs/benchmarks/`](docs/benchmarks/) — the Rust-vs-TS speed arc, the write-path
   findings, the milestone gate.
 - **PRD (target architecture)** → [`docs/specs/2026-07-11-rust-graph-db-migration-design.md`](docs/specs/2026-07-11-rust-graph-db-migration-design.md).
@@ -180,4 +250,5 @@ their metadata.
 
 Intended: **MIT OR Apache-2.0** (permissive / OSI). SurrealDB (BSL 1.1 — free to embed) sits behind
 the `GraphStore` trait; the previously-planned permissive fallback backend was dropped when the
-SurrealQL-max decision was ratified.
+SurrealQL-max decision was ratified. `vendor/surrealdb` retains SurrealDB's own license (see
+`vendor/surrealdb/LICENSE`).
