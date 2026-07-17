@@ -247,10 +247,6 @@ async fn resolve_pending<S: GraphStore + Clone>(
         ctx
     };
 
-    let total = match &in_memory {
-        Some(p) => p.len(),
-        None => store.unresolved_pending_count().await? as usize,
-    };
     let mut stats = ResolutionStats::default();
     let mut resolver = ReferenceResolver::new(ctx);
     let mut done = 0usize;
@@ -333,6 +329,12 @@ async fn resolve_pending<S: GraphStore + Clone>(
         }
         None => store.unresolved_pending_batch(0, usize::MAX).await?,
     };
+    // Counted AFTER the framework-emitted refs are folded in: the old `total`
+    // was the caller's in-memory count alone, so the #760 decided-vs-pending
+    // check fired on EVERY repo with a detected framework (decided exceeded it
+    // by exactly `framework_added` — +22 on a 235-file project, +840 on
+    // django) while the resolution itself was correct.
+    let total = pending.len();
     ms_fetch += t.elapsed().as_millis();
 
     for batch in pending.chunks(RESOLVE_BATCH) {
@@ -461,8 +463,12 @@ async fn resolve_pending<S: GraphStore + Clone>(
             store.insert_edges(chunk).await?;
         }
         // These refs were already drained from the pending set by the batch loop (they
-        // resolved to nothing THEN and were marked failed); the edge is the whole output.
+        // resolved to nothing THEN and were counted UNRESOLVED); the conformance hit
+        // MOVES them to resolved. Adding without subtracting double-counted every
+        // conformance hit and tripped the #760 decided-vs-pending check on any repo
+        // with deferred chains (+22 on a 235-file project, +840 on django).
         stats.resolved += conformance.len();
+        stats.unresolved = stats.unresolved.saturating_sub(conformance.len());
         *stats
             .by_method
             .entry("conformance".to_string())
