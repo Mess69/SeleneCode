@@ -60,7 +60,9 @@ async fn a_missing_symbol_is_none_and_the_guidance_never_says_read() {
     );
 
     let guidance = node_not_found("Nope.gone").to_lowercase();
-    assert!(guidance.contains("selene_explore"), "it routes to a TOOL");
+    // Surface-neutral spelling: "the `explore` tool" is `selene explore` on the
+    // CLI and `selene_explore` over MCP — the guidance routes to it either way.
+    assert!(guidance.contains("`explore` tool"), "it routes to a TOOL");
     assert!(
         !guidance.contains("read the file") && !guidance.contains("open the file"),
         "even the miss must not send the agent to Read: {guidance}"
