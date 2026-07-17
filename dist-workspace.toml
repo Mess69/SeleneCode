@@ -1,0 +1,40 @@
+# Release pipeline config for `dist` (axodotdev/cargo-dist ≥ 0.32) — the tool
+# uv and atuin ship with. `dist generate` regenerates .github/workflows/release.yml
+# from this file; `dist plan` dry-runs the release locally.
+#
+# Publishing flow once the repo is on GitHub (set the real slug in
+# [workspace.package] repository first):
+#   git tag v0.1.0 && git push --tags
+# CI then builds every target natively (no cross-compilation — RocksDB's C++
+# build breaks under musl/zig cross; SurrealDB itself ships glibc-only the same
+# way), uploads {selene-<triple>.tar.gz, *.sha256, dist-manifest.json} and the
+# generated `selene-installer.sh`, so `curl … | sh` and `selene upgrade` work.
+
+[workspace]
+members = ["cargo:crates/selene"]
+
+[dist]
+# The dist version this config was written against (CI pins it).
+cargo-dist-version = "0.32.0"
+# CI backend
+ci = "github"
+# The one-liner installer published with every release.
+installers = ["shell"]
+# Checksums: per-asset .sha256 (what `selene upgrade`/binstall verify).
+checksum = "sha256"
+# Native builds on native runners — NO musl, NO cross (RocksDB C++ dep).
+targets = [
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-unknown-linux-gnu",
+    "aarch64-unknown-linux-gnu",
+]
+# Free GA arm64 runners: build aarch64-linux natively instead of cross-compiling.
+[dist.github-custom-runners]
+aarch64-unknown-linux-gnu = "ubuntu-24.04-arm"
+x86_64-unknown-linux-gnu = "ubuntu-22.04"
+
+# librocksdb-sys build needs a C++ toolchain + cmake on the Linux runners.
+[dist.dependencies.apt]
+cmake = '*'
+clang = '*'

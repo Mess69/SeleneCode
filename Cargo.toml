@@ -14,7 +14,7 @@ edition = "2024"
 rust-version = "1.97"
 license = "MIT OR Apache-2.0"
 authors = ["SeleneCode contributors"]
-repository = "https://github.com/CHANGE-ME/SeleneCode"
+repository = "https://github.com/taaabme/selenecode"
 
 [workspace.dependencies]
 # --- Intra-workspace crates (path deps) ---
@@ -37,6 +37,9 @@ selene-cli       = { path = "crates/selene-cli" }
 # are pinned exact (=x.y.z) below (Phase 2 Task 1), adopted by selene-extract.
 serde        = { version = "1", features = ["derive"] }
 serde_json   = { version = "1", features = ["preserve_order"] }
+# `selene upgrade` — self-update from GitHub Releases (the `uv self update`
+# engine; reads the dist install receipt, verifies sha256, replaces in place).
+axoupdater   = { version = "0.10", default-features = false, features = ["github_releases"] }
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"

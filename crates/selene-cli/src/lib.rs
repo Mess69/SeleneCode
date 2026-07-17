@@ -84,7 +84,11 @@ pub async fn run(cli: Cli) -> ExitCode {
 
         // -- misc --
         Command::Telemetry { .. } => cmd::not_yet("telemetry", "Phase 6 Task 21"),
-        Command::Upgrade { .. } => cmd::not_yet("upgrade", "Phase 8"),
+        Command::Upgrade {
+            version,
+            check,
+            force,
+        } => cmd::upgrade(version, check, force).await,
         Command::Version => cmd::version(),
     };
     ExitCode::from(outcome)

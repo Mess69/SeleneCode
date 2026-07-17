@@ -884,7 +884,7 @@ pub async fn install(targets: Vec<String>, location: String, print_config: bool)
     // gets `init` (index + git sync hooks) before the MCP config is written.
     // Without this, the first agent question hits "not indexed" guidance and
     // the user has to come back for a second command nobody told them about.
-    if !std::path::Path::new(".selene").exists() {
+    if !Path::new(".selene").exists() {
         eprintln!("no index here yet — running `selene init` first…");
         if let Outcome::Failure = init(PathBuf::from("."), false, false).await {
             eprintln!("selene install: init failed — MCP config not written.");
@@ -980,6 +980,122 @@ fn report_targets(cmd: &str, results: &[selene_installer::TargetResult]) {
 pub fn version() -> Outcome {
     println!("selene {}", env!("CARGO_PKG_VERSION"));
     Outcome::Ok
+}
+
+/// `selene upgrade [version] [--check] [--force]` — self-update from GitHub
+/// Releases (axoupdater, the `uv self update` engine).
+///
+/// Two install identities, detected structurally:
+/// - **Installer/receipt install** (`curl … selene-installer.sh | sh`): the dist
+///   receipt says where the binary lives and which release channel it came
+///   from — upgrade replaces it in place, checksum-verified.
+/// - **No receipt** (a source build, `cargo build`): upgrading in place would
+///   overwrite a build product the user compiled themselves — refuse with the
+///   exact commands instead. `--check` still works via the repo release feed.
+pub async fn upgrade(version: Option<String>, check: bool, force: bool) -> Outcome {
+    use axoupdater::{AxoUpdater, ReleaseSource, ReleaseSourceType, UpdateRequest, Version};
+
+    let current = env!("CARGO_PKG_VERSION");
+    let mut updater = AxoUpdater::new_for("selene");
+
+    // The receipt is the source of truth for WHERE to upgrade. Without one,
+    // fall back to the repo's release feed — enough for `--check`, and enough
+    // to name the installer for everything else.
+    let has_receipt = updater.load_receipt().is_ok();
+    if !has_receipt {
+        // `repository` from Cargo.toml, overridable for forks/mirrors.
+        let repo = std::env::var("SELENE_GITHUB_REPO")
+            .unwrap_or_else(|_| env!("CARGO_PKG_REPOSITORY").to_string());
+        let (owner, name) = match repo
+            .trim_start_matches("https://github.com/")
+            .split_once('/')
+        {
+            Some((o, n)) => (o.to_string(), n.to_string()),
+            None => {
+                eprintln!("selene upgrade: cannot parse repository from `{repo}`");
+                return Outcome::Failure;
+            }
+        };
+        updater.set_release_source(ReleaseSource {
+            release_type: ReleaseSourceType::GitHub,
+            owner,
+            name,
+            app_name: "selene".to_string(),
+        });
+    }
+
+    if let Some(v) = &version {
+        let tag = if v.starts_with('v') {
+            v.clone()
+        } else {
+            format!("v{v}")
+        };
+        updater.configure_version_specifier(UpdateRequest::SpecificTag(tag));
+    }
+
+    if check {
+        // `query_new_version` needs only the release source — it works for
+        // receipt installs AND source builds (is_update_needed does not: it
+        // insists on a receipt's install_prefix).
+        return match updater.query_new_version().await {
+            Ok(Some(latest)) => {
+                let newer = Version::parse(current)
+                    .map(|cur| *latest > cur)
+                    .unwrap_or(true);
+                if newer {
+                    println!("selene {current} → {latest} is available. Run `selene upgrade`.");
+                } else {
+                    println!("selene {current} is up to date (latest release: {latest}).");
+                }
+                Outcome::Ok
+            }
+            Ok(None) => {
+                println!("selene {current}: no published release found.");
+                Outcome::Ok
+            }
+            Err(e) => {
+                eprintln!(
+                    "selene upgrade --check: could not reach the release feed: {e}\n\
+                     (no release published yet, offline, or the repository in Cargo.toml \
+                     is not live — override with SELENE_GITHUB_REPO=owner/name)"
+                );
+                Outcome::Failure
+            }
+        };
+    }
+
+    if !has_receipt {
+        eprintln!(
+            "selene upgrade: this binary was built from source (no install receipt), so \
+             upgrading in place would overwrite your own build.\n\
+             - source build:  git pull && cargo build --release -p selene\n\
+             - or switch to the managed install:  curl -fsSL \
+             {}/releases/latest/download/selene-installer.sh | sh",
+            env!("CARGO_PKG_REPOSITORY")
+        );
+        return Outcome::ExpectedNoOp;
+    }
+
+    if force {
+        updater.always_update(true);
+    }
+    match updater.run().await {
+        Ok(Some(result)) => {
+            println!(
+                "upgraded: selene {current} → {} (restart running agents to pick it up)",
+                result.new_version
+            );
+            Outcome::Ok
+        }
+        Ok(None) => {
+            println!("selene {current} is up to date.");
+            Outcome::Ok
+        }
+        Err(e) => {
+            eprintln!("selene upgrade: {e}");
+            Outcome::Failure
+        }
+    }
 }
 
 /// A body that is not built yet. Prints a clear line to stderr and returns `Failure` — the

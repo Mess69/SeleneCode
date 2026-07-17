@@ -40,8 +40,11 @@ The full optimization history — every measured (and disproved) theory — is i
 ## Quick start — two commands, total
 
 ```bash
-# 1. ONCE PER MACHINE: build `selene` and put it on your PATH (~/.local/bin)
-./scripts/install.sh
+# 1. ONCE PER MACHINE — no Rust, no Node, nothing to compile:
+curl -fsSL https://raw.githubusercontent.com/taaabme/selenecode/main/scripts/install.sh | sh
+#    (grabs the prebuilt static binary for your OS/arch, checksum-verified;
+#     falls back to building from source inside a checkout. `selene upgrade`
+#     updates it in place later, `selene upgrade --check` just looks.)
 
 # 2. ONCE PER PROJECT: index it + wire it into Claude Code, in one go
 cd /path/to/your/project
@@ -166,6 +169,28 @@ in [`vendor/surrealdb`](vendor/surrealdb) — the stock crates.io SDK silently i
 
 Housekeeping: `selene daemon` lists/manages running daemons, `selene unlock` clears a stale
 app-level lock, `selene uninit` removes `.selene/` from a project, `selene telemetry status|on|off`.
+
+---
+
+## Distribution & releases
+
+One true **static binary** per platform — no bundled Node runtime (CodeGraph ships ~50 MB of
+vendored Node per platform; `selene` is a single ~20 MB executable that starts in milliseconds).
+
+- **Releases are built by [`dist`](https://github.com/axodotdev/cargo-dist)** (the tool `uv` and
+  `atuin` ship with) from [`dist-workspace.toml`](dist-workspace.toml): tag `vX.Y.Z`, push, and CI
+  builds `{aarch64,x86_64}-apple-darwin` + `{aarch64,x86_64}-unknown-linux-gnu` **natively** (no
+  cross-compiling — RocksDB's C++ build is the classic musl/zig casualty; glibc-only is exactly
+  SurrealDB's own shipping posture), publishes tarballs + per-asset `sha256` + the generated
+  `selene-installer.sh`.
+- **`selene upgrade`** self-updates from GitHub Releases (axoupdater — the `uv self update`
+  engine): in-place and checksum-verified for installer installs, an honest refusal + the exact
+  commands for source builds. `--check` reports without touching anything; `selene upgrade 0.2.0`
+  pins.
+- **`cargo binstall selene`** works off the same release assets; the crates.io compile fallback is
+  deliberately disabled (it would silently drop the vendored SurrealDB patch).
+- Until the repo is published on GitHub (set `repository` in `Cargo.toml` to the real slug), the
+  installer's source-build fallback keeps everything working from a checkout.
 
 ---
 

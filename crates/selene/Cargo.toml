@@ -5,6 +5,14 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
+repository.workspace = true
+
+# Prebuilt release binaries are the ONLY supported install channel.
+# `cargo binstall` works off the dist release assets; the compile fallbacks are
+# disabled because a crates.io build would silently drop the workspace [patch]
+# (vendor/surrealdb) — the unpatched SDK ignores every SURREAL_* env cap.
+[package.metadata.binstall]
+disabled-strategies = ["quick-install", "compile"]
 
 [[bin]]
 name = "selene"
