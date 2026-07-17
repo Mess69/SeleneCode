@@ -22,6 +22,16 @@ ci = "github"
 installers = ["shell"]
 # Checksums: per-asset .sha256 (what `selene upgrade`/binstall verify).
 checksum = "sha256"
+# DEFAULT features only. dist otherwise builds --all-features, which drags in
+# `semantic-search` -> ort/ONNX — no prebuilt runtime for x86_64-apple-darwin
+# (first-release failure). The semantic build stays an explicit opt-in.
+all-features = false
+default-features = true
+features = []
+# Build ONLY the announced package (`-p selene`), not `--workspace`: the
+# workspace also contains selene-embed, whose build compiles ort/ONNX
+# unconditionally — no prebuilt runtime on x86_64-apple-darwin.
+precise-builds = true
 # Native builds on native runners — NO musl, NO cross (RocksDB C++ dep).
 targets = [
     "aarch64-apple-darwin",
