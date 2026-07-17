@@ -16,3 +16,8 @@ logs/
 .vscode/
 *.iml
 .superpowers/
+
+# local caches — never commit
+.fastembed_cache/
+.selene/
+selene-graph.html
