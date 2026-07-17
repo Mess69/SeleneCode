@@ -59,6 +59,25 @@ fn query_root(path: Option<PathBuf>) -> Result<PathBuf, Outcome> {
     Ok(root)
 }
 
+/// [`query_root`] for commands that open the store DIRECTLY (viz and the
+/// query class). A running daemon holds RocksDB's exclusive lock, so a direct
+/// open dies with a cryptic "lock file … Resource temporarily unavailable" —
+/// refuse up front with the actual situation and the two real options instead.
+/// (`sync` stays on [`query_root`]: it routes THROUGH the daemon by design.)
+fn query_root_direct(path: Option<PathBuf>) -> Result<PathBuf, Outcome> {
+    let root = query_root(path)?;
+    if let Some(pid) = selene_mcp::daemon::running_pid(&root) {
+        eprintln!(
+            "a SeleneCode daemon is serving this project (pid {pid}) — the index is locked \
+             while your agent is connected.\n  \
+             • ask the question through the agent (it uses the same graph), or\n  \
+             • run `kill {pid}` and retry — the agent restarts the daemon on its next question."
+        );
+        return Err(Outcome::Failure);
+    }
+    Ok(root)
+}
+
 // ---- lifecycle ------------------------------------------------------------------------------
 
 /// `selene index` / the indexing half of `selene init` — extract, then resolve. **Both**: an index
@@ -304,7 +323,7 @@ pub fn uninit(path: PathBuf, _force: bool) -> Outcome {
 
 /// `selene status` — what the graph holds. Not indexed ⇒ guidance + exit 1.
 pub async fn status(path: PathBuf, json: bool) -> Outcome {
-    let root = match query_root(Some(path)) {
+    let root = match query_root_direct(Some(path)) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -382,7 +401,7 @@ async fn status_inner(root: &Path, json: bool) -> Result<()> {
 // ---- query-class (reuse the MCP handlers) --------------------------------------------------
 
 pub async fn explore(query: Vec<String>, path: Option<PathBuf>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -390,7 +409,7 @@ pub async fn explore(query: Vec<String>, path: Option<PathBuf>) -> Outcome {
 }
 
 pub async fn node(name: Option<String>, path: Option<PathBuf>, file: Option<String>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -403,7 +422,7 @@ pub async fn node(name: Option<String>, path: Option<PathBuf>, file: Option<Stri
 }
 
 pub async fn query(search: String, path: Option<PathBuf>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -446,7 +465,7 @@ async fn semantic_query(root: &Path, query: &str) -> Option<Outcome> {
 }
 
 pub async fn callers(symbol: String, path: Option<PathBuf>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -454,7 +473,7 @@ pub async fn callers(symbol: String, path: Option<PathBuf>) -> Outcome {
 }
 
 pub async fn callees(symbol: String, path: Option<PathBuf>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -462,7 +481,7 @@ pub async fn callees(symbol: String, path: Option<PathBuf>) -> Outcome {
 }
 
 pub async fn impact(symbol: String, depth: u32, path: Option<PathBuf>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -470,7 +489,7 @@ pub async fn impact(symbol: String, depth: u32, path: Option<PathBuf>) -> Outcom
 }
 
 pub async fn files(path: Option<PathBuf>, filter: Option<String>) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -491,7 +510,7 @@ pub async fn viz(
     all_kinds: bool,
     open: bool,
 ) -> Outcome {
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -676,7 +695,7 @@ pub async fn sync(path: PathBuf, quiet: bool) -> Outcome {
 #[cfg(feature = "semantic-search")]
 pub async fn embed(path: PathBuf) -> Outcome {
     use selene_core::NodeKind;
-    let root = match query_root(Some(path)) {
+    let root = match query_root_direct(Some(path)) {
         Ok(r) => r,
         Err(o) => return o,
     };
@@ -790,7 +809,7 @@ pub async fn affected(
     if seeds.is_empty() {
         return Outcome::ExpectedNoOp; // nothing to expand — a valid, empty request
     }
-    let root = match query_root(path) {
+    let root = match query_root_direct(path) {
         Ok(r) => r,
         Err(o) => return o,
     };
