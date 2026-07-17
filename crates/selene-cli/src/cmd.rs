@@ -219,14 +219,15 @@ pub async fn init(path: PathBuf, force: bool, no_hooks: bool) -> Outcome {
     }
     let outcome = index(root.clone()).await;
     // Install the git hooks that keep the index fresh after commit/merge/checkout. Best effort:
-    // outside a git repo it is a silent no-op, and a hook failure never fails `init`.
+    // a hook failure never fails `init`.
     if !no_hooks && matches!(outcome, Outcome::Ok) {
         install_hooks(&root);
     }
     outcome
 }
 
-/// Install the git sync hooks with selene's absolute path. Never fails the caller.
+/// Install the git sync hooks with selene's absolute path, and keep `.selene/`
+/// out of git. Never fails the caller.
 fn install_hooks(root: &Path) {
     let Ok(binary) = std::env::current_exe() else {
         return;
@@ -237,9 +238,40 @@ fn install_hooks(root: &Path) {
             if n > 0 {
                 eprintln!("installed {n} git sync hook(s) (post-commit/merge/checkout)");
             }
+            exclude_selene_dir(root);
         }
-        Ok(_) => {} // not a git repo — nothing to do
+        // Not a git repo: say so — the "index maintains itself" promise rides on
+        // the hooks, and a silent skip leaves the user with a quietly stale graph.
+        Ok(_) => eprintln!(
+            "note: not a git repository — sync hooks skipped. Run `selene sync` after \
+             changing code to keep the index fresh."
+        ),
         Err(e) => eprintln!("selene init: could not install git hooks: {e}"),
+    }
+}
+
+/// Append `.selene/` to `.git/info/exclude` (idempotent). The index is a raw
+/// RocksDB store; without this, a beginner's next `git add -A` commits a binary
+/// database that then churns on every post-commit sync. `info/exclude` is the
+/// per-clone ignore file — it protects the repo without editing the user's
+/// tracked `.gitignore`.
+fn exclude_selene_dir(root: &Path) {
+    let exclude = root.join(".git").join("info").join("exclude");
+    let Some(dir) = exclude.parent() else { return };
+    if std::fs::create_dir_all(dir).is_err() {
+        return;
+    }
+    let current = std::fs::read_to_string(&exclude).unwrap_or_default();
+    if current.lines().any(|l| l.trim() == ".selene/") {
+        return;
+    }
+    let mut updated = current;
+    if !updated.is_empty() && !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str("# SeleneCode index (added by `selene init`)\n.selene/\n");
+    if std::fs::write(&exclude, updated).is_ok() {
+        eprintln!("added .selene/ to .git/info/exclude (the index stays out of git)");
     }
 }
 
@@ -847,6 +879,19 @@ pub async fn install(targets: Vec<String>, location: String, print_config: bool)
         println!("{}", selene_installer::print_config(&binary, &ctx));
         return Outcome::Ok;
     }
+
+    // `install` IS the one-command onboarding: a project that has no index yet
+    // gets `init` (index + git sync hooks) before the MCP config is written.
+    // Without this, the first agent question hits "not indexed" guidance and
+    // the user has to come back for a second command nobody told them about.
+    if !std::path::Path::new(".selene").exists() {
+        eprintln!("no index here yet — running `selene init` first…");
+        if let Outcome::Failure = init(PathBuf::from("."), false, false).await {
+            eprintln!("selene install: init failed — MCP config not written.");
+            return Outcome::Failure;
+        }
+    }
+
     let (loc, ids) = match resolve_targets("install", &targets, &location, &ctx) {
         Ok(v) => v,
         Err(o) => return o,

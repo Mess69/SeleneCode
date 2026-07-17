@@ -153,7 +153,7 @@ pub fn node_not_found(symbol: &str) -> String {
          file is worse than none.\n\n\
          **What to do next:**\n\
          - Check the spelling, or qualify it (`Class.method`).\n\
-         - Run `selene_explore` with a description instead — it searches by relevance and \
+         - Run the `explore` tool with a description instead — it searches by relevance and \
          will find the symbol even when the exact name is wrong.\n"
     )
 }

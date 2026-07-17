@@ -1,5 +1,13 @@
 # RESUME — reprendre SeleneCode après un redémarrage
 
+> ⚠️ **MISE À JOUR 2026-07-17 — plusieurs sections ci-dessous sont PÉRIMÉES.** L'état courant est
+> dans `README.md` (usage, install 1-commande, viz) et `docs/plans/2026-07-16-optimization-roadmap.md`
+> (perf : plus rapide que CodeGraph sur les 3 corpus — 0,77×/0,77×/0,96× ; RAM et VS Code = les
+> chantiers restants). En particulier : les phases 6+7 SONT construites (CLI ~22 commandes, hooks
+> git, daemon, installer 8 agents), Task 19/20 SONT faites, le benchmark vitesse vs TS EST fait,
+> et les variables `SURREAL_*` embarquées MARCHENT désormais (patch vendored, `vendor/surrealdb`).
+
+
 **Écrit le 2026-07-13, mis à jour le 2026-07-15 (`e580537` — Phase 7 installer + Phase 6 daemon
 CONSTRUITS et testés contre le vrai binaire).** Ce fichier est la **seule chose à lire** pour
 repartir. Il suppose que tu as tout oublié — c'est voulu.

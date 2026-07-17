@@ -182,7 +182,7 @@ pub async fn search(root: Option<PathBuf>, query: &str) -> ToolOutcome {
     };
     if hits.is_empty() {
         return ToolOutcome::guidance(format!(
-            "## No symbol matches `{query}`\n\nTry `selene_explore` with a description — it \
+            "## No symbol matches `{query}`\n\nTry the `explore` tool with a description — it \
              searches by relevance and finds symbols whose exact name you do not know.\n"
         ));
     }
@@ -240,8 +240,13 @@ pub async fn adjacency(root: Option<PathBuf>, symbol: &str, callers: bool) -> To
 
     // GROUPED — one heading per definition site, not a flat list (#764).
     let groups = qm.group_by_definition(nodes).await;
-    let heading = if callers { "Called by" } else { "Calls" };
-    let mut out = format!("## {heading} `{symbol}`\n\n");
+    // "Callers of X" / "X calls" — the old "Called by X" heading read as its
+    // own inverse (things X calls) above a list of X's callers.
+    let mut out = if callers {
+        format!("## Callers of `{symbol}`\n\n")
+    } else {
+        format!("## `{symbol}` calls\n\n")
+    };
     for g in groups {
         out.push_str(&format!("### `{}` ({})\n\n", g.qualified_name, g.file_path));
         for n in &g.nodes {

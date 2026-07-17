@@ -26,7 +26,7 @@ HTML galaxy.
 | | |
 |---|---|
 | **Indexing** | 12 languages (TS/TSX, JS/JSX, Python, Rust, Go, Java, Kotlin, C, C++, C#, PHP, Ruby), deterministic |
-| **Speed vs CodeGraph (TS)** | **faster on every measured corpus**: codegraph-src 0.77×, selene-crates 0.77×, django (3 011 files) 0.96× — best-of-2, cold, same machine |
+| **Speed vs CodeGraph (TS)** | **faster on all three benchmark corpora**: codegraph-src 0.77×, selene-crates 0.77×, django (3 011 files) 0.96× — best-of-2, cold, same machine. (VS Code scale: not re-run since the optimizations) |
 | **RAM** | codegraph-src **467 MB** (parity with TS), selene-crates **~600 MB** (1.9× lighter than TS), django **2.0 GiB** (TS: 0.6 GiB — the remaining gap, tracked in the [roadmap](docs/plans/2026-07-16-optimization-roadmap.md)) |
 | **Freshness** | `selene sync` re-indexes only touched files; git hooks (installed by `init`) sync after commit/merge/checkout; the daemon watches while an agent is connected |
 | **Correctness gates** | TS↔Rust resolution parity at **tolerance 0** (edge identity), dispatch-coverage on whole flows, 13 byte-pinned extraction snapshots |
@@ -37,41 +37,47 @@ The full optimization history — every measured (and disproved) theory — is i
 
 ---
 
-## Quick start
+## Quick start — two commands, total
 
 ```bash
-# 1. Build the release binary (the debug build is much slower — always --release)
-cargo build --release -p selene
-BIN="$(pwd)/target/release/selene"
+# 1. ONCE PER MACHINE: build `selene` and put it on your PATH (~/.local/bin)
+./scripts/install.sh
 
-# 2. Initialize a project: builds ./.selene/ AND installs the git hooks that
-#    keep the index fresh after commit / merge / checkout
-cd /path/to/your/repo
-$BIN init                 # add --no-hooks to skip the git hooks
-
-# 3. See what's in the graph
-$BIN status
-#   files: 931   nodes: 19061   edges: 46946   languages: python (931)
+# 2. ONCE PER PROJECT: index it + wire it into Claude Code, in one go
+cd /path/to/your/project
+selene install
+#   no index here yet — running `selene init` first…
+#   done: 19061 nodes, 46946 edges
+#   installed 3 git sync hook(s) (post-commit/merge/checkout)
+#   claude   created ./.mcp.json
+#   Restart the agent (or reload its MCP servers) to pick up selene.
 ```
 
-After that, the index maintains itself: the git hooks run `selene sync` on commit/merge/checkout,
-and the daemon re-syncs on file changes while an agent is connected. Manual refresh anytime:
+**Restart Claude Code — that's it.** Ask it a structural question ("who calls X?", "how does a
+request become a DB write?") and it answers from the graph through the `selene_explore` MCP tool
+instead of burning tokens on `Read`/`Grep`. `selene install -t auto` wires every agent detected on
+your machine (Cursor, Codex, opencode, …) instead of just Claude Code.
+
+From then on the index maintains itself: the git hooks re-sync on commit/merge/checkout, and the
+daemon watches for file changes while an agent is connected. Manual controls, if you ever want them:
 
 ```bash
-$BIN sync                 # incremental — only touched files
-$BIN index                # full rebuild from scratch
+selene status             # what's in the graph
+selene sync               # incremental refresh — only touched files
+selene index              # full rebuild from scratch
+selene uninstall          # remove the MCP config; `selene uninit` removes .selene/ + hooks
 ```
 
-### Ask questions from the terminal
+### Ask questions from the terminal (no agent needed)
 
 ```bash
-$BIN explore "how does a request become a database write"   # flow answer: spine + numbered source
-$BIN query UserSerializer          # find symbols by name
-$BIN node validate_password        # one symbol: source + caller/callee trail
-$BIN callers save                  # who calls this?
-$BIN callees dispatch              # what does this call?
-$BIN impact AuthMiddleware         # blast radius if this changes
-$BIN affected src/db/models.py     # files whose graph depends on these files
+selene explore "how does a request become a database write"   # flow answer: spine + numbered source
+selene query UserSerializer          # find symbols by name
+selene node validate_password        # one symbol: source + caller/callee trail
+selene callers save                  # who calls this?
+selene callees dispatch              # what does this call?
+selene impact AuthMiddleware         # blast radius if this changes
+selene affected src/db/models.py     # files whose graph depends on these files
 ```
 
 ---
@@ -82,7 +88,7 @@ Render the whole code graph as a **self-contained interactive HTML "galaxy"** (z
 one file, works offline):
 
 ```bash
-$BIN viz --open                    # writes ./selene-graph.html and opens it
+selene viz --open                    # writes ./selene-graph.html and opens it
 ```
 
 Options:
@@ -106,11 +112,11 @@ One command — the installer detects the agents on your machine and writes thei
 (Claude Code, Cursor, Codex, opencode, hermes, …):
 
 ```bash
-$BIN install                       # default: Claude Code, project-local config
-$BIN install -t auto               # every agent detected on this machine
-$BIN install -t claude,cursor      # explicit list
-$BIN install --print-config        # show the JSON it would write, touch nothing
-$BIN uninstall                     # remove it again
+selene install                       # default: Claude Code, project-local config
+selene install -t auto               # every agent detected on this machine
+selene install -t claude,cursor      # explicit list
+selene install --print-config        # show the JSON it would write, touch nothing
+selene uninstall                     # remove it again
 ```
 
 Then ask the agent a flow question — it calls `selene_explore` and answers from the graph instead
@@ -137,7 +143,7 @@ Use the **absolute path** of the binary — a config naming an unrunnable comman
 
 ```bash
 cargo build --release -p selene --features semantic-search
-$BIN embed        # embeds every symbol locally (ONNX, offline) — `keypress` then finds `keybinding`
+selene embed        # embeds every symbol locally (ONNX, offline) — `keypress` then finds `keybinding`
 ```
 
 The lexical index works without it; `embed` adds meaning-based recall on top.
@@ -176,11 +182,11 @@ the [roadmap addenda](docs/plans/2026-07-16-optimization-roadmap.md)):
   never round-trips through disk.
 - **ASCII regex engines for receiver inference.** Unicode `\w`/`\b` DFA tables were ~750 MiB of peak
   RSS (≈524 KiB per compiled pattern); the ASCII rewrite matches the original JS semantics and
-  collapsed them — and hoisting pattern compilation out of the per-line scan took django's
-  name-match from 46 s to 3 s of CPU.
+  collapsed them. Hoisting pattern compilation out of the per-line scan took django's name-match
+  from 46 s to 6 s of CPU; the shared-slice group handouts below took it to 3.3 s.
 - **Tokio-concurrent, transaction-batched writes** with conflict-retry on every bulk writer, FTS
   built `CONCURRENTLY` and overlapped with resolution.
-- **mimalloc** (SurrealDB's `allocator` feature) + laptop-sized RocksDB budgets by default.
+- **mimalloc / jemalloc** (SurrealDB's `allocator` feature — mimalloc on Apple Silicon, jemalloc on x86) + laptop-sized RocksDB budgets by default.
 
 ---
 
