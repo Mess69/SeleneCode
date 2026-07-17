@@ -19,7 +19,9 @@ use serde::{Deserialize, Serialize};
 /// A control request — the first (and only) line a control client sends.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ControlRequest {
-    /// The verb. `"sync"` is the only one so far.
+    /// The verb: `"sync"` (incremental re-index) or `"graph"` (dump nodes+edges
+    /// for `selene viz --watch` — the daemon owns the lock, so live viz reads
+    /// through it).
     pub selene_control: String,
 }
 
@@ -33,6 +35,9 @@ pub struct ControlReply {
     pub removed: usize,
     #[serde(default)]
     pub unchanged: usize,
+    /// Verb-specific payload (`"graph"`: `{nodes, edges}` in wire shape).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
 }
@@ -44,6 +49,7 @@ impl ControlReply {
             changed: 0,
             removed: 0,
             unchanged: 0,
+            data: None,
             error: Some(msg.into()),
         }
     }
@@ -137,6 +143,7 @@ mod tests {
             changed: 2,
             removed: 1,
             unchanged: 5,
+            data: None,
             error: None,
         };
         let s = serde_json::to_string(&r).unwrap();

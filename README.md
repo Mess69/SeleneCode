@@ -87,25 +87,42 @@ selene affected src/db/models.py     # files whose graph depends on these files
 
 ## The visual mode — `selene viz`
 
-Render the whole code graph as a **self-contained interactive HTML "galaxy"** (zero dependencies,
+Render the whole code graph as a **self-contained interactive HTML map** (zero dependencies,
 one file, works offline):
 
 ```bash
 selene viz --open                    # writes ./selene-graph.html and opens it
 ```
 
+The page opens on an **architecture map**: one named node per module (directory group), sized by
+symbol count, edges weighted by how many calls cross between them. Test/vendored/generated code is
+filtered out up front (the header says how much was hidden). Click a module to drill into its
+symbols; the `Symbols` button shows the whole galaxy.
+
+### Live mode — watch your agent build the graph
+
+```bash
+selene viz --watch --open            # serves the map on a local port, updates live
+```
+
+Leave this open while Claude Code (or any agent) works on the project: every new function, class
+or module **bursts into the map with a supernova animation** seconds after it is written — the
+index updates through the daemon's file watcher, and the page polls and animates the difference
+(a toast narrates: `✨ +3 functions · +1 class`). Works with or without a running daemon: when your
+agent is connected, reads go through the daemon's socket, no lock conflict. Ctrl-C stops it.
+
 Options:
 
 | flag | effect |
 |---|---|
+| `--watch` | live mode: serve on a local port, animate index changes in real time |
 | `-o, --out <FILE>` | output path (default `./selene-graph.html`) |
 | `--max-nodes <N>` | cap the rendered nodes, most-connected first (default 2000 — keeps the page light on big repos) |
 | `--all-kinds` | also render the low-signal kinds (file / import / variable / parameter) that are dropped by default |
 | `-p, --path <DIR>` | project directory (default `.`) |
 
-The page is a force-directed graph: pan/zoom, hover for a symbol's details, click to pin its
-neighborhood. Colors are node kinds; edge types are the 12 relationship kinds (calls, imports,
-extends, …). For a first look at an unfamiliar codebase, `viz --open` is the fastest map you can get.
+Colors are node kinds; edge types are the 12 relationship kinds (calls, imports, extends, …).
+For a first look at an unfamiliar codebase, `viz --open` is the fastest map you can get.
 
 ---
 

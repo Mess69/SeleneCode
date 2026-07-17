@@ -25,6 +25,9 @@ pub struct VizOptions {
     pub all_kinds: bool,
     /// Human label for the page header (the project root path).
     pub root_label: String,
+    /// Live mode: the page polls `/data` and animates graph changes in place.
+    /// Only `selene viz --watch` sets this — a static export stays inert.
+    pub watch: bool,
 }
 
 /// The rendered page plus the counts `cmd::viz` echoes to the user.
@@ -111,7 +114,17 @@ fn module_of(path: &str, depth: usize) -> String {
     segs[..depth.min(segs.len())].join("/")
 }
 
-pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
+/// The transformed graph data (the page's `DATA` object) plus the counts —
+/// what `--watch` re-serves on every index change without re-rendering HTML.
+pub struct VizData {
+    pub json: serde_json::Value,
+    pub shown_nodes: usize,
+    pub total_nodes: usize,
+    pub shown_edges: usize,
+    pub total_edges: usize,
+}
+
+pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData {
     let total_nodes = nodes.len();
     let total_edges = edges.len();
     let max_nodes = opts.max_nodes.max(1);
@@ -166,15 +179,27 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
             break;
         }
     }
-    let mut mod_index: HashMap<String, usize> = HashMap::new();
-    let mut mod_members: Vec<u32> = Vec::new();
+    // Module indices are assigned over the SORTED label set — the store returns
+    // nodes in nondeterministic order, and `--watch` compares serialized output
+    // to detect real change, so the transform must be a pure function of the
+    // graph, not of iteration order.
+    let mut mod_labels: Vec<String> = app_nodes
+        .iter()
+        .map(|n| module_of(&n.file_path, mod_depth))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    mod_labels.sort();
+    let mod_index: HashMap<&str, usize> = mod_labels
+        .iter()
+        .enumerate()
+        .map(|(i, l)| (l.as_str(), i))
+        .collect();
+    let mut mod_members: Vec<u32> = vec![0; mod_labels.len()];
     let mut node_mod: HashMap<&str, usize> = HashMap::new();
     for n in &app_nodes {
         let m = module_of(&n.file_path, mod_depth);
-        let idx = *mod_index.entry(m).or_insert_with(|| {
-            mod_members.push(0);
-            mod_members.len() - 1
-        });
+        let idx = mod_index[m.as_str()];
         mod_members[idx] += 1;
         node_mod.insert(n.id.as_str(), idx);
     }
@@ -192,10 +217,6 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
                 *pair_counts.entry((sm, tm)).or_default() += 1;
             }
         }
-    }
-    let mut mod_labels: Vec<String> = vec![String::new(); mod_members.len()];
-    for (label, idx) in &mod_index {
-        mod_labels[*idx] = label.clone();
     }
     let modules_json: Vec<serde_json::Value> = mod_labels
         .iter()
@@ -221,6 +242,7 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
         .iter()
         .map(|n| {
             serde_json::json!({
+                "i": n.id,
                 "n": n.name,
                 "k": n.kind.as_str(),
                 "f": n.file_path,
@@ -231,23 +253,30 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
         })
         .collect();
 
+    // Dedup + SORT — edge iteration order is store-dependent, output must not be.
+    let mut link_rows: Vec<(usize, usize, &str)> = Vec::new();
     let mut seen: HashSet<(usize, usize, &str)> = HashSet::new();
-    let mut links_json: Vec<serde_json::Value> = Vec::new();
     for e in edges {
         if let (Some(&s), Some(&t)) = (index.get(e.source.as_str()), index.get(e.target.as_str())) {
             if s == t {
                 continue; // self-loops add clutter, not signal
             }
             if seen.insert((s, t, e.kind.as_str())) {
-                links_json.push(serde_json::json!({ "s": s, "t": t, "k": e.kind.as_str() }));
+                link_rows.push((s, t, e.kind.as_str()));
             }
         }
     }
+    link_rows.sort_unstable();
+    let links_json: Vec<serde_json::Value> = link_rows
+        .iter()
+        .map(|(s, t, k)| serde_json::json!({ "s": s, "t": t, "k": k }))
+        .collect();
 
     let shown_nodes = nodes_json.len();
     let shown_edges = links_json.len();
 
-    let data = serde_json::json!({
+    let json = serde_json::json!({
+        "gen": 0,
         "nodes": nodes_json,
         "links": links_json,
         "modules": modules_json,
@@ -261,28 +290,43 @@ pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
             "maxNodes": max_nodes,
             "allKinds": opts.all_kinds,
             "noiseHidden": noise_hidden,
+            "watch": opts.watch,
         }
     });
 
+    VizData {
+        json,
+        shown_nodes,
+        total_nodes,
+        shown_edges,
+        total_edges,
+    }
+}
+
+/// Render the page around an already-built [`VizData`] JSON.
+pub fn render(data: &serde_json::Value, title: &str) -> String {
     // `to_string` on an owned `Value` only fails on a non-string map key, which
     // this shape never has — fall back to an empty graph rather than unwrap.
-    let data_str = serde_json::to_string(&data)
+    let data_str = serde_json::to_string(data)
         .unwrap_or_else(|_| r#"{"nodes":[],"links":[],"meta":{}}"#.to_string());
     // The JSON is embedded as a JS object literal inside <script>. Escaping every
     // '<' to its < form (valid JS-in-string) makes a "</script>" breakout
     // impossible regardless of what a symbol name or file path contains.
     let data_str = data_str.replace('<', "\\u003c");
 
-    let html = TEMPLATE
+    TEMPLATE
         .replace("__DATA__", &data_str)
-        .replace("__TITLE__", &html_escape(&opts.root_label));
+        .replace("__TITLE__", &html_escape(title))
+}
 
+pub fn build_html(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizDoc {
+    let data = build_data(nodes, edges, opts);
     VizDoc {
-        html,
-        shown_nodes,
-        total_nodes,
-        shown_edges,
-        total_edges,
+        html: render(&data.json, &opts.root_label),
+        shown_nodes: data.shown_nodes,
+        total_nodes: data.total_nodes,
+        shown_edges: data.shown_edges,
+        total_edges: data.total_edges,
     }
 }
 
@@ -363,13 +407,27 @@ const TEMPLATE: &str = r####"<!doctype html>
   #details .dm b { color: #fff; }
   #details .close { position: absolute; top: 8px; right: 10px; cursor: pointer; color: #7c86a1; font-size: 16px; }
   #details .close:hover { color: #fff; }
+  #live { display: inline-flex; align-items: center; gap: 6px; margin-left: 8px;
+    color: #7ce38b; font-size: 11px; font-weight: 600; }
+  #live .dot { width: 8px; height: 8px; border-radius: 50%; background: #3fb950;
+    animation: livepulse 1.6s ease-in-out infinite; }
+  #live.stale { color: #e3b341; } #live.stale .dot { background: #d29922; animation: none; }
+  @keyframes livepulse { 0%,100% { box-shadow: 0 0 0 0 rgba(63,185,80,0.55); }
+    50% { box-shadow: 0 0 0 6px rgba(63,185,80,0); } }
+  #toast { position: fixed; left: 50%; top: 18px; transform: translateX(-50%) translateY(-70px);
+    background: rgba(22,27,38,0.92); border: 1px solid rgba(110,168,254,0.5);
+    color: #e8ebf3; padding: 10px 18px; border-radius: 10px; font-size: 13px;
+    box-shadow: 0 6px 24px rgba(0,0,0,0.5); transition: transform 0.35s cubic-bezier(0.34,1.56,0.64,1);
+    pointer-events: none; z-index: 30; }
+  #toast.show { transform: translateX(-50%) translateY(0); }
 </style>
 </head>
 <body>
   <div id="stage"><canvas id="c"></canvas></div>
+  <div id="toast"></div>
 
   <div id="hud" class="panel">
-    <h1>selene galaxy</h1>
+    <h1>selene galaxy <span id="live" style="display:none"><span class="dot"></span><span id="live-txt">live</span></span></h1>
     <div class="sub" id="root"></div>
     <div class="counts" id="counts"></div>
     <div class="hint" id="hint">click a module = drill in · scroll = zoom · drag = pan/move</div>
@@ -412,58 +470,143 @@ const colorFor = k => COLORS[k] || "#dee2e6";
 const MODULE_PALETTE = ["#6ea8fe","#63e6be","#ffd43b","#da77f2","#ffa94d","#69db7c",
   "#f783ac","#66d9e8","#a9e34b","#ff8787","#ffe066","#4dabf7","#e599f7","#96f2d7"];
 
-// ---- model ----------------------------------------------------------------
-const symbols = DATA.nodes.map((d, i) => ({
-  n: d.n, k: d.k, f: d.f, l: d.l, deg: d.d || 0, m: d.m,
-  i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "sym"
-}));
-const symLinks = DATA.links.map(l => ({ s: l.s, t: l.t, k: l.k }));
+// ---- easing ---------------------------------------------------------------
+const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
+const easeOutBack = t => { const c = 1.70158 * 1.35; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
+const easeInOutQuad = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 
-const modules = (DATA.modules || []).map((d, i) => ({
-  n: d.p, k: "module", mem: d.n, intra: d.e, deg: 0,
-  i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "mod",
-  color: MODULE_PALETTE[i % MODULE_PALETTE.length]
-}));
-const modLinks = (DATA.modLinks || []).map(l => ({ s: l.s, t: l.t, c: l.c }));
-for (const l of modLinks) { modules[l.s].deg += l.c; modules[l.t].deg += l.c; }
+// ---- model ----------------------------------------------------------------
+// Node/module OBJECTS persist across live updates (keyed by id / path label):
+// positions, velocities and view state survive; only genuinely new code gets
+// seeded — and it arrives with a supernova.
+let symbols = [], symLinks = [], modules = [], modLinks = [];
+
+function symLinkKey(l, arr) {
+  const a = arr[l.s], b = arr[l.t];
+  return (a ? a.id : "?") + ">" + (b ? b.id : "?") + ">" + (l.k || "");
+}
+
+function buildModel(d, animate) {
+  const oldSymById = new Map(symbols.map(nd => [nd.id, nd]));
+  const oldModByLabel = new Map(modules.map(mo => [mo.n, mo]));
+  const oldSymLinkKeys = new Set(symLinks.map(l => symLinkKey(l, symbols)));
+  const oldModLinkKeys = new Set(modLinks.map(l =>
+    (modules[l.s] ? modules[l.s].n : "?") + ">" + (modules[l.t] ? modules[l.t].n : "?")));
+
+  const addedSyms = [], addedMods = [], pulsedMods = [];
+
+  symbols = d.nodes.map((r, i) => {
+    const old = oldSymById.get(r.i);
+    if (old) {
+      old.i = i; old.n = r.n; old.k = r.k; old.f = r.f; old.l = r.l;
+      old.deg = r.d || 0; old.m = r.m;
+      oldSymById.delete(r.i);
+      return old;
+    }
+    const nd = { id: r.i, n: r.n, k: r.k, f: r.f, l: r.l, deg: r.d || 0, m: r.m,
+      i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "sym",
+      placed: false, born: animate ? -1 : 0 };
+    if (animate) addedSyms.push(nd);
+    return nd;
+  });
+  const removedSyms = [...oldSymById.values()];
+  symLinks = d.links.map(l => ({ s: l.s, t: l.t, k: l.k }));
+
+  modules = (d.modules || []).map((r, i) => {
+    const old = oldModByLabel.get(r.p);
+    if (old) {
+      if (animate && r.n !== old.mem) pulsedMods.push(old);
+      old.i = i; old.mem = r.n; old.intra = r.e; old.deg = 0;
+      oldModByLabel.delete(r.p);
+      return old;
+    }
+    const mo = { n: r.p, k: "module", mem: r.n, intra: r.e, deg: 0,
+      i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "mod",
+      placed: false, born: animate ? -1 : 0,
+      color: MODULE_PALETTE[i % MODULE_PALETTE.length] };
+    if (animate) addedMods.push(mo);
+    return mo;
+  });
+  const removedMods = [...oldModByLabel.values()];
+  modLinks = (d.modLinks || []).map(l => ({ s: l.s, t: l.t, c: l.c }));
+  for (const l of modLinks) { modules[l.s].deg += l.c; modules[l.t].deg += l.c; }
+
+  const addedSymLinks = animate
+    ? symLinks.filter(l => !oldSymLinkKeys.has(symLinkKey(l, symbols)))
+    : [];
+  const addedModLinks = animate
+    ? modLinks.filter(l => !oldModLinkKeys.has(modules[l.s].n + ">" + modules[l.t].n))
+    : [];
+
+  return { addedSyms, removedSyms, addedMods, removedMods, pulsedMods,
+           addedSymLinks, addedModLinks };
+}
+buildModel(DATA, false);
 
 // ---- the current view -----------------------------------------------------
 // "map"      : the architecture map — one node per module, edge width = count.
 // "symbols"  : symbol dots (all, or scoped to one module after a drill-down).
 let view = "map";
-let scopeMod = -1; // module index when drilled in, else -1
+let scopeLabel = null; // module label when drilled in, else null
 let curNodes = [], curLinks = [];
 let PHYS = {};
 
-function seedDisk(list, spread) {
+function seedUnplaced(list, spread) {
   const R0 = spread * Math.sqrt(Math.max(1, list.length));
   for (const nd of list) {
-    const a = Math.random() * Math.PI * 2, r = R0 * Math.sqrt(Math.random());
-    nd.x = Math.cos(a) * r; nd.y = Math.sin(a) * r; nd.vx = 0; nd.vy = 0;
+    if (nd.placed) continue;
+    // New arrivals spawn near their peers (same module) — a birth has a home.
+    const peers = nd.kind === "sym"
+      ? list.filter(o => o.placed && o.m === nd.m).slice(0, 40)
+      : list.filter(o => o.placed).slice(0, 40);
+    if (peers.length) {
+      let cx = 0, cy = 0;
+      for (const o of peers) { cx += o.x; cy += o.y; }
+      cx /= peers.length; cy /= peers.length;
+      const a = Math.random() * Math.PI * 2, r = 24 + Math.random() * 30;
+      nd.x = cx + Math.cos(a) * r; nd.y = cy + Math.sin(a) * r;
+    } else {
+      const a = Math.random() * Math.PI * 2, r = R0 * Math.sqrt(Math.random());
+      nd.x = Math.cos(a) * r; nd.y = Math.sin(a) * r;
+    }
+    nd.vx = 0; nd.vy = 0; nd.placed = true;
   }
 }
 
-function setView(v, modIdx) {
-  view = v; scopeMod = (modIdx === undefined ? -1 : modIdx);
-  selected = null; hovered = null; document.getElementById("details").classList.remove("show");
+function scopeIndex() {
+  if (scopeLabel === null) return -1;
+  return modules.findIndex(mo => mo.n === scopeLabel);
+}
+
+function refreshView() {
+  if (view === "symbols" && scopeLabel !== null && scopeIndex() < 0) {
+    view = "map"; scopeLabel = null; // the drilled module vanished
+  }
   if (view === "map") {
     curNodes = modules; curLinks = modLinks;
     PHYS = { REPULSE: 5200, RANGE: 620, SPRING: 0.02, REST: 170, GRAVITY: 0.03 };
-    seedDisk(curNodes, 60);
+    seedUnplaced(curNodes, 60);
   } else {
-    const scoped = scopeMod >= 0 ? symbols.filter(nd => nd.m === scopeMod) : symbols;
+    const mi = scopeIndex();
+    const scoped = mi >= 0 ? symbols.filter(nd => nd.m === mi) : symbols;
     const keep = new Set(scoped.map(nd => nd.i));
     curNodes = scoped;
-    curLinks = symLinks.filter(l => keep.has(l.s) && keep.has(l.t))
-      .map(l => ({ s: l.s, t: l.t, k: l.k }));
+    curLinks = symLinks.filter(l => keep.has(l.s) && keep.has(l.t));
     PHYS = { REPULSE: 620, RANGE: 220, SPRING: 0.012, REST: 46, GRAVITY: 0.012 };
-    seedDisk(curNodes, 32);
+    seedUnplaced(curNodes, 32);
   }
   byIndex = new Map(curNodes.map(nd => [nd.i, nd]));
+  for (const nd of curNodes) nd.match = searchQ.length > 0 && nd.n.toLowerCase().includes(searchQ);
+  syncChrome();
+}
+
+function setView(v, modObj) {
+  view = v; scopeLabel = modObj ? modObj.n : null;
+  selected = null; hovered = null; document.getElementById("details").classList.remove("show");
+  refreshView();
   alpha = 1;
   for (let i = 0; i < 90; i++) tick();
   fit();
-  syncChrome();
 }
 
 let byIndex = new Map();
@@ -494,13 +637,22 @@ resize();
 
 const toWorldX = sx => (sx - tx) / scale;
 const toWorldY = sy => (sy - ty) / scale;
-function radiusOf(nd) {
+function baseRadius(nd) {
   if (nd.kind === "mod") return Math.min(46, 10 + Math.sqrt(nd.mem) * 1.9);
   return Math.min(22, 3 + Math.sqrt(nd.deg) * 1.5);
 }
+// Spawn scale: 0 until the supernova pops, then an elastic overshoot to 1.
+function spawnScale(nd, now) {
+  if (!nd.born) return 1;
+  if (nd.born < 0) return 0; // queued, not yet detonated
+  const t = (now - nd.born) / 700;
+  if (t >= 1) { nd.born = 0; return 1; }
+  return Math.max(0, easeOutBack(t));
+}
+function radiusOf(nd) { return baseRadius(nd); }
 
-function fit() {
-  if (!curNodes.length) return;
+function computeFit() {
+  if (!curNodes.length) return null;
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   for (const nd of curNodes) {
     if (nd.x < minX) minX = nd.x; if (nd.y < minY) minY = nd.y;
@@ -508,10 +660,27 @@ function fit() {
   }
   const w = Math.max(1, maxX - minX), h = Math.max(1, maxY - minY);
   const pad = view === "map" ? 150 : 60;
-  scale = Math.min((cw - pad) / w, (ch - pad) / h);
-  scale = Math.max(0.02, Math.min(6, scale));
-  tx = cw / 2 - (minX + maxX) / 2 * scale;
-  ty = ch / 2 - (minY + maxY) / 2 * scale;
+  let sc = Math.min((cw - pad) / w, (ch - pad) / h);
+  sc = Math.max(0.02, Math.min(6, sc));
+  return { scale: sc,
+           tx: cw / 2 - (minX + maxX) / 2 * sc,
+           ty: ch / 2 - (minY + maxY) / 2 * sc };
+}
+function fit() {
+  const f = computeFit();
+  if (!f) return;
+  scale = f.scale; tx = f.tx; ty = f.ty;
+}
+// Camera follow: after a live update the graph re-settles — glide the view so
+// the birth happens ON screen. Any user gesture cancels the follow instantly.
+let followUntil = 0;
+function cameraFollow(now) {
+  if (now >= followUntil) return;
+  const f = computeFit();
+  if (!f) return;
+  scale += (f.scale - scale) * 0.07;
+  tx += (f.tx - tx) * 0.07;
+  ty += (f.ty - ty) * 0.07;
 }
 
 // ---- simulation -----------------------------------------------------------
@@ -572,6 +741,95 @@ function tick() {
   }
 }
 
+// ---- effects: the supernova layer -----------------------------------------
+// Additive-blended, time-based, anchored to their node so they ride the sim.
+let effects = [];
+let spawnQueue = []; // {nd, at} — staggered detonations
+
+function detonate(nd, now) {
+  nd.born = now;
+  const color = nd.kind === "mod" ? nd.color : colorFor(nd.k);
+  const r = baseRadius(nd);
+  effects.push({ type: "burst", nd, t0: now, dur: 900, color,
+    r0: Math.max(10, r * 2.2), rot: Math.random() * Math.PI * 2, count: 16 });
+}
+
+function drawEffects(now) {
+  if (!effects.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = "lighter";
+  for (const e of effects) {
+    const t = (now - e.t0) / e.dur;
+    if (t >= 1) { e.dead = true; continue; }
+    if (t < 0) continue;
+    if (e.type === "burst") {
+      const sx = e.nd.x * scale + tx, sy = e.nd.y * scale + ty;
+      const R = e.r0 * scale;
+      // 1 — the white-hot core flash, swallowed fast
+      const coreA = Math.pow(1 - t, 2);
+      const coreR = Math.max(0.5, R * (0.9 + 1.6 * t));
+      const g = ctx.createRadialGradient(sx, sy, 0, sx, sy, coreR);
+      g.addColorStop(0, "rgba(255,255,255," + (0.85 * coreA) + ")");
+      g.addColorStop(0.35, hexA(e.color, 0.5 * coreA));
+      g.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = g;
+      ctx.beginPath(); ctx.arc(sx, sy, coreR, 0, Math.PI * 2); ctx.fill();
+      // 2 — the expanding shockwave ring
+      const ringT = easeOutCubic(t);
+      ctx.strokeStyle = hexA(e.color, 0.7 * (1 - t));
+      ctx.lineWidth = Math.max(0.6, 3.2 * (1 - t) * scale);
+      ctx.beginPath(); ctx.arc(sx, sy, R * (0.4 + 2.6 * ringT), 0, Math.PI * 2); ctx.stroke();
+      // 3 — the debris: particles thrown outward, decaying
+      const pT = easeOutCubic(t);
+      for (let i = 0; i < e.count; i++) {
+        const jitter = Math.sin(i * 7.31) * 0.5;
+        const ang = e.rot + (i / e.count) * Math.PI * 2 + jitter * 0.3;
+        const speed = 0.55 + 0.45 * Math.abs(Math.sin(i * 3.7));
+        const dist = R * (0.4 + 2.4 * speed * pT);
+        const px = sx + Math.cos(ang) * dist, py = sy + Math.sin(ang) * dist;
+        const sz = Math.max(0.4, (1 - t) * 2.4 * Math.min(2, scale));
+        ctx.fillStyle = i % 3 === 0 ? "rgba(255,255,255," + (0.8 * (1 - t)) + ")"
+                                    : hexA(e.color, 0.8 * (1 - t));
+        ctx.beginPath(); ctx.arc(px, py, sz, 0, Math.PI * 2); ctx.fill();
+      }
+    } else if (e.type === "pulse") {
+      // a module absorbing new members: a soft ring breathing out
+      const sx = e.nd.x * scale + tx, sy = e.nd.y * scale + ty;
+      const R = (baseRadius(e.nd) + 6 + 26 * easeOutCubic(t)) * scale;
+      ctx.strokeStyle = hexA(e.color, 0.55 * (1 - t));
+      ctx.lineWidth = Math.max(0.6, 2.4 * (1 - t) * scale);
+      ctx.beginPath(); ctx.arc(sx, sy, R, 0, Math.PI * 2); ctx.stroke();
+    } else if (e.type === "edgePulse") {
+      const a = e.a, b = e.b;
+      if (!byIndex.has(a.i) || !byIndex.has(b.i)) { e.dead = true; continue; }
+      const p = easeInOutQuad(t);
+      const px = (a.x + (b.x - a.x) * p) * scale + tx;
+      const py = (a.y + (b.y - a.y) * p) * scale + ty;
+      ctx.strokeStyle = hexA("#9ecbff", 0.35 * (1 - t));
+      ctx.lineWidth = Math.max(0.5, 1.4 * scale);
+      ctx.beginPath();
+      ctx.moveTo(a.x * scale + tx, a.y * scale + ty);
+      ctx.lineTo(b.x * scale + tx, b.y * scale + ty);
+      ctx.stroke();
+      ctx.fillStyle = "rgba(255,255,255," + (0.9 * (1 - t)) + ")";
+      ctx.beginPath(); ctx.arc(px, py, Math.max(1.2, 3 * Math.min(1.5, scale)), 0, Math.PI * 2); ctx.fill();
+    } else if (e.type === "implode") {
+      const sx = e.x * scale + tx, sy = e.y * scale + ty;
+      const r = Math.max(0.4, e.r * (1 - easeOutCubic(t)) * scale);
+      ctx.fillStyle = hexA(e.color, 0.6 * (1 - t));
+      ctx.beginPath(); ctx.arc(sx, sy, r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+  effects = effects.filter(e => !e.dead);
+}
+
+function hexA(hex, a) {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16),
+        b = parseInt(hex.slice(5, 7), 16);
+  return "rgba(" + r + "," + g + "," + b + "," + Math.max(0, Math.min(1, a)) + ")";
+}
+
 // ---- rendering ------------------------------------------------------------
 function visible(nd) { return nd.kind === "mod" || !hiddenKinds.has(nd.k); }
 
@@ -588,7 +846,7 @@ function shortLabel(p) {
   return out.length < p.length ? "…/" + out : p;
 }
 
-function draw() {
+function draw(now) {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cw, ch);
   const isMap = view === "map";
@@ -597,6 +855,7 @@ function draw() {
   for (const l of curLinks) {
     const a = nodeAt(l.s), b = nodeAt(l.t);
     if (!a || !b || !visible(a) || !visible(b)) continue;
+    if (a.born < 0 || b.born < 0) continue; // endpoint not yet detonated
     const ax = a.x * scale + tx, ay = a.y * scale + ty;
     const bx = b.x * scale + tx, by = b.y * scale + ty;
     const hot = (selected && (a === selected || b === selected)) ||
@@ -621,8 +880,10 @@ function draw() {
   const dim = searchQ.length > 0;
   for (const nd of curNodes) {
     if (!visible(nd)) continue;
+    const ss = spawnScale(nd, now);
+    if (ss <= 0) continue;
     const sx = nd.x * scale + tx, sy = nd.y * scale + ty;
-    const r = Math.max(1.4, radiusOf(nd) * scale);
+    const r = Math.max(1.4, baseRadius(nd) * scale) * ss;
     const active = nd === selected || nd === hovered || nd.match;
     ctx.globalAlpha = dim && !nd.match && nd !== selected ? 0.18 : 1;
     ctx.fillStyle = nd.kind === "mod" ? nd.color : colorFor(nd.k);
@@ -668,11 +929,23 @@ function draw() {
     }
   }
   ctx.globalAlpha = 1;
+  drawEffects(now);
 }
 
 function frame() {
+  const now = performance.now();
+  // due detonations
+  if (spawnQueue.length) {
+    const due = spawnQueue.filter(q => q.at <= now);
+    if (due.length) {
+      spawnQueue = spawnQueue.filter(q => q.at > now);
+      for (const q of due) detonate(q.nd, now);
+      reheat(0.35);
+    }
+  }
   if (alpha > ALPHA_MIN) tick();
-  draw();
+  cameraFollow(now);
+  draw(now);
   requestAnimationFrame(frame);
 }
 function reheat(v) { alpha = Math.max(alpha, v || 0.3); }
@@ -681,9 +954,9 @@ function reheat(v) { alpha = Math.max(alpha, v || 0.3); }
 function pick(sx, sy) {
   let best = null, bestD = Infinity;
   for (const nd of curNodes) {
-    if (!visible(nd)) continue;
+    if (!visible(nd) || nd.born < 0) continue;
     const nx = nd.x * scale + tx, ny = nd.y * scale + ty;
-    const r = Math.max(5, radiusOf(nd) * scale + 3);
+    const r = Math.max(5, baseRadius(nd) * scale + 3);
     const dx = sx - nx, dy = sy - ny, d = dx * dx + dy * dy;
     if (d <= r * r && d < bestD) { best = nd; bestD = d; }
   }
@@ -692,6 +965,7 @@ function pick(sx, sy) {
 
 // ---- interaction ----------------------------------------------------------
 canvas.addEventListener("mousedown", e => {
+  followUntil = 0;
   const sx = e.offsetX, sy = e.offsetY;
   downX = sx; downY = sy; moved = false;
   const hit = pick(sx, sy);
@@ -713,12 +987,13 @@ window.addEventListener("mousemove", e => {
 });
 window.addEventListener("mouseup", e => {
   if (dragNode && !moved) {
-    if (dragNode.kind === "mod") { setView("symbols", dragNode.i); }
+    if (dragNode.kind === "mod") { setView("symbols", dragNode); }
     else select(dragNode);
   } else if (!moved && !dragNode) select(null);
   dragNode = null; panning = false; canvas.classList.remove("grabbing");
 });
 canvas.addEventListener("wheel", e => {
+  followUntil = 0;
   e.preventDefault();
   const sx = e.offsetX, sy = e.offsetY;
   const wx = toWorldX(sx), wy = toWorldY(sy);
@@ -758,8 +1033,8 @@ function syncChrome() {
     ? " · <b>" + meta.noiseHidden + "</b> test/vendored hidden" : "";
 
   document.getElementById("mode-map").classList.toggle("on", view === "map");
-  document.getElementById("mode-sym").classList.toggle("on", view === "symbols" && scopeMod < 0);
-  back.style.display = scopeMod >= 0 ? "" : "none";
+  document.getElementById("mode-sym").classList.toggle("on", view === "symbols" && scopeLabel === null);
+  back.style.display = scopeLabel !== null ? "" : "none";
 
   if (view === "map") {
     title.textContent = "Modules (click to drill in)";
@@ -775,16 +1050,16 @@ function syncChrome() {
       row.innerHTML =
         '<span class="sw" style="background:' + m.color + '"></span>' +
         '<span class="ln">' + shortLabel(m.n) + '</span><span class="lc">' + m.mem + '</span>';
-      row.addEventListener("click", () => setView("symbols", m.i));
+      row.addEventListener("click", () => setView("symbols", m));
       rows.appendChild(row);
     }
   } else {
     title.textContent = "Kinds (click to toggle)";
     document.getElementById("hint").textContent =
       "click = inspect · scroll = zoom · drag = pan/move";
-    const scopeLabel = scopeMod >= 0 ? modules[scopeMod].n + " · " : "";
+    const sl = scopeLabel !== null ? scopeLabel + " · " : "";
     document.getElementById("counts").innerHTML =
-      scopeLabel + "showing <b>" + curNodes.length + "</b> symbols · <b>" +
+      sl + "showing <b>" + curNodes.length + "</b> symbols · <b>" +
       curLinks.length + "</b> edges" + noise;
     const counts = {};
     for (const nd of curNodes) counts[nd.k] = (counts[nd.k] || 0) + 1;
@@ -814,6 +1089,87 @@ document.getElementById("fit").addEventListener("click", () => fit());
 document.getElementById("mode-map").addEventListener("click", () => setView("map"));
 document.getElementById("mode-sym").addEventListener("click", () => setView("symbols"));
 document.getElementById("back").addEventListener("click", () => setView("map"));
+
+// ---- live mode: poll, diff, detonate --------------------------------------
+let curGen = DATA.gen || 0;
+
+function showToast(html) {
+  const t = document.getElementById("toast");
+  t.innerHTML = html;
+  t.classList.add("show");
+  clearTimeout(showToast._h);
+  showToast._h = setTimeout(() => t.classList.remove("show"), 4200);
+}
+
+function applyUpdate(d) {
+  DATA.meta = d.meta || DATA.meta;
+  const diff = buildModel(d, true);
+  refreshView();
+  const now = performance.now();
+
+  // Detonations: everything new in the CURRENT view, as a staggered cascade.
+  const inView = new Set(curNodes);
+  const newborn = (view === "map" ? diff.addedMods : diff.addedSyms)
+    .filter(nd => inView.has(nd));
+  newborn.forEach((nd, j) => spawnQueue.push({ nd, at: now + 250 + j * 120 }));
+  // Whatever is new but NOT in view must not stay invisible forever.
+  for (const nd of [...diff.addedSyms, ...diff.addedMods]) {
+    if (!inView.has(nd)) nd.born = 0;
+  }
+
+  // A module that grew: breathe.
+  if (view === "map") {
+    for (const mo of diff.pulsedMods) {
+      if (inView.has(mo)) effects.push({ type: "pulse", nd: mo, t0: now + 200, dur: 1100, color: mo.color });
+    }
+  }
+
+  // Departures: a quiet implosion where they stood.
+  const gone = (view === "map" ? diff.removedMods : diff.removedSyms).filter(nd => nd.placed);
+  for (const nd of gone.slice(0, 30)) {
+    effects.push({ type: "implode", x: nd.x, y: nd.y, r: baseRadius(nd),
+      t0: now, dur: 600, color: nd.kind === "mod" ? nd.color : colorFor(nd.k) });
+  }
+
+  // Fresh connections: one bright pulse each, after the births land.
+  const links = view === "map" ? diff.addedModLinks : diff.addedSymLinks;
+  const nodesArr = view === "map" ? modules : symbols;
+  links.slice(0, 40).forEach((l, j) => {
+    const a = nodesArr[l.s], b = nodesArr[l.t];
+    if (a && b && inView.has(a) && inView.has(b)) {
+      effects.push({ type: "edgePulse", a, b, t0: now + 800 + j * 90, dur: 900 });
+    }
+  });
+
+  // The narration: what just got written.
+  const addedByKind = {};
+  for (const nd of diff.addedSyms) addedByKind[nd.k] = (addedByKind[nd.k] || 0) + 1;
+  const parts = Object.entries(addedByKind).sort((a, b) => b[1] - a[1]).slice(0, 4)
+    .map(([k, c]) => "+" + c + " " + k + (c > 1 ? "s" : ""));
+  const rem = diff.removedSyms.length ? (parts.length ? " · " : "") + "−" + diff.removedSyms.length + " removed" : "";
+  if (parts.length || rem) showToast("✨ " + parts.join(" · ") + rem);
+
+  reheat(0.5);
+  followUntil = now + 3000 + newborn.length * 120;
+}
+
+function setLive(ok) {
+  const el = document.getElementById("live");
+  el.classList.toggle("stale", !ok);
+  document.getElementById("live-txt").textContent = ok ? "live" : "reconnecting…";
+}
+
+if ((DATA.meta || {}).watch) {
+  document.getElementById("live").style.display = "";
+  setInterval(async () => {
+    try {
+      const r = await fetch("/data?known=" + curGen);
+      const d = await r.json();
+      if (d.nodes) { curGen = d.gen || curGen + 1; applyUpdate(d); }
+      setLive(true);
+    } catch (err) { setLive(false); }
+  }, 1500);
+}
 
 // ---- HUD ------------------------------------------------------------------
 document.getElementById("root").textContent = (DATA.meta || {}).root || "";
@@ -878,6 +1234,7 @@ mod tests {
             max_nodes: max,
             all_kinds: all,
             root_label: "/tmp/demo".to_string(),
+            watch: false,
         }
     }
 

@@ -62,7 +62,8 @@ pub async fn run(cli: Cli) -> ExitCode {
             max_nodes,
             all_kinds,
             open,
-        } => cmd::viz(path, out, max_nodes, all_kinds, open).await,
+            watch,
+        } => cmd::viz(path, out, max_nodes, all_kinds, open, watch).await,
 
         // -- serve / daemon / hooks --
         Command::Serve { mcp, path, .. } => cmd::serve(mcp, path).await,

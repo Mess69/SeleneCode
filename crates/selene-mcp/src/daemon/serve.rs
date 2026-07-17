@@ -372,6 +372,7 @@ async fn handle_control(
 
     let reply = match req.selene_control.as_str() {
         "sync" => run_sync(&root).await,
+        "graph" => run_graph(&root).await,
         other => super::control::ControlReply::failure(format!("unknown control verb '{other}'")),
     };
     let mut line = serde_json::to_string(&reply).unwrap_or_default();
@@ -393,9 +394,35 @@ async fn run_sync(root: &std::path::Path) -> super::control::ControlReply {
             changed: stats.changed,
             removed: stats.removed,
             unchanged: stats.unchanged,
+            data: None,
             error: None,
         },
         Err(e) => super::control::ControlReply::failure(format!("{e:#}")),
+    }
+}
+
+/// Dump the whole graph (wire-shape nodes + edges) from the daemon's warm store — the read path
+/// `selene viz --watch` uses while the daemon owns the RocksDB lock.
+async fn run_graph(root: &std::path::Path) -> super::control::ControlReply {
+    let store = match crate::handlers::warm_store_for_root(root).await {
+        Ok(s) => s,
+        Err(e) => return super::control::ControlReply::failure(e),
+    };
+    let nodes = match store.all_nodes().await {
+        Ok(n) => n,
+        Err(e) => return super::control::ControlReply::failure(format!("read nodes: {e:#}")),
+    };
+    let edges = match store.all_edges().await {
+        Ok(e) => e,
+        Err(e) => return super::control::ControlReply::failure(format!("read edges: {e:#}")),
+    };
+    super::control::ControlReply {
+        ok: true,
+        changed: 0,
+        removed: 0,
+        unchanged: 0,
+        data: Some(serde_json::json!({ "nodes": nodes, "edges": edges })),
+        error: None,
     }
 }
 

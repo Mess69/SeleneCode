@@ -173,6 +173,11 @@ pub enum Command {
         /// Open the written file in the default browser.
         #[arg(long)]
         open: bool,
+        /// Live mode: serve the map on a local port and animate index changes
+        /// in real time (new functions/classes burst in as an agent writes them).
+        /// Works alongside a running daemon — reads go through it.
+        #[arg(long)]
+        watch: bool,
     },
     /// List / manage running daemons.
     #[command(alias = "daemons")]
