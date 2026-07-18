@@ -428,27 +428,50 @@ pub async fn purge(path: PathBuf, global_mcp: bool) -> Outcome {
         Err(e) => eprintln!("purge: skipped MCP configs: {e}"),
     }
 
-    // 7 — the empty shell uninstall leaves behind when selene was the only
-    // entry: a bare {"mcpServers": {}}. If the user has OTHER servers in
-    // there, the file keeps them and stays.
-    let mcp_json = root.join(".mcp.json");
-    if let Ok(text) = std::fs::read_to_string(&mcp_json) {
+    // 7 — the empty shells uninstall leaves behind when selene was the only
+    // entry: a bare {"mcpServers": {}} (or {"mcp": {}} for opencode). If the
+    // user has OTHER servers in a file, it keeps them and stays. Emptied
+    // selene-created dirs (.cursor/rules, .kiro/settings, …) go too.
+    let shells: [(&str, &str); 6] = [
+        (".mcp.json", "mcpServers"),
+        (".cursor/mcp.json", "mcpServers"),
+        (".gemini/settings.json", "mcpServers"),
+        (".kiro/settings/mcp.json", "mcpServers"),
+        ("opencode.json", "mcp"),
+        ("opencode.jsonc", "mcp"),
+    ];
+    for (rel, container) in shells {
+        let path = root.join(rel);
+        let Ok(text) = std::fs::read_to_string(&path) else {
+            continue;
+        };
         let is_empty_shell = serde_json::from_str::<serde_json::Value>(&text)
             .ok()
             .and_then(|v| {
                 let obj = v.as_object()?;
                 Some(
-                    obj.keys().all(|k| k == "mcpServers")
+                    obj.keys().all(|k| k == container)
                         && obj
-                            .get("mcpServers")
+                            .get(container)
                             .and_then(|s| s.as_object())
                             .is_none_or(|s| s.is_empty()),
                 )
             })
             .unwrap_or(false);
-        if is_empty_shell && std::fs::remove_file(&mcp_json).is_ok() {
-            eprintln!("purge: removed the now-empty .mcp.json");
+        if is_empty_shell && std::fs::remove_file(&path).is_ok() {
+            eprintln!("purge: removed the now-empty {rel}");
         }
+    }
+    // remove_dir only succeeds on EMPTY dirs — anything of the user's stays.
+    for rel in [
+        ".cursor/rules",
+        ".cursor",
+        ".gemini",
+        ".kiro/settings",
+        ".kiro/steering",
+        ".kiro",
+    ] {
+        let _ = std::fs::remove_dir(root.join(rel));
     }
 
     eprintln!("purge: done — your source files were never touched");

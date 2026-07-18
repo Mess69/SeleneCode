@@ -559,12 +559,21 @@ fn uninstall_instruction(instr: Instruction) -> (PathBuf, Result<(Action, Option
         }
         Instruction::Owned(path) => {
             let res = (|| {
-                if path.exists() {
-                    std::fs::remove_file(&path)?;
-                    Ok((Action::Removed, None))
-                } else {
-                    Ok((Action::NotFound, None))
+                if !path.exists() {
+                    return Ok((Action::NotFound, None));
                 }
+                // "Owned" is a naming convention, not proof: delete only what
+                // is still byte-for-byte OURS. A user who edited selene.mdc /
+                // selene.md keeps their file (and a note says why).
+                let ours = format!("{}\n", format::markdown::block());
+                if read_or_note(&path)? != ours {
+                    return Ok((
+                        Action::Kept,
+                        Some("modified since install — left in place".into()),
+                    ));
+                }
+                std::fs::remove_file(&path)?;
+                Ok((Action::Removed, None))
             })();
             (path, res)
         }

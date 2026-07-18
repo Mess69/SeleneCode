@@ -373,20 +373,78 @@ pub mod yaml {
         })
     }
 
-    /// Remove `- <item>` from `platform_toolsets.cli:`.
+    /// Remove `- <item>` from `platform_toolsets.cli:` — and ONLY from there.
+    /// The user may have listed the same item under other toolsets or
+    /// allowlists; a file-wide line match would silently delete those too.
     pub fn remove_toolset(text: &str, item: &str) -> Result<Edit> {
-        let target = format!("    - {item}");
+        let target = format!("- {item}");
         let had_trailing_nl = text.ends_with('\n');
         let mut lines: Vec<String> = text
             .trim_end_matches('\n')
             .split('\n')
             .map(|s| s.to_string())
             .collect();
+
+        // platform_toolsets: block = from the top-level key to the next
+        // top-level (unindented, non-blank) line.
+        let Some(pt) = lines
+            .iter()
+            .position(|l| l.trim_end() == "platform_toolsets:")
+        else {
+            return Ok(Edit::Unchanged);
+        };
+        let pt_end = lines
+            .iter()
+            .enumerate()
+            .skip(pt + 1)
+            .find(|(_, l)| !l.trim().is_empty() && !l.starts_with(' '))
+            .map(|(i, _)| i)
+            .unwrap_or(lines.len());
+        // cli: within it, then cli's sub-block (lines indented deeper).
+        let Some(cli) = (pt + 1..pt_end).find(|&i| lines[i].trim() == "cli:") else {
+            return Ok(Edit::Unchanged);
+        };
+        let cli_indent = lines[cli].len() - lines[cli].trim_start().len();
+        let cli_end = (cli + 1..pt_end)
+            .find(|&i| {
+                let l = &lines[i];
+                !l.trim().is_empty() && (l.len() - l.trim_start().len()) <= cli_indent
+            })
+            .unwrap_or(pt_end);
+
         let before = lines.len();
-        lines.retain(|l| l.trim_end() != target.trim_end());
+        let keep: Vec<String> = lines
+            .iter()
+            .enumerate()
+            .filter(|(i, l)| !((cli + 1..cli_end).contains(i) && l.trim() == target))
+            .map(|(_, l)| l.clone())
+            .collect();
+        lines = keep;
         if lines.len() == before {
             return Ok(Edit::Unchanged);
         }
+        // If cli: (and then platform_toolsets:) lost their last entry, drop
+        // the emptied keys too — mirrors what upsert scaffolds. "Empty" =
+        // the first non-blank line after the key is not indented deeper.
+        let cli_now_empty = lines
+            .iter()
+            .skip(cli + 1)
+            .find(|l| !l.trim().is_empty())
+            .map(|l| (l.len() - l.trim_start().len()) <= cli_indent)
+            .unwrap_or(true);
+        if cli_now_empty {
+            lines.remove(cli);
+            let pt_now_empty = lines
+                .iter()
+                .skip(pt + 1)
+                .find(|l| !l.trim().is_empty())
+                .map(|l| !l.starts_with(' '))
+                .unwrap_or(true);
+            if pt_now_empty {
+                lines.remove(pt);
+            }
+        }
+
         let mut out = lines.join("\n");
         if had_trailing_nl {
             out.push('\n');
@@ -417,20 +475,18 @@ pub mod yaml {
             return Ok(Edit::Unchanged);
         };
         lines.splice(start..end, std::iter::empty());
-        // If mcp_servers: now has no indented children, drop it too.
-        let empty = lines
-            .get(idx + 1)
-            .map(|l| !in_block(l) || l.is_empty())
-            .unwrap_or(true);
-        if empty {
-            // remove the mcp_servers: line if the following line isn't an indented child
-            let next_is_child = lines
-                .get(idx + 1)
-                .map(|l| l.starts_with(' ') && !l.trim().is_empty())
-                .unwrap_or(false);
-            if !next_is_child {
-                lines.remove(idx);
-            }
+        // If mcp_servers: now has no indented children, drop it too. The
+        // probe is the first NON-BLANK line after the key — a user's blank
+        // separator line must not read as "no children" (that used to delete
+        // the parent while its surviving children stayed: broken YAML).
+        let has_child = lines
+            .iter()
+            .skip(idx + 1)
+            .find(|l| !l.trim().is_empty())
+            .map(|l| l.starts_with(' '))
+            .unwrap_or(false);
+        if !has_child {
+            lines.remove(idx);
         }
 
         let mut out = lines.join("\n");
@@ -469,25 +525,41 @@ pub mod markdown {
         )
     }
 
-    fn strip(text: &str) -> String {
-        let Some(begin) = text.find(MARKER_BEGIN) else {
-            return text.trim_end().to_string();
-        };
-        let after = match text[begin..].find(MARKER_END) {
-            Some(rel) => begin + rel + MARKER_END.len(),
-            None => text.len(),
-        };
-        let mut end = after;
+    /// The fenced block's byte span, END-inclusive (+ one trailing newline).
+    /// `None` when there is no begin marker — or when the file is MALFORMED
+    /// (a begin without an end, from a hand edit or a merge). A malformed
+    /// fence must make the caller refuse: guessing "the block runs to EOF"
+    /// deletes every user line written after the start marker.
+    fn block_span(text: &str) -> Option<(usize, usize)> {
+        let begin = text.find(MARKER_BEGIN)?;
+        let rel = text[begin..].find(MARKER_END)?;
+        let mut end = begin + rel + MARKER_END.len();
         if text[end..].starts_with('\n') {
             end += 1;
         }
+        Some((begin, end))
+    }
+
+    /// A begin marker with no end marker — the one shape we never touch.
+    fn is_malformed(text: &str) -> bool {
+        text.contains(MARKER_BEGIN) && block_span(text).is_none()
+    }
+
+    fn strip(text: &str) -> String {
+        let Some((begin, end)) = block_span(text) else {
+            return text.trim_end().to_string();
+        };
         format!("{}{}", &text[..begin], &text[end..])
             .trim_end()
             .to_string()
     }
 
     /// Upsert the selene instructions block into `text` (or a fresh file), touching nothing else.
+    /// A malformed fence (begin without end) is left strictly alone.
     pub fn upsert(text: &str) -> Edit {
+        if is_malformed(text) {
+            return Edit::Unchanged;
+        }
         let base = strip(text);
         let out = if base.trim().is_empty() {
             format!("{}\n", block())
@@ -502,8 +574,12 @@ pub mod markdown {
     }
 
     /// Remove the selene block. Returns whether the file should be **deleted** (nothing else left).
+    /// A malformed fence (begin without end) is left strictly alone — never stripped, never deleted.
     pub fn remove(text: &str) -> (Edit, bool) {
         if !text.contains(MARKER_BEGIN) {
+            return (Edit::Unchanged, false);
+        }
+        if is_malformed(text) {
             return (Edit::Unchanged, false);
         }
         let base = strip(text);
@@ -652,6 +728,64 @@ mod tests {
         assert!(out.contains("  other:"), "neighbor kept: {out}");
         assert!(!out.contains("selene"), "selene removed");
         assert_eq!(yaml::remove(&out).unwrap(), Edit::Unchanged, "idempotent");
+    }
+
+    #[test]
+    fn yaml_remove_keeps_the_parent_when_a_blank_separates_the_children() {
+        // A blank line after `mcp_servers:` is ordinary hand-written YAML.
+        // The old emptiness probe read it as "no children" and deleted the
+        // parent line, orphaning the user's other servers into broken YAML.
+        let src = "mcp_servers:\n\n  selene:\n    command: s\n  other:\n    command: o\n";
+        let Edit::Write(out) = yaml::remove(src).unwrap() else {
+            panic!("expected a write");
+        };
+        assert!(out.contains("mcp_servers:"), "parent kept: {out}");
+        assert!(out.contains("  other:"), "neighbor kept: {out}");
+        assert!(!out.contains("selene"));
+    }
+
+    #[test]
+    fn yaml_remove_toolset_touches_only_the_cli_list() {
+        // The same entry under another toolset (or any unrelated list) is the
+        // USER's line — a file-wide match used to delete those too.
+        let src = "platform_toolsets:\n  cli:\n    - mcp-selene\n    - other-tool\n  web:\n    - mcp-selene\nother_section:\n  allow:\n    - mcp-selene\n";
+        let Edit::Write(out) = yaml::remove_toolset(src, "mcp-selene").unwrap() else {
+            panic!("expected a write");
+        };
+        assert!(out.contains("  web:\n    - mcp-selene"), "web list untouched: {out}");
+        assert!(out.contains("  allow:\n    - mcp-selene"), "allowlist untouched: {out}");
+        assert!(out.contains("    - other-tool"), "cli sibling kept: {out}");
+        assert_eq!(out.matches("mcp-selene").count(), 2, "only cli's entry went: {out}");
+    }
+
+    #[test]
+    fn yaml_remove_toolset_drops_the_emptied_scaffold() {
+        // The exact shape upsert creates round-trips back to nothing.
+        let src = "model: gpt\nplatform_toolsets:\n  cli:\n    - mcp-selene\n";
+        let Edit::Write(out) = yaml::remove_toolset(src, "mcp-selene").unwrap() else {
+            panic!("expected a write");
+        };
+        assert_eq!(out, "model: gpt\n", "scaffold gone: {out}");
+    }
+
+    #[test]
+    fn markdown_refuses_a_malformed_fence() {
+        // A begin marker whose end was lost (merge, hand edit): everything
+        // after it is USER content — guessing "block runs to EOF" deletes it.
+        let src = format!(
+            "# Mine\n\n{}\n## SeleneCode\n\n# USER SECTION WRITTEN LATER\nimportant user notes\n",
+            markdown::MARKER_BEGIN
+        );
+        assert_eq!(markdown::upsert(&src), Edit::Unchanged, "upsert refuses");
+        let (edit, delete) = markdown::remove(&src);
+        assert_eq!(edit, Edit::Unchanged, "remove refuses");
+        assert!(!delete, "and never deletes the file");
+
+        // Even when nothing precedes the begin marker.
+        let src = format!("{}\nstuff\n# user notes after\n", markdown::MARKER_BEGIN);
+        let (edit, delete) = markdown::remove(&src);
+        assert_eq!(edit, Edit::Unchanged);
+        assert!(!delete, "no end marker ⇒ the file is never deleted");
     }
 
     #[test]
