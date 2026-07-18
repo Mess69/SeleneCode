@@ -68,8 +68,15 @@ daemon watches for file changes while an agent is connected. Manual controls, if
 selene status             # what's in the graph
 selene sync               # incremental refresh — only touched files
 selene index              # full rebuild from scratch
-selene uninstall          # remove the MCP config; `selene uninit` removes .selene/ + hooks
+selene purge              # remove EVERYTHING selene added to this project, one shot
 ```
+
+`selene purge` is the clean exit: it stops the daemon, deletes `.selene/`, strips the selene block
+from the git hooks (your own hook content stays), cleans the `.git/info/exclude` entry, removes
+`selene-graph.html`, and takes selene out of the project's MCP configs (a `.mcp.json` that lists
+your other servers is preserved). Your source files are never touched. Add `--global-mcp` to also
+strip selene from the global agent configs (`~/.claude.json`, …). The finer-grained pieces exist
+too: `selene uninit` (index + hooks only), `selene uninstall` (MCP configs only).
 
 ### Ask questions from the terminal (no agent needed)
 

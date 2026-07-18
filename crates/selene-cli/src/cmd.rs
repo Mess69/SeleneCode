@@ -321,6 +321,140 @@ pub fn uninit(path: PathBuf, _force: bool) -> Outcome {
     }
 }
 
+/// `selene purge` — the one-shot full removal: everything SeleneCode ever
+/// added to a project, gone. Source files are never touched (extraction is
+/// read-only by design; the only artifacts are the ones removed here).
+///
+/// Order matters: the daemon dies first (it holds the RocksDB lock inside
+/// `.selene/`), then the files, then the MCP config entries. Every step is
+/// best-effort and reported — a missing piece is a no-op, not an error.
+pub async fn purge(path: PathBuf, global_mcp: bool) -> Outcome {
+    let Ok(root) = path.canonicalize() else {
+        eprintln!("nothing to purge: no such path {}", path.display());
+        return Outcome::ExpectedNoOp;
+    };
+
+    // 1 — stop the daemon (it owns .selene/'s RocksDB lock). TERM first; a
+    // daemon with a live agent session shuts down gracefully only when that
+    // session closes, and purge must not wait on an agent — escalate to KILL.
+    if let Some(pid) = selene_mcp::daemon::running_pid(&root) {
+        let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+        let mut waited = 0u32;
+        while selene_mcp::daemon::proc::is_alive(pid) && waited < 30 {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            waited += 1;
+        }
+        if selene_mcp::daemon::proc::is_alive(pid) {
+            // SIGKILL is unconditional; afterwards the pid can only linger as a
+            // zombie (unreaped), and a zombie holds no locks — treat as stopped.
+            let _ = std::process::Command::new("kill")
+                .args(["-9", &pid.to_string()])
+                .status();
+            std::thread::sleep(std::time::Duration::from_millis(300));
+            eprintln!("purge: stopped the daemon (pid {pid}, forced)");
+        } else {
+            eprintln!("purge: stopped the daemon (pid {pid})");
+        }
+    }
+
+    // 2 — strip our block from the git hooks (surgical: user hook content stays).
+    match selene_sync::hooks::remove(&root) {
+        Ok(results) => {
+            let stripped = results.iter().filter(|r| r.action != "not-found").count();
+            if stripped > 0 {
+                eprintln!("purge: removed the selene block from {stripped} git hook(s)");
+            }
+        }
+        Err(e) => eprintln!("purge: could not remove git hooks: {e}"),
+    }
+
+    // 3 — the index itself.
+    let dir = root.join(".selene");
+    if dir.exists() {
+        match std::fs::remove_dir_all(&dir) {
+            Ok(()) => eprintln!("purge: removed {}", dir.display()),
+            Err(e) => {
+                eprintln!("purge: could not remove {}: {e}", dir.display());
+                return Outcome::Failure;
+            }
+        }
+    }
+
+    // 4 — the `.git/info/exclude` lines `selene init` added.
+    let exclude = root.join(".git").join("info").join("exclude");
+    if let Ok(current) = std::fs::read_to_string(&exclude) {
+        let cleaned: String = current
+            .lines()
+            .filter(|l| {
+                let t = l.trim();
+                t != ".selene/" && !t.contains("SeleneCode index (added by `selene init`)")
+            })
+            .map(|l| format!("{l}\n"))
+            .collect();
+        if cleaned != current && std::fs::write(&exclude, cleaned).is_ok() {
+            eprintln!("purge: cleaned .selene/ out of .git/info/exclude");
+        }
+    }
+
+    // 5 — the viz page, if one was written at the default location.
+    let viz_page = root.join("selene-graph.html");
+    if viz_page.exists() && std::fs::remove_file(&viz_page).is_ok() {
+        eprintln!("purge: removed {}", viz_page.display());
+    }
+
+    // 6 — the MCP config entries. Local always (they live in the project);
+    // global only on request — other projects may still use SeleneCode.
+    match selene_installer::Ctx::from_env() {
+        Ok(mut ctx) => {
+            ctx.cwd = root.clone(); // `-p` must purge THAT project's configs, not the cwd's
+            let all = ["all".to_string()];
+            let (_, ids) = match resolve_targets("purge", &all, "local", &ctx) {
+                Ok(v) => v,
+                Err(o) => return o,
+            };
+            let results = selene_installer::uninstall(&ids, selene_installer::Location::Local, &ctx);
+            report_targets("purge (local mcp)", &results);
+            if global_mcp {
+                let results =
+                    selene_installer::uninstall(&ids, selene_installer::Location::Global, &ctx);
+                report_targets("purge (global mcp)", &results);
+            } else {
+                eprintln!(
+                    "purge: global agent configs left alone (other projects may use selene) — \
+                     add --global-mcp to strip those too"
+                );
+            }
+        }
+        Err(e) => eprintln!("purge: skipped MCP configs: {e}"),
+    }
+
+    // 7 — the empty shell uninstall leaves behind when selene was the only
+    // entry: a bare {"mcpServers": {}}. If the user has OTHER servers in
+    // there, the file keeps them and stays.
+    let mcp_json = root.join(".mcp.json");
+    if let Ok(text) = std::fs::read_to_string(&mcp_json) {
+        let is_empty_shell = serde_json::from_str::<serde_json::Value>(&text)
+            .ok()
+            .and_then(|v| {
+                let obj = v.as_object()?;
+                Some(
+                    obj.keys().all(|k| k == "mcpServers")
+                        && obj
+                            .get("mcpServers")
+                            .and_then(|s| s.as_object())
+                            .is_none_or(|s| s.is_empty()),
+                )
+            })
+            .unwrap_or(false);
+        if is_empty_shell && std::fs::remove_file(&mcp_json).is_ok() {
+            eprintln!("purge: removed the now-empty .mcp.json");
+        }
+    }
+
+    eprintln!("purge: done — your source files were never touched");
+    Outcome::Ok
+}
+
 /// `selene status` — what the graph holds. Not indexed ⇒ guidance + exit 1.
 pub async fn status(path: PathBuf, json: bool) -> Outcome {
     let root = match query_root_direct(Some(path)) {

@@ -42,6 +42,18 @@ pub enum Command {
         #[arg(short, long)]
         force: bool,
     },
+    /// Remove EVERYTHING SeleneCode added to a project in one shot: stops the
+    /// daemon, deletes `.selene/`, strips the git hooks and the
+    /// `.git/info/exclude` entry, removes `selene-graph.html`, and takes selene
+    /// out of the project's MCP configs. Your source files are never touched.
+    Purge {
+        #[arg(default_value = ".")]
+        path: PathBuf,
+        /// Also strip selene from the GLOBAL agent configs (~/.claude.json, …),
+        /// not just this project's.
+        #[arg(long)]
+        global_mcp: bool,
+    },
     /// Rebuild the full index from scratch.
     Index {
         #[arg(default_value = ".")]

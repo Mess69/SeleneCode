@@ -16,7 +16,7 @@ use std::process::ExitCode;
 
 use exit::Outcome;
 
-/// The one dispatch — 23 arms. Returns the process exit code (see [`exit`] for the contract).
+/// The one dispatch — 24 arms. Returns the process exit code (see [`exit`] for the contract).
 pub async fn run(cli: Cli) -> ExitCode {
     let outcome = match cli.command {
         // -- lifecycle --
@@ -27,6 +27,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             ..
         } => cmd::init(path, force, no_hooks).await,
         Command::Uninit { path, force } => cmd::uninit(path, force),
+        Command::Purge { path, global_mcp } => cmd::purge(path, global_mcp).await,
         Command::Index { path, .. } => cmd::index(path).await,
         Command::Sync { path, quiet } => cmd::sync(path, quiet).await,
         Command::Embed { path } => cmd::embed(path).await,
