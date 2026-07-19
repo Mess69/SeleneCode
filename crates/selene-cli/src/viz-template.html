@@ -28,7 +28,16 @@
   }
 
   #hud { top: 12px; left: 12px; padding: 10px 12px; max-width: 46vw; }
-  #hud h1 { margin: 0 0 2px; font-size: 13px; font-weight: 650; letter-spacing: .2px; }
+  #hud h1 { margin: 0 0 2px; font-size: 14px; font-weight: 700; letter-spacing: .2px; }
+  #hud h1 .rank { font-size: 11px; font-weight: 600; color: #d7c37a; background: rgba(215,195,122,0.12);
+    border: 1px solid rgba(215,195,122,0.35); border-radius: 10px; padding: 1px 8px; margin-left: 6px;
+    vertical-align: 1px; }
+  #xp { position: relative; height: 5px; margin: 7px 0 2px; background: rgba(140,152,190,0.15);
+    border-radius: 3px; overflow: visible; }
+  #xp-fill { height: 100%; width: 0%; border-radius: 3px;
+    background: linear-gradient(90deg, #6ea8fe, #63e6be); transition: width 0.8s cubic-bezier(0.22,1,0.36,1); }
+  #xp-txt { position: absolute; right: 0; top: -14px; font-size: 9px; color: #97a0b8; }
+  .medal { display: inline-block; width: 16px; text-align: center; margin-right: 2px; font-size: 11px; }
   #hud .sub { color: #97a0b8; font-size: 11px; word-break: break-all; }
   #hud .counts { margin-top: 6px; color: #c6ccdd; font-size: 11px; }
   #hud .counts b { color: #fff; font-weight: 650; }
@@ -89,9 +98,10 @@
   <div id="toast"></div>
 
   <div id="hud" class="panel">
-    <h1>selene galaxy <span id="live" style="display:none"><span class="dot"></span><span id="live-txt">live</span></span></h1>
+    <h1><span id="project">selene galaxy</span> <span id="rank" class="rank" style="display:none"></span> <span id="live" style="display:none"><span class="dot"></span><span id="live-txt">live</span></span></h1>
     <div class="sub" id="root"></div>
     <div class="counts" id="counts"></div>
+    <div id="xp" style="display:none"><div id="xp-fill"></div><span id="xp-txt"></span></div>
     <div class="counts" id="mem" style="display:none"><span id="mem-txt"></span><canvas id="spark" width="110" height="18"></canvas></div>
     <div class="hint" id="hint">click a module = drill in · scroll = zoom · drag = pan/move</div>
   </div>
@@ -695,6 +705,7 @@ function syncChrome() {
   const noise = meta.noiseHidden
     ? " · <b>" + meta.noiseHidden + "</b> test/vendored hidden" : "";
 
+  if (typeof updateRank === "function") updateRank();
   document.getElementById("mode-map").classList.toggle("on", view === "map");
   document.getElementById("mode-sym").classList.toggle("on", view === "symbols" && scopeLabel === null);
   back.style.display = scopeLabel !== null ? "" : "none";
@@ -707,15 +718,17 @@ function syncChrome() {
       "<b>" + modules.length + "</b> modules · <b>" + modLinks.length + "</b> dependencies · <b>" +
       (meta.total || symbols.length) + "</b> symbols" + noise;
     const sorted = modules.slice().sort((a, b) => b.mem - a.mem);
-    for (const m of sorted) {
+    const medals = ["🥇", "🥈", "🥉"];
+    sorted.forEach((m, i) => {
       const row = document.createElement("div");
       row.className = "lrow";
       row.innerHTML =
+        '<span class="medal">' + (medals[i] || "") + '</span>' +
         '<span class="sw" style="background:' + m.color + '"></span>' +
         '<span class="ln">' + shortLabel(m.n) + '</span><span class="lc">' + m.mem + '</span>';
       row.addEventListener("click", () => setView("symbols", m));
       rows.appendChild(row);
-    }
+    });
   } else {
     title.textContent = "Kinds (click to toggle)";
     document.getElementById("hint").textContent =
@@ -866,8 +879,37 @@ if ((DATA.meta || {}).watch) {
   }, 1500);
 }
 
-// ---- HUD ------------------------------------------------------------------
-document.getElementById("root").textContent = (DATA.meta || {}).root || "";
+// ---- HUD: the project is the star, selene is the engine --------------------
+const rootPath = (DATA.meta || {}).root || "";
+const projectName = rootPath.split("/").filter(Boolean).pop() || "project";
+document.getElementById("project").textContent = projectName;
+document.getElementById("root").textContent = rootPath + " · selene galaxy";
+document.title = projectName + " — selene galaxy";
+
+// Light gamification: a level grows on the cube root of the symbol count
+// (every level costs more), a rank names the scale of the codebase.
+function rankOf(total) {
+  if (total >= 10000) return "🪐 Universe";
+  if (total >= 2000) return "🌌 Galaxy";
+  if (total >= 500) return "✨ Constellation";
+  if (total >= 100) return "✦ Cluster";
+  return "🌱 Seedling";
+}
+function updateRank() {
+  const total = (DATA.meta || {}).total || symbols.length;
+  const lvl = Math.max(1, Math.floor(Math.cbrt(total)));
+  const base = lvl * lvl * lvl, next = (lvl + 1) * (lvl + 1) * (lvl + 1);
+  const pct = Math.max(0, Math.min(100, ((total - base) / (next - base)) * 100));
+  const rk = document.getElementById("rank");
+  rk.style.display = "";
+  rk.textContent = rankOf(total) + " · Lv " + lvl;
+  const xp = document.getElementById("xp");
+  xp.style.display = "";
+  document.getElementById("xp-fill").style.width = pct.toFixed(1) + "%";
+  document.getElementById("xp-txt").textContent =
+    (next - total) + " symbols to Lv " + (lvl + 1);
+}
+updateRank();
 
 setView(modules.length > 1 ? "map" : "symbols");
 frame();
