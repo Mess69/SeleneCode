@@ -42,8 +42,9 @@ pub enum Command {
         #[arg(short, long)]
         force: bool,
     },
-    /// Remove EVERYTHING SeleneCode added to a project in one shot: stops the
-    /// daemon, deletes `.selene/`, strips the git hooks and the
+    /// Remove EVERYTHING SeleneCode added to a project, in one shot.
+    ///
+    /// Stops the daemon, deletes `.selene/`, strips the git hooks and the
     /// `.git/info/exclude` entry, removes `selene-graph.html`, and takes selene
     /// out of the project's MCP configs. Your source files are never touched.
     Purge {
@@ -72,9 +73,11 @@ pub enum Command {
         #[arg(short, long)]
         quiet: bool,
     },
-    /// Add semantic (vector) search to an existing index — embeds every symbol locally so a query
-    /// finds meaning, not just tokens (e.g. `keypress` reaches `keybinding`). Needs the
-    /// `semantic-search` build feature. Optional; the lexical index works without it.
+    /// Add semantic (vector) search to an existing index.
+    ///
+    /// Embeds every symbol locally so a query finds meaning, not just tokens
+    /// (e.g. `keypress` reaches `keybinding`). Needs the `semantic-search`
+    /// build feature. Optional; the lexical index works without it.
     Embed {
         #[arg(default_value = ".")]
         path: PathBuf,
