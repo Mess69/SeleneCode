@@ -13,7 +13,7 @@
 // gate its import to a disk backend so a mem-only build stays warning-clean.
 // `Duration` is engine-independent: `bulk_load_finish`'s index-build poll
 // uses it on every backend (the reopen backoff also does, on disk builds).
-#[cfg(any(feature = "kv-surrealkv", feature = "kv-rocksdb"))]
+#[cfg(feature = "kv-rocksdb")]
 use std::path::Path;
 use std::time::Duration;
 
@@ -21,10 +21,8 @@ use surrealdb::Surreal;
 use surrealdb::engine::local::Db;
 #[cfg(feature = "kv-mem")]
 use surrealdb::engine::local::Mem;
-#[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
+#[cfg(feature = "kv-rocksdb")]
 use surrealdb::engine::local::RocksDb;
-#[cfg(feature = "kv-surrealkv")]
-use surrealdb::engine::local::SurrealKv;
 
 use crate::schema;
 use crate::{Error, Result};
@@ -95,7 +93,7 @@ pub struct SurrealStore {
 /// The L0 triggers go back to stock RocksDB values: SurrealDB tightens them for read latency
 /// (slowdown at 8 L0 files, stop at 12 — stock is 20/36), which throttles exactly the kind of
 /// bulk write an index pass is.
-#[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
+#[cfg(feature = "kv-rocksdb")]
 #[allow(unsafe_code)] // the `set_var`s below; safety argued inline
 fn cap_rocksdb_block_cache() {
     // SAFETY (all sets): called once at store-open, before the datastore below (the sole reader
@@ -137,33 +135,13 @@ impl SurrealStore {
     /// engine. Namespace/database are already selected; call
     /// [`Self::apply_schema`] before use.
     ///
-    /// **Not** the default disk backend since the §5.3 gate run (2026-07-12):
-    /// SurrealKV measured 15.3x slower than RocksDB on the bulk write path
-    /// (2,161.8 s vs 141.7 s per 100k-node load — see
-    /// `docs/benchmarks/2026-07-phase1-db-gate.md`), so the `kv-surrealkv`
-    /// feature is now opt-in. When it *is* compiled, this variant is the one
-    /// that exists — enabling the feature is an explicit choice (e.g. to open
-    /// an existing SurrealKV store), and it takes preference over RocksDB.
-    /// With only `kv-rocksdb` (the default), the RocksDB variant below is
-    /// compiled instead; with neither disk feature, `open` is not compiled at
-    /// all.
-    #[cfg(feature = "kv-surrealkv")]
-    pub async fn open(dir: &Path) -> Result<Self> {
-        let db = connect_disk_with_lock_retry(|| Surreal::new::<SurrealKv>(dir)).await?;
-        db.use_ns(NAMESPACE).use_db(DATABASE).await?;
-        Ok(Self {
-            db,
-            serialize_writes: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        })
-    }
-
     /// Open (creating if absent) an on-disk store at `dir`, using RocksDB —
     /// the **default** disk backend (§5.3 gate, 2026-07-12: fastest bulk load
     /// of the disk engines measured, with traversal reads equivalent to
-    /// kv-mem's). Compiled only when `kv-rocksdb` is on and `kv-surrealkv` is
-    /// off (so exactly one `open` exists); see the surrealkv variant above
-    /// for the preference rationale and the shared documented behavior.
-    #[cfg(all(feature = "kv-rocksdb", not(feature = "kv-surrealkv")))]
+    /// kv-mem's). The sole disk backend: the `kv-surrealkv` alternative was
+    /// DELETED after the §5.3 gate measured it 15.3x slower on the bulk write
+    /// path (docs/benchmarks/2026-07-phase1-db-gate.md) — git history keeps it.
+    #[cfg(feature = "kv-rocksdb")]
     pub async fn open(dir: &Path) -> Result<Self> {
         cap_rocksdb_block_cache();
         // TEMP EXPERIMENT (write-path ②): `?sync=never` skips the per-commit
@@ -422,7 +400,7 @@ fn index_build_state(info: Option<&serde_json::Value>) -> IndexBuildState {
 /// immediate reopen (a test, a daemon restart) succeed; a lock genuinely held
 /// by another *live* process persists past the budget, and its error is
 /// surfaced unchanged. Non-lock errors fail immediately.
-#[cfg(any(feature = "kv-surrealkv", feature = "kv-rocksdb"))]
+#[cfg(feature = "kv-rocksdb")]
 async fn connect_disk_with_lock_retry<F, Fut>(mut connect: F) -> Result<Surreal<Db>>
 where
     F: FnMut() -> Fut,

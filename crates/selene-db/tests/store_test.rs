@@ -6,7 +6,7 @@
 //! Proves the four load-bearing guarantees of the schema layer:
 //! 1. a fresh in-memory store applies the schema and reports version 1;
 //! 2. `apply_schema` is idempotent (the whole schema is `IF NOT EXISTS`);
-//! 3. an on-disk store (`open`, default `kv-surrealkv`) persists the schema
+//! 3. an on-disk store (`open`, RocksDB) persists the schema
 //!    version across a close/reopen of the same directory;
 //! 4. the edge unique index folds a missing `line`/`col` to `-1`, so two edges
 //!    with no source position between the same endpoints are duplicates.
@@ -64,7 +64,7 @@ async fn apply_schema_is_idempotent() {
     assert_eq!(store.schema_version().await.unwrap(), Some(1));
 }
 
-#[cfg(any(feature = "kv-surrealkv", feature = "kv-rocksdb"))]
+#[cfg(feature = "kv-rocksdb")]
 #[tokio::test(flavor = "multi_thread")]
 async fn on_disk_schema_version_survives_reopen() {
     let tmp = tempfile::tempdir().unwrap();

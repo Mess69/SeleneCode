@@ -8,12 +8,11 @@ license.workspace = true
 
 [dependencies]
 selene-core = { path = "../selene-core" }
-# ⚠ NOT `kv-surrealkv`. Cargo UNIFIES features across the dependency graph, so this line
-# reaches into the `selene` binary and decides its storage engine from three crates away —
-# and `SurrealStore::open` prefers SurrealKV whenever it is compiled in (surreal.rs:93).
-# SurrealKV measured **46 nodes/s vs RocksDB's 706** in the Phase-1 gate, which called it
-# "pathologically slow on this write load" and made RocksDB the default. Naming it here
-# silently overrode that default for the whole product.
+# ⚠ Cargo UNIFIES features across the dependency graph, so this line reaches into the
+# `selene` binary and decides its storage engine from three crates away. That is how the
+# deleted `kv-surrealkv` feature (46 nodes/s vs RocksDB's 706, Phase-1 gate) once silently
+# became the whole product's backend. RocksDB is the sole disk backend now — if an
+# alternate kv feature ever returns, never name it here.
 selene-db = { path = "../selene-db", default-features = false, features = ["kv-rocksdb"] }
 selene-graph = { path = "../selene-graph" }
 selene-context = { path = "../selene-context" }

@@ -26,11 +26,6 @@ futures = { workspace = true }
 # sleeps too). Costs nothing extra — surrealdb's embedded engines already
 # require a tokio runtime, so tokio is in every build's dependency graph anyway.
 tokio = { workspace = true }
-# LadybugDB (Kuzu-successor embedded property-graph DB) — the migration store, OPTIONAL and
-# off by default (its C++ core is a ~minutes cmake build). Enabled by `kv-ladybug`. See
-# docs/plans/2026-07-16-ladybug-migration.md and `ladybug.rs`.
-lbug = { version = "0.18", optional = true }
-
 [dev-dependencies]
 tokio = { workspace = true }
 tempfile = { workspace = true }
@@ -50,12 +45,13 @@ criterion = { version = "0.8", default-features = false, features = [
 #                  vs 2,161.8 s per 100k-node load — with equivalent traversal
 #                  reads; docs/benchmarks/2026-07-phase1-db-gate.md). Cost: a
 #                  ~7.5 min C++ first build and a fatter binary.
-#   kv-surrealkv — on-disk SurrealKV engine; OPTIONAL (measured pathologically
-#                  slow on this bulk write load: ~36 min per 100k-node load,
-#                  sync/IO-bound). When explicitly compiled in, `open()` still
-#                  prefers it over RocksDB — enabling the feature is an opt-in
-#                  (e.g. to open an existing SurrealKV store).
-# `open()` is only compiled when at least one disk backend is enabled.
+# (kv-surrealkv and kv-ladybug were DELETED 2026-07-19: SurrealKV measured
+# pathologically slow on this bulk write load — ~36 min vs 141.7 s per
+# 100k-node load — and LadybugDB measured slower and no lighter than
+# SurrealDB+RocksDB. Both live on in git history and their measurement docs:
+# docs/benchmarks/2026-07-phase1-db-gate.md, docs/plans/2026-07-16-ladybug-migration.md.
+# RocksDB is the sole disk backend; do not re-add alternates without a new gate.)
+# `open()` is only compiled when the disk backend is enabled.
 #   bench-support — compiles the deterministic synthetic-graph generator
 #                   (`src/bench_support.rs`) used by the criterion benches and
 #                   their determinism/shape test. Pure Rust (no extra deps); off
@@ -63,10 +59,7 @@ criterion = { version = "0.8", default-features = false, features = [
 [features]
 default = ["kv-mem", "kv-rocksdb"]
 kv-mem = ["surrealdb/kv-mem"]
-kv-surrealkv = ["surrealdb/kv-surrealkv"]
 kv-rocksdb = ["surrealdb/kv-rocksdb"]
-# The LadybugDB backend (`LadybugStore`). Off by default — pulls the `lbug` C++ core build.
-kv-ladybug = ["dep:lbug"]
 bench-support = []
 
 # One criterion bench target. `harness = false` hands `fn main` to

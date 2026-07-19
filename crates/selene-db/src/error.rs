@@ -31,13 +31,6 @@ pub enum Error {
     #[error(transparent)]
     Core(#[from] selene_core::Error),
 
-    /// A LadybugDB (`lbug`) driver, query, or blocking-join error — the
-    /// `kv-ladybug` backend ([`crate::LadybugStore`]). lbug surfaces its own
-    /// opaque error type; we carry the message.
-    #[cfg(feature = "kv-ladybug")]
-    #[error("ladybug store error: {0}")]
-    Ladybug(String),
-
     /// A JSON value round-tripped through the store (edge `metadata`, file
     /// `errors`, unresolved-ref `candidates`) failed to (de)serialize.
     #[error("json (de)serialization failed: {0}")]
