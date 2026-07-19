@@ -7,6 +7,9 @@
 [workspace]
 resolver = "3"
 members = ["crates/*"]
+# crates/.sentrux holds the sentrux architecture rules, not a crate — keep the
+# member glob (which matches dot-directories) from tripping on it.
+exclude = ["crates/.sentrux"]
 
 [workspace.package]
 version = "0.1.0"

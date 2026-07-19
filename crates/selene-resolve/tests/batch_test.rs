@@ -11,7 +11,7 @@ use std::path::Path;
 use selene_core::{EdgeKind, Language, NodeKind};
 use selene_db::SurrealStore;
 use selene_extract::Indexer;
-use selene_resolve::{RESOLVE_BATCH, resolve_and_persist_batched, resolve_and_persist_in_memory};
+use selene_resolve::{RESOLVE_BATCH, resolve_and_persist_in_memory};
 
 fn fixture(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))

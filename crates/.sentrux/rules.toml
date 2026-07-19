@@ -1,0 +1,204 @@
+# SeleneCode workspace layering invariants — enforced by `sentrux check crates/`
+# (sentrux reads <PATH>/.sentrux/rules.toml for the PATH it checks).
+#
+# sentrux layer semantics (verified against sentrux 0.5.7 behavior, not the README):
+#   an import is legal only when order(importer layer) < order(importee layer).
+#   i.e. LOW order = top of the stack, HIGH order = foundation.
+#
+# Dependency direction (CLAUDE.md / PRD) — higher layers may import lower, never the
+# reverse:
+#
+#   selene (bin) -> selene-cli -> selene-mcp -> selene-context -> selene-graph
+#                -> selene-resolve -> selene-extract -> selene-db -> selene-core
+#
+# Crates not in the CLAUDE.md chain, placed from their actual Cargo.toml deps:
+#   selene-installer -> (no sibling crates)          (used by cli only)
+#   selene-embed     -> (no sibling crates)          (used by mcp, cli)
+#   selene-sync      -> core, db, extract, resolve   (used by mcp, cli)
+#
+# Paths are scoped to <crate>/src/** deliberately:
+#   - sentrux pattern matching is prefix-like ("selene/**" also matches selene-core/),
+#     and src-scoped patterns are unambiguous under both prefix and glob semantics;
+#   - test fixtures (e.g. selene-extract/tests/fixtures/**, the gin Go fixture) produce
+#     false import edges in sentrux's suffix resolver (std::mem resolved to a mem.cpp
+#     fixture) and must stay out of the layer map.
+# Consequence: only library/binary sources are layered; tests/benches/fixtures are
+# unconstrained.
+#
+# constraints.max_upward_violations is intentionally NOT set: it is a
+# directory-hierarchy check that fires on the selene-resolve gin dispatch fixtures,
+# unrelated to crate layering. The [[layers]] orders below generate the
+# layer_direction rules that enforce the crate layering on their own.
+
+[constraints]
+
+# ---------------------------------------------------------------------------------
+# Layers. Legal import: smaller order -> larger order. Foundation = largest order.
+# ---------------------------------------------------------------------------------
+
+[[layers]]
+name = "bin"
+paths = ["selene/src/**"]
+order = 0
+
+[[layers]]
+name = "cli"
+paths = ["selene-cli/src/**"]
+order = 10
+
+[[layers]]
+name = "installer"
+paths = ["selene-installer/src/**"]
+order = 20
+
+[[layers]]
+name = "mcp"
+paths = ["selene-mcp/src/**"]
+order = 30
+
+[[layers]]
+name = "embed"
+paths = ["selene-embed/src/**"]
+order = 40
+
+[[layers]]
+name = "context"
+paths = ["selene-context/src/**"]
+order = 50
+
+[[layers]]
+name = "graph"
+paths = ["selene-graph/src/**"]
+order = 60
+
+[[layers]]
+name = "sync"
+paths = ["selene-sync/src/**"]
+order = 65
+
+[[layers]]
+name = "resolve"
+paths = ["selene-resolve/src/**"]
+order = 70
+
+[[layers]]
+name = "extract"
+paths = ["selene-extract/src/**"]
+order = 80
+
+[[layers]]
+name = "db"
+paths = ["selene-db/src/**"]
+order = 90
+
+[[layers]]
+name = "core"
+paths = ["selene-core/src/**"]
+order = 100
+
+# ---------------------------------------------------------------------------------
+# Boundary rules — explicit forbidden edges. Redundant with the layer ordering, but
+# stated so the two named invariants hold even if the layer table is edited.
+# ---------------------------------------------------------------------------------
+
+# Invariant 1: nothing imports selene-cli except the selene binary.
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-db/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-extract/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-resolve/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-sync/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-graph/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-context/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-embed/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-mcp/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+[[boundaries]]
+from = "selene-installer/src/**"
+to = "selene-cli/src/**"
+reason = "only the selene binary may import selene-cli"
+
+# Invariant 2: selene-core imports no sibling crate.
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-db/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-extract/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-resolve/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-sync/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-graph/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-context/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-embed/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-mcp/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene-installer/src/**"
+reason = "selene-core is the foundation: no sibling imports"
+
+[[boundaries]]
+from = "selene-core/src/**"
+to = "selene/src/**"
+reason = "selene-core is the foundation: no sibling imports"

@@ -18,6 +18,8 @@
 //! SELENE_PROBE_REPO=../vscode cargo test -p selene-context --test perf_phase_probe -- --ignored --nocapture
 //! ```
 
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
 use std::path::PathBuf;
 use std::time::Instant;
 

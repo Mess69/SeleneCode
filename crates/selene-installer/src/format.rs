@@ -752,10 +752,20 @@ mod tests {
         let Edit::Write(out) = yaml::remove_toolset(src, "mcp-selene").unwrap() else {
             panic!("expected a write");
         };
-        assert!(out.contains("  web:\n    - mcp-selene"), "web list untouched: {out}");
-        assert!(out.contains("  allow:\n    - mcp-selene"), "allowlist untouched: {out}");
+        assert!(
+            out.contains("  web:\n    - mcp-selene"),
+            "web list untouched: {out}"
+        );
+        assert!(
+            out.contains("  allow:\n    - mcp-selene"),
+            "allowlist untouched: {out}"
+        );
         assert!(out.contains("    - other-tool"), "cli sibling kept: {out}");
-        assert_eq!(out.matches("mcp-selene").count(), 2, "only cli's entry went: {out}");
+        assert_eq!(
+            out.matches("mcp-selene").count(),
+            2,
+            "only cli's entry went: {out}"
+        );
     }
 
     #[test]

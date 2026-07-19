@@ -73,12 +73,13 @@ fn expected_no_ops_are_zero() {
 #[test]
 fn unimplemented_stubs_fail_cleanly() {
     // The anti-inert-seam guarantee: the arm is reachable and returns Failure until its task lands.
-    // `sync` on an un-indexed project is exit 1 (nothing to sync); telemetry/upgrade are still stubs.
+    // `sync` on an un-indexed project is exit 1 (nothing to sync); telemetry is still a stub.
+    // (`upgrade` graduated: on a source build with no install receipt it explains itself and
+    // exits 0 as an expected no-op — covered by its own behavior, no longer a stub.)
     let tmp = tempfile::tempdir().unwrap();
     let p = tmp.path().to_str().unwrap();
     assert_eq!(code(&["sync", p]), 1, "sync on an un-indexed project → 1");
     assert_eq!(code(&["telemetry"]), 1);
-    assert_eq!(code(&["upgrade"]), 1);
 }
 
 #[test]
