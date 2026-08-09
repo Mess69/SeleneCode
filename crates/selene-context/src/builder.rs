@@ -168,7 +168,33 @@ impl<S: GraphStore> ContextBuilder<S> {
         out.push_str(&self.render_files(&ctx, &budget).await?);
         tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "explore/6: files");
 
-        Ok(truncate_to_ceiling(&out, &budget))
+        let mut answer = truncate_to_ceiling(&out, &budget);
+        // The token-economy receipt — measured from the index (`FileRecord.size`,
+        // deterministic), appended AFTER truncation so the ceiling contract and
+        // the cut points stay untouched. One `all_files()` round-trip; the files
+        // table is small even on huge repos (VS Code ≈ 12k rows).
+        let touched: std::collections::HashSet<&str> = ctx
+            .subgraph
+            .nodes
+            .values()
+            .map(|n| n.file_path.as_str())
+            .collect();
+        let files_bytes: u64 = self
+            .qm
+            .store()
+            .all_files()
+            .await
+            .map(|fs| {
+                fs.iter()
+                    .filter(|f| touched.contains(f.path.as_str()))
+                    .map(|f| f.size)
+                    .sum()
+            })
+            .unwrap_or(0);
+        if let Some(line) = token_economy_line(answer.len(), files_bytes, touched.len()) {
+            answer.push_str(&line);
+        }
+        Ok(answer)
     }
 
     /// **The Flow section** — built from the query's own terms first (the agent named the
@@ -408,6 +434,43 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
 /// The not-indexed guidance. Success-shaped, always.
 pub const NOT_INDEXED: &str = "## Not indexed\n\nThis project has no index yet, so there is nothing to explore.\n\n**Run `selene index`** in the project root, then try again.\n";
 
+/// The measured token economy of an answer: what reading the same files raw
+/// would have cost. ≈ 4 bytes/token (the cross-tokenizer rule of thumb — this
+/// is a magnitude claim, not an invoice). Silent below 2× (a brag that small
+/// reads as an apology) and silent when nothing was rendered. The wording
+/// states the saving and never suggests reading — the anti-Read invariant
+/// applies to our own footer too.
+pub(crate) fn token_economy_line(
+    answer_bytes: usize,
+    files_bytes: u64,
+    files: usize,
+) -> Option<String> {
+    const BYTES_PER_TOKEN: f64 = 4.0;
+    if answer_bytes == 0 || files == 0 {
+        return None;
+    }
+    let ratio = files_bytes as f64 / answer_bytes as f64;
+    if ratio < 2.0 {
+        return None;
+    }
+    let fmt = |bytes: f64| {
+        let t = bytes / BYTES_PER_TOKEN;
+        if t >= 950.0 {
+            format!("{}k", ((t / 1000.0).round() as u64).max(1))
+        } else {
+            format!("{}", t.round() as u64)
+        }
+    };
+    Some(format!(
+        "\n\n---\n*Token economy: this answer ≈ {} tokens; the {} file{} it distills total ≈ {} tokens — **{}× less** than pulling them into context.*\n",
+        fmt(answer_bytes as f64),
+        files,
+        if files == 1 { "" } else { "s" },
+        fmt(files_bytes as f64),
+        ratio.round() as u64,
+    ))
+}
+
 /// `1234` → `1,234`. Rust has no `toLocaleString`, so the format is pinned here (and by a
 /// test) rather than differing between call sites.
 pub fn thousands(n: u64) -> String {
@@ -437,7 +500,34 @@ pub const CALL_PATH_KINDS: &[EdgeKind] = &[EdgeKind::Calls, EdgeKind::References
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::unwrap_used, clippy::expect_used)]
+
     use super::*;
+
+    #[test]
+    fn token_economy_line_states_the_savings_without_suggesting_read() {
+        let line = token_economy_line(4_000, 400_000, 9).unwrap();
+        assert!(
+            line.contains("≈ 1k tokens"),
+            "answer ≈ 4000/4 = 1000 tokens: {line}"
+        );
+        assert!(line.contains("100k tokens"), "files ≈ 400000/4: {line}");
+        assert!(line.contains("100× less"), "{line}");
+        assert!(
+            !line.to_lowercase().contains("read the"),
+            "must never suggest reading: {line}"
+        );
+    }
+
+    #[test]
+    fn token_economy_line_stays_silent_when_there_is_nothing_to_brag_about() {
+        assert!(
+            token_economy_line(4_000, 6_000, 1).is_none(),
+            "ratio < 2 is noise"
+        );
+        assert!(token_economy_line(0, 6_000, 1).is_none());
+        assert!(token_economy_line(4_000, 400_000, 0).is_none());
+    }
 
     #[test]
     fn thousands_is_pinned_because_rust_has_no_locale_string() {
