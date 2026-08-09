@@ -15,7 +15,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use selene_core::{Edge, Node, NodeKind};
+use selene_core::{Edge, EdgeKind, Node, NodeKind};
 
 /// Options controlling the export (mirrors the `viz` subcommand flags).
 pub struct VizOptions {
@@ -237,6 +237,51 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
         .map(|((s, t), c)| serde_json::json!({ "s": s, "t": t, "c": c }))
         .collect();
 
+    // --- communities: the REAL clusters of the call graph -------------------
+    // Louvain over the full app graph (the same node set as the module map),
+    // on every edge kind EXCEPT `contains` — contains mirrors the file
+    // hierarchy, which is exactly the signal communities exist to complement.
+    let app_index: HashMap<&str, usize> = app_nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), i))
+        .collect();
+    let comm_edges: Vec<(usize, usize)> = edges
+        .iter()
+        .filter(|e| e.kind != EdgeKind::Contains)
+        .filter_map(|e| {
+            Some((
+                *app_index.get(e.source.as_str())?,
+                *app_index.get(e.target.as_str())?,
+            ))
+        })
+        .collect();
+    let communities = crate::analysis::detect_communities(app_nodes.len(), &comm_edges);
+    // label each community by its dominant module (ties -> lexicographic)
+    let n_comms = communities.iter().copied().max().map_or(0, |m| m + 1);
+    let mut comm_size = vec![0u32; n_comms];
+    let mut comm_mods: Vec<HashMap<String, u32>> = vec![HashMap::new(); n_comms];
+    for (i, n) in app_nodes.iter().enumerate() {
+        let c = communities[i];
+        comm_size[c] += 1;
+        *comm_mods[c]
+            .entry(module_of(&n.file_path, mod_depth))
+            .or_default() += 1;
+    }
+    let communities_json: Vec<serde_json::Value> = (0..n_comms)
+        .filter(|&c| comm_size[c] >= 2)
+        .take(12)
+        .map(|c| {
+            let mut mods: Vec<(&str, u32)> =
+                comm_mods[c].iter().map(|(k, v)| (k.as_str(), *v)).collect();
+            mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+            serde_json::json!({
+                "id": c, "n": comm_size[c],
+                "l": mods.first().map(|(m, _)| *m).unwrap_or("(root)"),
+            })
+        })
+        .collect();
+
     // id -> dense index into the emitted node array.
     let mut index: HashMap<&str, usize> = HashMap::with_capacity(kept.len());
     for (i, n) in kept.iter().enumerate() {
@@ -254,6 +299,10 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
                 "l": n.start_line,
                 "d": degree.get(n.id.as_str()).copied().unwrap_or(0),
                 "m": node_mod.get(n.id.as_str()).map(|i| *i as i64).unwrap_or(-1),
+                "c": app_index
+                    .get(n.id.as_str())
+                    .map(|&i| communities[i] as i64)
+                    .unwrap_or(-1),
             })
         })
         .collect();
@@ -280,12 +329,45 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
     let shown_nodes = nodes_json.len();
     let shown_edges = links_json.len();
 
+    // --- god-nodes: the 5 most-connected kept symbols, with direction split.
+    // `kept` is already sorted by degree desc (name, id tie-broken).
+    let mut in_deg: HashMap<&str, u32> = HashMap::new();
+    let mut out_deg: HashMap<&str, u32> = HashMap::new();
+    for e in edges {
+        *out_deg.entry(e.source.as_str()).or_default() += 1;
+        *in_deg.entry(e.target.as_str()).or_default() += 1;
+    }
+    let hubs_json: Vec<serde_json::Value> = kept
+        .iter()
+        .filter(|n| degree.get(n.id.as_str()).copied().unwrap_or(0) > 0)
+        .take(5)
+        .map(|n| {
+            serde_json::json!({
+                "i": index[n.id.as_str()], "n": n.name, "f": n.file_path,
+                "d": degree.get(n.id.as_str()).copied().unwrap_or(0),
+                "in": in_deg.get(n.id.as_str()).copied().unwrap_or(0),
+                "out": out_deg.get(n.id.as_str()).copied().unwrap_or(0),
+            })
+        })
+        .collect();
+    // --- surprises: cross-module pairs carried by ≤2 edges — rare bridges a
+    // reader would never guess from the directory layout.
+    let mut rare: Vec<((usize, usize), u32)> = mod_links_sorted.clone();
+    rare.sort_by(|a, b| a.1.cmp(&b.1).then(a.0.cmp(&b.0)));
+    let surprises_json: Vec<serde_json::Value> = rare
+        .iter()
+        .filter(|(_, c)| *c <= 2)
+        .take(5)
+        .map(|((s, t), c)| serde_json::json!({ "s": mod_labels[*s], "t": mod_labels[*t], "c": c }))
+        .collect();
+
     let json = serde_json::json!({
         "gen": 0,
         "nodes": nodes_json,
         "links": links_json,
         "modules": modules_json,
         "modLinks": mod_links_json,
+        "communities": communities_json,
         "meta": {
             "shown": shown_nodes,
             "total": total_nodes,
@@ -296,6 +378,8 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
             "allKinds": opts.all_kinds,
             "noiseHidden": noise_hidden,
             "watch": opts.watch,
+            "hubs": hubs_json,
+            "surprises": surprises_json,
         }
     });
 
@@ -477,6 +561,85 @@ mod tests {
             "placeholders substituted"
         );
         assert!(h.contains("\"n\":\"main\""), "node data embedded inline");
+    }
+
+    fn node_in(id: &str, name: &str, kind: NodeKind, file: &str) -> Node {
+        let mut n = node(id, name, kind);
+        n.file_path = file.to_string();
+        n
+    }
+
+    #[test]
+    fn communities_color_the_call_graph_not_the_directories() {
+        // Two call-triangles that CROSS directories — Louvain must find them.
+        let nodes = vec![
+            node_in("function:a", "a", NodeKind::Function, "src/x/a.rs"),
+            node_in("function:b", "b", NodeKind::Function, "src/y/b.rs"),
+            node_in("function:c", "c", NodeKind::Function, "src/x/c.rs"),
+            node_in("function:d", "d", NodeKind::Function, "src/y/d.rs"),
+            node_in("function:e", "e", NodeKind::Function, "src/x/e.rs"),
+            node_in("function:f", "f", NodeKind::Function, "src/y/f.rs"),
+        ];
+        let edges = vec![
+            edge("function:a", "function:b"),
+            edge("function:b", "function:c"),
+            edge("function:c", "function:a"),
+            edge("function:d", "function:e"),
+            edge("function:e", "function:f"),
+            edge("function:f", "function:d"),
+            edge("function:c", "function:d"), // the bridge
+        ];
+        let data = build_data(&nodes, &edges, &opts(2000, false));
+        let comms = data.json["communities"].as_array().unwrap();
+        assert_eq!(comms.len(), 2, "two clusters, though the dirs interleave");
+        let nodes_json = data.json["nodes"].as_array().unwrap();
+        let c_of = |name: &str| {
+            nodes_json.iter().find(|n| n["n"] == name).unwrap()["c"]
+                .as_i64()
+                .unwrap()
+        };
+        assert_eq!(c_of("a"), c_of("b"));
+        assert_eq!(c_of("b"), c_of("c"));
+        assert_ne!(c_of("a"), c_of("d"));
+    }
+
+    #[test]
+    fn hubs_name_the_most_connected_symbols_with_direction() {
+        let nodes = vec![
+            node("function:hub", "hub", NodeKind::Function),
+            node("function:x", "x", NodeKind::Function),
+            node("function:y", "y", NodeKind::Function),
+        ];
+        let edges = vec![
+            edge("function:hub", "function:x"),
+            edge("function:hub", "function:y"),
+            edge("function:x", "function:hub"),
+        ];
+        let data = build_data(&nodes, &edges, &opts(2000, false));
+        let hubs = data.json["meta"]["hubs"].as_array().unwrap();
+        assert_eq!(hubs[0]["n"], "hub");
+        assert_eq!(hubs[0]["out"], 2);
+        assert_eq!(hubs[0]["in"], 1);
+    }
+
+    #[test]
+    fn surprises_are_the_rarest_cross_module_pairs() {
+        // x<->y heavily linked (3 edges), x->z linked ONCE — z is the surprise.
+        let nodes = vec![
+            node_in("function:a", "a", NodeKind::Function, "x/a.rs"),
+            node_in("function:b", "b", NodeKind::Function, "y/b.rs"),
+            node_in("function:c", "c", NodeKind::Function, "z/c.rs"),
+        ];
+        let edges = vec![
+            edge("function:a", "function:b"),
+            edge("function:b", "function:a"),
+            edge("function:a", "function:b"),
+            edge("function:a", "function:c"),
+        ];
+        let data = build_data(&nodes, &edges, &opts(2000, false));
+        let sur = data.json["meta"]["surprises"].as_array().unwrap();
+        assert_eq!(sur[0]["c"], 1, "the singleton bridge ranks first");
+        assert_eq!(sur[0]["t"], "z");
     }
 
     #[test]
