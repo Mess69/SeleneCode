@@ -42,7 +42,7 @@ pub struct VizDoc {
 /// Kinds dropped from the default view: high-count, low-signal structural noise.
 /// A file, an import, a local variable, or a parameter rarely carries the *flow*
 /// a galaxy is meant to show, and there are a lot of them. `--all-kinds` keeps them.
-fn is_low_signal(kind: NodeKind) -> bool {
+pub(crate) fn is_low_signal(kind: NodeKind) -> bool {
     matches!(
         kind,
         NodeKind::File | NodeKind::Import | NodeKind::Variable | NodeKind::Parameter
@@ -62,7 +62,7 @@ fn is_low_signal(kind: NodeKind) -> bool {
 /// typescript-graph: third-party and test scaffolding are excluded up front,
 /// with the hidden count surfaced so the map is trusted.) Segment and
 /// filename checks, no regex needed.
-fn is_noise_path(path: &str) -> bool {
+pub(crate) fn is_noise_path(path: &str) -> bool {
     const NOISE_DIRS: [&str; 22] = [
         "node_modules",
         "vendor",
@@ -110,8 +110,26 @@ fn is_noise_path(path: &str) -> bool {
     file.ends_with(".d.ts") || file.ends_with(".min.js")
 }
 
+/// The deepest directory-prefix depth (1–4) that still lands at a readable
+/// module count (≤ 36) — shared by the viz map and `selene report`.
+pub(crate) fn auto_mod_depth(app_nodes: &[&Node]) -> usize {
+    let mut mod_depth = 1usize;
+    for d in (1..=4).rev() {
+        let count = app_nodes
+            .iter()
+            .map(|n| module_of(&n.file_path, d))
+            .collect::<HashSet<_>>()
+            .len();
+        if count <= 36 {
+            mod_depth = d;
+            break;
+        }
+    }
+    mod_depth
+}
+
 /// The module (directory-prefix group) of a path at `depth` segments.
-fn module_of(path: &str, depth: usize) -> String {
+pub(crate) fn module_of(path: &str, depth: usize) -> String {
     let dir_end = path.rfind('/').unwrap_or(0);
     let dir = &path[..dir_end];
     if dir.is_empty() {
@@ -170,22 +188,16 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
     // capped symbol set) into directory-prefix modules — the unit every
     // surviving code-map tool defaults to. Depth auto-tunes: the deepest
     // prefix that still lands at a readable module count.
-    let app_nodes: Vec<&Node> = nodes
+    // Sorted by id: the store returns nodes in nondeterministic order, and the
+    // community pass below is order-sensitive (Louvain processes nodes in
+    // sequence) — a canonical order is what keeps the transform a pure function
+    // of the graph.
+    let mut app_nodes: Vec<&Node> = nodes
         .iter()
         .filter(|n| !is_low_signal(n.kind) && !is_noise_path(&n.file_path))
         .collect();
-    let mut mod_depth = 1usize;
-    for d in (1..=4).rev() {
-        let count = app_nodes
-            .iter()
-            .map(|n| module_of(&n.file_path, d))
-            .collect::<HashSet<_>>()
-            .len();
-        if count <= 36 {
-            mod_depth = d;
-            break;
-        }
-    }
+    app_nodes.sort_by(|a, b| a.id.cmp(&b.id));
+    let mod_depth = auto_mod_depth(&app_nodes);
     // Module indices are assigned over the SORTED label set — the store returns
     // nodes in nondeterministic order, and `--watch` compares serialized output
     // to detect real change, so the transform must be a pure function of the
@@ -620,6 +632,34 @@ mod tests {
         assert_eq!(hubs[0]["n"], "hub");
         assert_eq!(hubs[0]["out"], 2);
         assert_eq!(hubs[0]["in"], 1);
+    }
+
+    #[test]
+    fn viz_data_is_a_pure_function_of_the_graph() {
+        // The store returns rows in nondeterministic order; the transform must
+        // not care. Same graph, reversed input order -> byte-identical JSON.
+        let nodes = vec![
+            node_in("function:a", "a", NodeKind::Function, "src/x/a.rs"),
+            node_in("function:b", "b", NodeKind::Function, "src/y/b.rs"),
+            node_in("function:c", "c", NodeKind::Function, "src/x/c.rs"),
+            node_in("function:d", "d", NodeKind::Function, "src/y/d.rs"),
+        ];
+        let edges = vec![
+            edge("function:a", "function:b"),
+            edge("function:b", "function:c"),
+            edge("function:c", "function:a"),
+            edge("function:c", "function:d"),
+        ];
+        let mut rev_nodes = nodes.clone();
+        rev_nodes.reverse();
+        let mut rev_edges = edges.clone();
+        rev_edges.reverse();
+        let fwd = build_data(&nodes, &edges, &opts(2000, false));
+        let rev = build_data(&rev_nodes, &rev_edges, &opts(2000, false));
+        assert_eq!(
+            serde_json::to_string(&fwd.json).unwrap(),
+            serde_json::to_string(&rev.json).unwrap()
+        );
     }
 
     #[test]

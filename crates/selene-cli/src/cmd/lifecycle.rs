@@ -283,6 +283,16 @@ pub async fn purge(path: PathBuf, global_mcp: bool) -> Outcome {
     if viz_page.exists() && std::fs::remove_file(&viz_page).is_ok() {
         eprintln!("purge: removed {}", viz_page.display());
     }
+    // 5b — the graph report, ONLY if it is ours: the name is generic enough
+    // that a user could own a GRAPH_REPORT.md, so the regenerate marker
+    // `selene report` writes is the removal key. No marker → not touched.
+    let report_page = root.join("GRAPH_REPORT.md");
+    if std::fs::read_to_string(&report_page)
+        .is_ok_and(|text| text.contains("regenerate with `selene report`"))
+        && std::fs::remove_file(&report_page).is_ok()
+    {
+        eprintln!("purge: removed {}", report_page.display());
+    }
 
     // 6 — the MCP config entries. Local always (they live in the project);
     // global only on request — other projects may still use SeleneCode.

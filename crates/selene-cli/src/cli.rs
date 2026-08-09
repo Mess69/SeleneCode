@@ -194,6 +194,15 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// Write GRAPH_REPORT.md — hubs, clusters, cycles, orphan modules, and
+    /// the questions worth asking `selene explore` first.
+    Report {
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        /// Output file. Default: `./GRAPH_REPORT.md`.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// List / manage running daemons.
     #[command(alias = "daemons")]
     Daemon,
