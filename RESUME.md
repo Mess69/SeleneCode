@@ -1,5 +1,14 @@
 # RESUME — reprendre SeleneCode après un redémarrage
 
+> **MISE À JOUR 2026-08-10 — la couche sémantique « beat Graphify » est CONSTRUITE**
+> (plan : `docs/plans/2026-08-10-semantic-viz-and-report.md`) : détection de communautés
+> Louvain déterministe (`selene-cli/src/analysis.rs`) + bouton **Clusters** dans la viz,
+> god-nodes + ponts rares dans le HUD, reçu **token economy** mesuré au pied de chaque
+> réponse `explore` (le « 52× » vs lecture brute), et `selene report` → `GRAPH_REPORT.md`
+> (hubs, clusters, cycles de modules, modules orphelins, questions suggérées ; purge le
+> retire sur son marqueur). La 3D/2,5D est ABANDONNÉE (décision utilisateur : les 4
+> features sémantiques suffisent).
+
 > ⚠️ **MISE À JOUR 2026-07-17 — plusieurs sections ci-dessous sont PÉRIMÉES.** L'état courant est
 > dans `README.md` (usage, install 1-commande, viz) et `docs/plans/2026-07-16-optimization-roadmap.md`
 > (perf : plus rapide que CodeGraph sur les 3 corpus — 0,77×/0,77×/0,96× ; RAM et VS Code = les

@@ -88,7 +88,12 @@ selene callers save                  # who calls this?
 selene callees dispatch              # what does this call?
 selene impact AuthMiddleware         # blast radius if this changes
 selene affected src/db/models.py     # files whose graph depends on these files
+selene report                        # write GRAPH_REPORT.md: hubs, clusters, cycles, orphans
 ```
+
+Every `explore` answer ends with its measured **token economy** — e.g. *"this answer ≈ 5k tokens;
+the 75 files it distills total ≈ 237k tokens — **52× less**"* — computed from the indexed file
+sizes, so the saving is a measurement, not a slogan.
 
 ---
 
@@ -105,6 +110,12 @@ The page opens on an **architecture map**: one named node per module (directory 
 symbol count, edges weighted by how many calls cross between them. Test/vendored/generated code is
 filtered out up front (the header says how much was hidden). Click a module to drill into its
 symbols; the `Symbols` button shows the whole galaxy.
+
+The **`Clusters`** button recolors the galaxy by **call-graph community** (Louvain, computed in
+Rust, deterministic): colors follow who *calls* whom, not where files sit — when one color spans
+several directories, that is the real structure the tree cannot show. The header lists the
+**god-nodes** (the 5 most-connected symbols, clickable — with their in/out split) and the **rare
+bridges** (cross-module dependencies carried by a single edge).
 
 ### Live mode — watch your agent build the graph
 

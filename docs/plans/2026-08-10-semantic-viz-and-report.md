@@ -802,7 +802,11 @@ head -50 /tmp/GRAPH_REPORT.md   # eyeball: real hubs, real clusters, real questi
 
 ---
 
-### Task 6: the 2.5D depth effect (zero-dependency)
+### Task 6: ~~the 2.5D depth effect (zero-dependency)~~ — DROPPED
+
+> **User decision (2026-08-10): no 3D/2.5D at all — the 4 semantic features are the
+> deliverable.** Implemented, then reverted (the commit was dropped before push).
+> The steps below are kept for the record only.
 
 **Files:**
 - Modify: `crates/selene-cli/src/viz-template.html`
