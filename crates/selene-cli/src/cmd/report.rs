@@ -140,7 +140,15 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
         mod_members[idx] += 1;
         node_mod.insert(n.id.as_str(), idx);
     }
+    // `cross` (all kinds) feeds orphans and rare bridges. `cross_structural`
+    // feeds the cycle detector, and is deliberately strict: **imports only,
+    // tree-sitter provenance** — the sentrux/dependency-cruiser definition of
+    // an architecture cycle. `references` fire on any name mention, and even
+    // `calls` cross layers freely once the name-matcher and dispatch synthesis
+    // have bound them — either one welds the whole workspace into a single
+    // giant SCC, and a "cycle" that names every module says nothing.
     let mut cross: BTreeMap<(usize, usize), u32> = BTreeMap::new();
+    let mut cross_structural: BTreeMap<(usize, usize), u32> = BTreeMap::new();
     for e in edges {
         if let (Some(&sm), Some(&tm)) = (
             node_mod.get(e.source.as_str()),
@@ -148,6 +156,11 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
         ) && sm != tm
         {
             *cross.entry((sm, tm)).or_default() += 1;
+            if e.kind == EdgeKind::Imports
+                && e.provenance != Some(selene_core::Provenance::Heuristic)
+            {
+                *cross_structural.entry((sm, tm)).or_default() += 1;
+            }
         }
     }
 
@@ -205,11 +218,11 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
     }
 
     // ── module cycles ────────────────────────────────────────────────────────
-    let cycle_edges: Vec<(usize, usize)> = cross.keys().copied().collect();
+    let cycle_edges: Vec<(usize, usize)> = cross_structural.keys().copied().collect();
     let sccs = strongly_connected_components(mod_labels.len(), &cycle_edges);
-    out.push_str("## Module cycles\n\n");
+    out.push_str("## Module cycles (imports)\n\n");
     if sccs.is_empty() {
-        out.push_str("No module cycles — the layering holds.\n\n");
+        out.push_str("No import cycles between modules — the layering holds.\n\n");
     } else {
         for scc in &sccs {
             let names: Vec<&str> = scc.iter().map(|&i| mod_labels[i].as_str()).collect();
@@ -359,6 +372,13 @@ mod tests {
         }
     }
 
+    fn import_edge(s: &str, t: &str) -> Edge {
+        Edge {
+            kind: EdgeKind::Imports,
+            ..edge(s, t)
+        }
+    }
+
     fn fixture() -> (Vec<Node>, Vec<Edge>) {
         // hub: called from both sides; cycle: a->b->a across modules x and y;
         // orphan: z/ has no cross-module edge at all.
@@ -371,8 +391,8 @@ mod tests {
         let edges = vec![
             edge("function:a", "function:hub"),
             edge("function:b", "function:hub"),
-            edge("function:a", "function:b"),
-            edge("function:b", "function:a"),
+            import_edge("function:a", "function:b"),
+            import_edge("function:b", "function:a"),
         ];
         (nodes, edges)
     }
