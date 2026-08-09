@@ -5,6 +5,7 @@
 //! wire. Query-class commands reuse `selene_mcp::handlers`, so the CLI and the agent see the same
 //! graph identically — only the exit-code mapping differs (see [`exit`]).
 
+pub mod analysis;
 pub mod cli;
 mod cmd;
 pub mod exit;
