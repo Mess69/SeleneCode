@@ -41,6 +41,8 @@
   #hud .sub { color: #97a0b8; font-size: 11px; word-break: break-all; }
   #hud .counts { margin-top: 6px; color: #c6ccdd; font-size: 11px; }
   #hud .counts b { color: #fff; font-weight: 650; }
+  #insights a { color: #9ecbff; text-decoration: none; }
+  #insights a:hover { text-decoration: underline; }
   #hud .hint { margin-top: 6px; color: #6d7690; font-size: 10.5px; }
 
   #controls { top: 12px; right: 12px; padding: 8px; display: flex; gap: 6px; align-items: center; }
@@ -101,6 +103,7 @@
     <h1><span id="project">selene galaxy</span> <span id="rank" class="rank" style="display:none"></span> <span id="live" style="display:none"><span class="dot"></span><span id="live-txt">live</span></span></h1>
     <div class="sub" id="root"></div>
     <div class="counts" id="counts"></div>
+    <div class="counts" id="insights" style="display:none"></div>
     <div id="xp" style="display:none"><div id="xp-fill"></div><span id="xp-txt"></span></div>
     <div class="counts" id="mem" style="display:none"><span id="mem-txt"></span><canvas id="spark" width="110" height="18"></canvas></div>
     <div class="hint" id="hint">click a module = drill in · scroll = zoom · drag = pan/move</div>
@@ -110,6 +113,7 @@
     <button id="back" title="Back to the module map" style="display:none">← map</button>
     <button id="mode-map" class="on" title="Architecture map (modules)">Map</button>
     <button id="mode-sym" title="Every symbol">Symbols</button>
+    <button id="mode-clu" title="Call-graph clusters (Louvain) — colors that ignore directories">Clusters</button>
     <input id="search" type="search" placeholder="search…" autocomplete="off" spellcheck="false">
     <button id="fit" title="Fit graph to view">Fit</button>
   </div>
@@ -143,6 +147,16 @@ const colorFor = k => COLORS[k] || "#dee2e6";
 const MODULE_PALETTE = ["#6ea8fe","#63e6be","#ffd43b","#da77f2","#ffa94d","#69db7c",
   "#f783ac","#66d9e8","#a9e34b","#ff8787","#ffe066","#4dabf7","#e599f7","#96f2d7"];
 
+// ---- color modes: by kind (default) or by call-graph community -------------
+let colorBy = "kind"; // "kind" | "community"
+const CLUSTER_PALETTE = MODULE_PALETTE; // same hues, different meaning
+function nodeFill(nd) {
+  if (nd.kind === "mod") return nd.color;
+  if (colorBy === "community" && nd.c >= 0)
+    return CLUSTER_PALETTE[nd.c % CLUSTER_PALETTE.length];
+  return colorFor(nd.k);
+}
+
 // ---- easing ---------------------------------------------------------------
 const easeOutCubic = t => 1 - Math.pow(1 - t, 3);
 const easeOutBack = t => { const c = 1.70158 * 1.35; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); };
@@ -172,11 +186,12 @@ function buildModel(d, animate) {
     const old = oldSymById.get(r.i);
     if (old) {
       old.i = i; old.n = r.n; old.k = r.k; old.f = r.f; old.l = r.l;
-      old.deg = r.d || 0; old.m = r.m;
+      old.deg = r.d || 0; old.m = r.m; old.c = r.c == null ? -1 : r.c;
       oldSymById.delete(r.i);
       return old;
     }
     const nd = { id: r.i, n: r.n, k: r.k, f: r.f, l: r.l, deg: r.d || 0, m: r.m,
+      c: r.c == null ? -1 : r.c,
       i, x: 0, y: 0, vx: 0, vy: 0, match: false, kind: "sym",
       placed: false, born: animate ? -1 : 0 };
     if (animate) addedSyms.push(nd);
@@ -297,6 +312,7 @@ let scale = 1, tx = 0, ty = 0;
 let hovered = null, selected = null;
 const hiddenKinds = new Set();
 let searchQ = "";
+let spotlightC = -1; // community id spotlighted from the cluster legend
 let dragNode = null, panning = false, downX = 0, downY = 0, moved = false;
 
 function resize() {
@@ -559,7 +575,7 @@ function draw(now) {
     const r = Math.max(1.4, baseRadius(nd) * scale) * ss;
     const active = nd === selected || nd === hovered || nd.match;
     ctx.globalAlpha = dim && !nd.match && nd !== selected ? 0.18 : 1;
-    ctx.fillStyle = nd.kind === "mod" ? nd.color : colorFor(nd.k);
+    ctx.fillStyle = nodeFill(nd);
     ctx.beginPath();
     ctx.arc(sx, sy, r, 0, Math.PI * 2);
     ctx.fill();
@@ -682,7 +698,7 @@ function select(nd) {
   selected = nd;
   if (!nd) { dEl.classList.remove("show"); return; }
   const kEl = document.getElementById("d-kind");
-  kEl.textContent = nd.k; kEl.style.background = nd.kind === "mod" ? nd.color : colorFor(nd.k);
+  kEl.textContent = nd.k; kEl.style.background = nodeFill(nd);
   document.getElementById("d-name").textContent = nd.n;
   document.getElementById("d-file").textContent = nd.kind === "mod" ? "" : nd.f + ":" + nd.l;
   document.getElementById("d-meta").innerHTML = nd.kind === "mod"
@@ -706,8 +722,12 @@ function syncChrome() {
     ? " · <b>" + meta.noiseHidden + "</b> test/vendored hidden" : "";
 
   if (typeof updateRank === "function") updateRank();
+  if (typeof renderInsights === "function") renderInsights();
   document.getElementById("mode-map").classList.toggle("on", view === "map");
-  document.getElementById("mode-sym").classList.toggle("on", view === "symbols" && scopeLabel === null);
+  document.getElementById("mode-sym").classList.toggle("on",
+    view === "symbols" && scopeLabel === null && colorBy === "kind");
+  document.getElementById("mode-clu").classList.toggle("on",
+    view === "symbols" && colorBy === "community");
   back.style.display = scopeLabel !== null ? "" : "none";
 
   if (view === "map") {
@@ -729,6 +749,28 @@ function syncChrome() {
       row.addEventListener("click", () => setView("symbols", m));
       rows.appendChild(row);
     });
+  } else if (colorBy === "community") {
+    title.textContent = "Clusters (call-graph communities)";
+    document.getElementById("hint").textContent =
+      "clusters = who CALLS whom, not who sits where · click a cluster = spotlight";
+    document.getElementById("counts").innerHTML =
+      "showing <b>" + curNodes.length + "</b> symbols in <b>" +
+      (DATA.communities || []).length + "</b> clusters" + noise;
+    for (const co of (DATA.communities || [])) {
+      const row = document.createElement("div");
+      row.className = "lrow";
+      if (spotlightC >= 0 && spotlightC !== co.id) row.classList.add("off");
+      row.innerHTML =
+        '<span class="sw" style="background:' + CLUSTER_PALETTE[co.id % CLUSTER_PALETTE.length] + '"></span>' +
+        '<span class="ln">mostly ' + shortLabel(co.l) + '</span><span class="lc">' + co.n + '</span>';
+      row.addEventListener("click", () => {
+        spotlightC = spotlightC === co.id ? -1 : co.id;
+        searchQ = spotlightC >= 0 ? "\u200b" : ""; // non-empty: draw() dims non-matches
+        for (const nd of curNodes) nd.match = spotlightC >= 0 && nd.c === spotlightC;
+        syncChrome();
+      });
+      rows.appendChild(row);
+    }
   } else {
     title.textContent = "Kinds (click to toggle)";
     document.getElementById("hint").textContent =
@@ -758,12 +800,14 @@ function syncChrome() {
 
 // ---- search ---------------------------------------------------------------
 document.getElementById("search").addEventListener("input", e => {
+  spotlightC = -1;
   searchQ = e.target.value.trim().toLowerCase();
   for (const nd of curNodes) nd.match = searchQ.length > 0 && nd.n.toLowerCase().includes(searchQ);
 });
 document.getElementById("fit").addEventListener("click", () => fit());
-document.getElementById("mode-map").addEventListener("click", () => setView("map"));
-document.getElementById("mode-sym").addEventListener("click", () => setView("symbols"));
+document.getElementById("mode-map").addEventListener("click", () => { colorBy = "kind"; setView("map"); });
+document.getElementById("mode-sym").addEventListener("click", () => { colorBy = "kind"; setView("symbols"); });
+document.getElementById("mode-clu").addEventListener("click", () => { colorBy = "community"; setView("symbols"); });
 document.getElementById("back").addEventListener("click", () => setView("map"));
 
 // ---- live mode: poll, diff, detonate --------------------------------------
@@ -910,6 +954,39 @@ function updateRank() {
     (next - total) + " symbols to Lv " + (lvl + 1);
 }
 updateRank();
+
+// ---- insights: god-nodes + rare bridges under the counts -------------------
+// The 5 biggest hubs are clickable (jump straight to the symbol); the rare
+// cross-module edges are the dependencies nobody would guess from the tree.
+function renderInsights() {
+  const meta = DATA.meta || {};
+  const el = document.getElementById("insights");
+  const hubs = (meta.hubs || []).slice(0, 5);
+  const sur = (meta.surprises || []).slice(0, 3);
+  if (!hubs.length && !sur.length) { el.style.display = "none"; return; }
+  el.style.display = "";
+  let html = "";
+  if (hubs.length) {
+    html += "⭐ " + hubs.map(h =>
+      '<a href="#" class="hub" data-i="' + h.i + '" title="' + h.f + ' · ' +
+      h.out + ' out / ' + h.in + ' in">' + h.n + " (" + h.d + ")</a>").join(" · ");
+  }
+  if (sur.length) {
+    html += (html ? "<br>" : "") + "⚡ " + sur.map(s =>
+      shortLabel(s.s) + " → " + shortLabel(s.t) + " (" + s.c + ")").join(" · ");
+  }
+  el.innerHTML = html;
+  el.querySelectorAll("a.hub").forEach(a => a.addEventListener("click", ev => {
+    ev.preventDefault();
+    const nd = symbols[+a.dataset.i];
+    if (!nd) return;
+    if (view !== "symbols" || scopeLabel !== null) setView("symbols");
+    select(nd);
+    scale = Math.max(scale, 1.2);
+    tx = cw / 2 - nd.x * scale; ty = ch / 2 - nd.y * scale;
+  }));
+}
+renderInsights();
 
 setView(modules.length > 1 ? "map" : "symbols");
 frame();
