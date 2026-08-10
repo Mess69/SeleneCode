@@ -25,6 +25,14 @@ cargo test -p selene-core kind_counts   # single test by name
 
 Toolchain is pinned in `rust-toolchain.toml` (stable + rustfmt + clippy).
 
+**⚠ Disk discipline — `target/` is a known trap here.** Cargo never garbage-collects, and this
+workspace (SurrealDB embedded + RocksDB + 12 tree-sitter grammars + ~100 test binaries) has bloated
+`target/` past **150 GB twice**, once filling the disk (which masquerades as a memory crisis:
+swap can't grow → `fork()` fails — RESUME.md §6). **Before or after any heavy build/test run, check
+`du -sh target`; over ~30 GB, run `rm -rf target/debug`** (regenerable; keep `target/release`).
+A PreToolUse hook in `.claude/settings.json` also warns on any `cargo` command when free disk
+drops under 100 GB.
+
 ## Architecture — the crate workspace
 
 Layered pipeline (mirrors CodeGraph):

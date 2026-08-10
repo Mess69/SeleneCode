@@ -1,0 +1,18 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "if": "Bash(cargo *)",
+            "command": "free=$(df -g /System/Volumes/Data 2>/dev/null | awk 'NR==2{print $4}'); if [ \"${free:-999}\" -lt 100 ]; then printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"additionalContext\":\"DISK LOW: only %s GB free - cargo target/ in this repo bloats to 150+ GB. Before heavy builds/tests: du -sh target; if over ~30 GB run rm -rf target/debug (ensure no cargo process is running). See RESUME.md section 6.\"}}' \"$free\"; fi; exit 0",
+            "timeout": 10,
+            "statusMessage": "Checking disk space before cargo"
+          }
+        ]
+      }
+    ]
+  }
+}
