@@ -238,6 +238,9 @@ let view = "map";
 let scopeLabel = null; // module label when drilled in, else null
 let curNodes = [], curLinks = [];
 let PHYS = {};
+// In Clusters mode each community gets an anchor on a ring; a gentle pull
+// toward it separates the galaxy into named constellations.
+let clusterAnchors = new Map();
 
 function seedUnplaced(list, spread) {
   const R0 = spread * Math.sqrt(Math.max(1, list.length));
@@ -283,6 +286,15 @@ function refreshView() {
     PHYS = { REPULSE: 620, RANGE: 220, SPRING: 0.012, REST: 46, GRAVITY: 0.012 };
     seedUnplaced(curNodes, 32);
   }
+  clusterAnchors = new Map();
+  if (view === "symbols" && colorBy === "community" && scopeLabel === null) {
+    const cos = DATA.communities || [];
+    const R = Math.max(260, 30 * Math.sqrt(Math.max(1, curNodes.length)));
+    cos.forEach((co, j) => {
+      const a = (j / Math.max(1, cos.length)) * Math.PI * 2 - Math.PI / 2;
+      clusterAnchors.set(co.id, { x: Math.cos(a) * R, y: Math.sin(a) * R });
+    });
+  }
   byIndex = new Map(curNodes.map(nd => [nd.i, nd]));
   for (const nd of curNodes) nd.match = searchQ.length > 0 && nd.n.toLowerCase().includes(searchQ);
   syncChrome();
@@ -311,8 +323,8 @@ let dpr = 1, cw = 0, ch = 0;
 let scale = 1, tx = 0, ty = 0;
 let hovered = null, selected = null;
 const hiddenKinds = new Set();
+const hiddenClusters = new Set(); // community ids unchecked in the cluster legend
 let searchQ = "";
-let spotlightC = -1; // community id spotlighted from the cluster legend
 let dragNode = null, panning = false, downX = 0, downY = 0, moved = false;
 
 function resize() {
@@ -379,8 +391,15 @@ function tick() {
   const RANGE2 = RANGE * RANGE;
 
   for (const nd of curNodes) {
-    nd.vx += -nd.x * GRAVITY * alpha;
-    nd.vy += -nd.y * GRAVITY * alpha;
+    const anc = nd.kind === "sym" ? clusterAnchors.get(nd.c) : undefined;
+    if (anc) {
+      // cluster mode: home in on the community anchor, not the center
+      nd.vx += (anc.x - nd.x) * 0.045 * alpha;
+      nd.vy += (anc.y - nd.y) * 0.045 * alpha;
+    } else {
+      nd.vx += -nd.x * GRAVITY * alpha;
+      nd.vy += -nd.y * GRAVITY * alpha;
+    }
   }
 
   const grid = new Map();
@@ -520,7 +539,11 @@ function hexA(hex, a) {
 }
 
 // ---- rendering ------------------------------------------------------------
-function visible(nd) { return nd.kind === "mod" || !hiddenKinds.has(nd.k); }
+function visible(nd) {
+  if (nd.kind === "mod") return true;
+  if (hiddenKinds.has(nd.k)) return false;
+  return !(colorBy === "community" && nd.c >= 0 && hiddenClusters.has(nd.c));
+}
 
 function shortLabel(p) {
   // Keep as many TRAILING segments as fit — "svgenie-website/src/components"
@@ -615,6 +638,33 @@ function draw(now) {
       ctx.fillStyle = "rgba(232,235,243,0.92)";
       ctx.font = "11px -apple-system, Segoe UI, Roboto, sans-serif";
       ctx.fillText(nd.n, sx + r + 3, sy + 3.5);
+    }
+  }
+  // Cluster mode: name each constellation after its hub, at the centroid.
+  if (clusterAnchors.size && view === "symbols") {
+    const acc = new Map();
+    for (const nd of curNodes) {
+      if (!visible(nd) || nd.c < 0 || nd.born < 0) continue;
+      let a = acc.get(nd.c);
+      if (!a) { a = { x: 0, y: 0, n: 0 }; acc.set(nd.c, a); }
+      a.x += nd.x; a.y += nd.y; a.n++;
+    }
+    ctx.globalAlpha = 1;
+    for (const co of (DATA.communities || [])) {
+      const a = acc.get(co.id);
+      if (!a || hiddenClusters.has(co.id)) continue;
+      const sx = (a.x / a.n) * scale + tx, sy = (a.y / a.n) * scale + ty;
+      ctx.fillStyle = "rgba(240,243,250,0.95)";
+      ctx.font = "600 " + Math.max(11, Math.min(15, 12 * Math.sqrt(scale))) +
+        "px -apple-system, Segoe UI, Roboto, sans-serif";
+      const label = co.h || ("cluster " + co.id);
+      const tw = ctx.measureText(label).width;
+      ctx.fillText(label, sx - tw / 2, sy);
+      ctx.fillStyle = "rgba(151,160,184,0.9)";
+      ctx.font = "10px -apple-system, Segoe UI, Roboto, sans-serif";
+      const sub = co.n + " symbols";
+      const sw = ctx.measureText(sub).width;
+      ctx.fillText(sub, sx - sw / 2, sy + 12);
     }
   }
   ctx.globalAlpha = 1;
@@ -750,23 +800,34 @@ function syncChrome() {
       rows.appendChild(row);
     });
   } else if (colorBy === "community") {
-    title.textContent = "Clusters (call-graph communities)";
+    title.textContent = "Clusters (click to show/hide)";
     document.getElementById("hint").textContent =
-      "clusters = who CALLS whom, not who sits where · click a cluster = spotlight";
+      "clusters = who CALLS whom, not who sits where · each galaxy is named by its hub";
+    const cos = DATA.communities || [];
     document.getElementById("counts").innerHTML =
-      "showing <b>" + curNodes.length + "</b> symbols in <b>" +
-      (DATA.communities || []).length + "</b> clusters" + noise;
-    for (const co of (DATA.communities || [])) {
+      "showing <b>" + curNodes.filter(visible).length + "</b> of <b>" +
+      curNodes.length + "</b> symbols · <b>" + cos.length + "</b> clusters" + noise;
+    if (cos.length > 1) {
+      const all = document.createElement("div");
+      all.className = "lrow";
+      all.innerHTML = '<span class="sw" style="background:transparent"></span>' +
+        '<span class="ln">— all clusters —</span><span class="lc">' +
+        (hiddenClusters.size ? "show" : "") + '</span>';
+      all.addEventListener("click", () => { hiddenClusters.clear(); reheat(0.2); syncChrome(); });
+      rows.appendChild(all);
+    }
+    for (const co of cos) {
       const row = document.createElement("div");
       row.className = "lrow";
-      if (spotlightC >= 0 && spotlightC !== co.id) row.classList.add("off");
+      row.title = "mostly " + co.l;
+      if (hiddenClusters.has(co.id)) row.classList.add("off");
       row.innerHTML =
         '<span class="sw" style="background:' + CLUSTER_PALETTE[co.id % CLUSTER_PALETTE.length] + '"></span>' +
-        '<span class="ln">mostly ' + shortLabel(co.l) + '</span><span class="lc">' + co.n + '</span>';
+        '<span class="ln">' + (co.h || "cluster " + co.id) + '</span><span class="lc">' + co.n + '</span>';
       row.addEventListener("click", () => {
-        spotlightC = spotlightC === co.id ? -1 : co.id;
-        searchQ = spotlightC >= 0 ? "\u200b" : ""; // non-empty: draw() dims non-matches
-        for (const nd of curNodes) nd.match = spotlightC >= 0 && nd.c === spotlightC;
+        if (hiddenClusters.has(co.id)) hiddenClusters.delete(co.id);
+        else hiddenClusters.add(co.id);
+        reheat(0.2);
         syncChrome();
       });
       rows.appendChild(row);
@@ -800,7 +861,6 @@ function syncChrome() {
 
 // ---- search ---------------------------------------------------------------
 document.getElementById("search").addEventListener("input", e => {
-  spotlightC = -1;
   searchQ = e.target.value.trim().toLowerCase();
   for (const nd of curNodes) nd.match = searchQ.length > 0 && nd.n.toLowerCase().includes(searchQ);
 });

@@ -184,12 +184,26 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
     let n_comms = communities.iter().copied().max().map_or(0, |m| m + 1);
     let mut comm_size = vec![0u32; n_comms];
     let mut comm_mods: Vec<BTreeMap<String, u32>> = vec![BTreeMap::new(); n_comms];
+    let mut comm_hub: Vec<Option<&&Node>> = vec![None; n_comms];
     for (i, n) in app_nodes.iter().enumerate() {
         let c = communities[i];
         comm_size[c] += 1;
         *comm_mods[c]
             .entry(module_of(&n.file_path, mod_depth))
             .or_default() += 1;
+        let d = deg(&in_deg, &n.id) + deg(&out_deg, &n.id);
+        let better = match comm_hub[c] {
+            None => true,
+            Some(cur) => {
+                let cd = deg(&in_deg, &cur.id) + deg(&out_deg, &cur.id);
+                d > cd
+                    || (d == cd
+                        && (n.name.as_str(), n.id.as_str()) < (cur.name.as_str(), cur.id.as_str()))
+            }
+        };
+        if better {
+            comm_hub[c] = Some(n);
+        }
     }
     let clusters: Vec<usize> = (0..n_comms).filter(|&c| comm_size[c] >= 2).collect();
     if !clusters.is_empty() {
@@ -199,6 +213,7 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
                 comm_mods[c].iter().map(|(k, v)| (k.as_str(), *v)).collect();
             mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let dominant = mods.first().map(|(m, _)| *m).unwrap_or("(root)");
+            let hub = comm_hub[c].map(|n| n.name.as_str()).unwrap_or("?");
             let span = mods.len();
             let span_note = if span >= 3 {
                 format!(" — spans {span} directories: structure the tree cannot show")
@@ -206,7 +221,7 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
                 String::new()
             };
             out.push_str(&format!(
-                "- **cluster {c}** — {} symbols, mostly `{dominant}`{span_note}\n",
+                "- **`{hub}`** — {} symbols, mostly `{dominant}`{span_note}\n",
                 comm_size[c]
             ));
         }
@@ -308,14 +323,10 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
         ));
     }
     if let Some(&c) = clusters.first() {
-        let dominant = comm_mods[c]
-            .iter()
-            .max_by(|a, b| a.1.cmp(b.1).then(b.0.cmp(a.0)))
-            .map(|(k, _)| k.as_str())
-            .unwrap_or("(root)");
+        let hub = comm_hub[c].map(|n| n.name.as_str()).unwrap_or("(root)");
         out.push_str(&format!(
-            "- `selene explore \"how does {dominant} work\"` — the biggest \
-             call-graph cluster ({} symbols) centers there.\n",
+            "- `selene explore \"how does {hub} work\"` — the biggest \
+             call-graph cluster ({} symbols) centers on it.\n",
             comm_size[c]
         ));
     }

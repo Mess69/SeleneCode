@@ -111,11 +111,13 @@ symbol count, edges weighted by how many calls cross between them. Test/vendored
 filtered out up front (the header says how much was hidden). Click a module to drill into its
 symbols; the `Symbols` button shows the whole galaxy.
 
-The **`Clusters`** button recolors the galaxy by **call-graph community** (Louvain, computed in
-Rust, deterministic): colors follow who *calls* whom, not where files sit — when one color spans
-several directories, that is the real structure the tree cannot show. The header lists the
-**god-nodes** (the 5 most-connected symbols, clickable — with their in/out split) and the **rare
-bridges** (cross-module dependencies carried by a single edge).
+The **`Clusters`** button switches to **call-graph communities** (Louvain, computed in Rust,
+deterministic): the map physically separates into named constellations — each galaxy is **named by
+its hub symbol** and pulled to its own region, colors follow who *calls* whom, not where files sit.
+The legend is a per-cluster show/hide filter (click a cluster to hide it, "— all clusters —" to
+reset); hovering a row shows the dominant directory. The header lists the **god-nodes** (the 5
+most-connected symbols, clickable — with their in/out split) and the **rare bridges** (cross-module
+dependencies carried by a single edge).
 
 ### Live mode — watch your agent build the graph
 

@@ -269,16 +269,32 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
         })
         .collect();
     let communities = crate::analysis::detect_communities(app_nodes.len(), &comm_edges);
-    // label each community by its dominant module (ties -> lexicographic)
+    // Name each community by its HUB — the highest-degree member (ties break
+    // by name, then id). "APIRouter" tells a reader what a cluster IS; a
+    // directory prefix only says where most of it sits, so both are emitted.
     let n_comms = communities.iter().copied().max().map_or(0, |m| m + 1);
     let mut comm_size = vec![0u32; n_comms];
     let mut comm_mods: Vec<HashMap<String, u32>> = vec![HashMap::new(); n_comms];
+    let mut comm_hub: Vec<Option<&Node>> = vec![None; n_comms];
     for (i, n) in app_nodes.iter().enumerate() {
         let c = communities[i];
         comm_size[c] += 1;
         *comm_mods[c]
             .entry(module_of(&n.file_path, mod_depth))
             .or_default() += 1;
+        let d = degree.get(n.id.as_str()).copied().unwrap_or(0);
+        let better = match comm_hub[c] {
+            None => true,
+            Some(cur) => {
+                let cd = degree.get(cur.id.as_str()).copied().unwrap_or(0);
+                d > cd
+                    || (d == cd
+                        && (n.name.as_str(), n.id.as_str()) < (cur.name.as_str(), cur.id.as_str()))
+            }
+        };
+        if better {
+            comm_hub[c] = Some(n);
+        }
     }
     let communities_json: Vec<serde_json::Value> = (0..n_comms)
         .filter(|&c| comm_size[c] >= 2)
@@ -290,6 +306,7 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
             serde_json::json!({
                 "id": c, "n": comm_size[c],
                 "l": mods.first().map(|(m, _)| *m).unwrap_or("(root)"),
+                "h": comm_hub[c].map(|n| n.name.as_str()).unwrap_or(""),
             })
         })
         .collect();
@@ -604,6 +621,9 @@ mod tests {
         let data = build_data(&nodes, &edges, &opts(2000, false));
         let comms = data.json["communities"].as_array().unwrap();
         assert_eq!(comms.len(), 2, "two clusters, though the dirs interleave");
+        // each cluster is NAMED by its hub — the bridge nodes carry degree 3
+        assert_eq!(comms[0]["h"], "c", "cluster 0's highest-degree member");
+        assert_eq!(comms[1]["h"], "d", "cluster 1's highest-degree member");
         let nodes_json = data.json["nodes"].as_array().unwrap();
         let c_of = |name: &str| {
             nodes_json.iter().find(|n| n["n"] == name).unwrap()["c"]
