@@ -184,25 +184,33 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
     let n_comms = communities.iter().copied().max().map_or(0, |m| m + 1);
     let mut comm_size = vec![0u32; n_comms];
     let mut comm_mods: Vec<BTreeMap<String, u32>> = vec![BTreeMap::new(); n_comms];
+    // Raw degree-best + best informative label per community — same policy as
+    // the viz (`is_trivial_name`): plumbing never names a cluster unless the
+    // cluster is nothing but plumbing.
     let mut comm_hub: Vec<Option<&&Node>> = vec![None; n_comms];
+    let mut comm_hub_named: Vec<Option<&&Node>> = vec![None; n_comms];
+    let hub_better = |cand: &&Node, cur: Option<&&&Node>| match cur {
+        None => true,
+        Some(cur) => {
+            let d = deg(&in_deg, &cand.id) + deg(&out_deg, &cand.id);
+            let cd = deg(&in_deg, &cur.id) + deg(&out_deg, &cur.id);
+            d > cd
+                || (d == cd
+                    && (cand.name.as_str(), cand.id.as_str())
+                        < (cur.name.as_str(), cur.id.as_str()))
+        }
+    };
     for (i, n) in app_nodes.iter().enumerate() {
         let c = communities[i];
         comm_size[c] += 1;
         *comm_mods[c]
             .entry(module_of(&n.file_path, mod_depth))
             .or_default() += 1;
-        let d = deg(&in_deg, &n.id) + deg(&out_deg, &n.id);
-        let better = match comm_hub[c] {
-            None => true,
-            Some(cur) => {
-                let cd = deg(&in_deg, &cur.id) + deg(&out_deg, &cur.id);
-                d > cd
-                    || (d == cd
-                        && (n.name.as_str(), n.id.as_str()) < (cur.name.as_str(), cur.id.as_str()))
-            }
-        };
-        if better {
+        if hub_better(n, comm_hub[c].as_ref()) {
             comm_hub[c] = Some(n);
+        }
+        if !crate::viz::is_trivial_name(&n.name) && hub_better(n, comm_hub_named[c].as_ref()) {
+            comm_hub_named[c] = Some(n);
         }
     }
     let clusters: Vec<usize> = (0..n_comms).filter(|&c| comm_size[c] >= 2).collect();
@@ -213,7 +221,10 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
                 comm_mods[c].iter().map(|(k, v)| (k.as_str(), *v)).collect();
             mods.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
             let dominant = mods.first().map(|(m, _)| *m).unwrap_or("(root)");
-            let hub = comm_hub[c].map(|n| n.name.as_str()).unwrap_or("?");
+            let hub = comm_hub_named[c]
+                .or(comm_hub[c])
+                .map(|n| n.name.as_str())
+                .unwrap_or("?");
             let span = mods.len();
             let span_note = if span >= 3 {
                 format!(" — spans {span} directories: structure the tree cannot show")
@@ -304,7 +315,12 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
             .then_with(|| a.name.cmp(&b.name))
             .then_with(|| a.id.cmp(&b.id))
     });
-    if let Some(n) = by_in.first() {
+    // "how does Ok work" is not a question — prefer the first informative name.
+    if let Some(n) = by_in
+        .iter()
+        .find(|n| !crate::viz::is_trivial_name(&n.name))
+        .or_else(|| by_in.first())
+    {
         out.push_str(&format!(
             "- `selene explore \"how does {} work\"` — it sits under {} callers.\n",
             n.name,
@@ -323,7 +339,10 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
         ));
     }
     if let Some(&c) = clusters.first() {
-        let hub = comm_hub[c].map(|n| n.name.as_str()).unwrap_or("(root)");
+        let hub = comm_hub_named[c]
+            .or(comm_hub[c])
+            .map(|n| n.name.as_str())
+            .unwrap_or("(root)");
         out.push_str(&format!(
             "- `selene explore \"how does {hub} work\"` — the biggest \
              call-graph cluster ({} symbols) centers on it.\n",

@@ -128,6 +128,86 @@ pub(crate) fn auto_mod_depth(app_nodes: &[&Node]) -> usize {
     mod_depth
 }
 
+/// Names that make a useless cluster label: language plumbing every codebase
+/// contains (std prelude, ubiquitous method names, dunder/constructor forms)
+/// plus anything under 3 chars. Deliberately narrow — "Node" or "parse" may be
+/// plumbing in one repo and THE domain type in another, so only identifiers
+/// that are standard in the *language* are listed, never domain-plausible
+/// words. Used to pick the hub LABEL only; ranking stays degree-based, and a
+/// cluster that is nothing but plumbing falls back to its raw best.
+pub(crate) fn is_trivial_name(name: &str) -> bool {
+    if name.chars().count() < 3 {
+        return true;
+    }
+    const TRIVIAL: &[&str] = &[
+        // Rust prelude + ubiquitous std types/methods
+        "Err",
+        "Some",
+        "None",
+        "Self",
+        "Result",
+        "Option",
+        "Vec",
+        "String",
+        "Box",
+        "HashMap",
+        "HashSet",
+        "BTreeMap",
+        "usize",
+        "bool",
+        "new",
+        "clone",
+        "from",
+        "into",
+        "as_str",
+        "as_ref",
+        "to_string",
+        "collect",
+        "iter",
+        "next",
+        "unwrap",
+        "expect",
+        "default",
+        "Default",
+        "fmt",
+        "Debug",
+        "Display",
+        "Drop",
+        "len",
+        "is_empty",
+        "get",
+        "set",
+        "push",
+        "insert",
+        "main",
+        "init",
+        "drop",
+        "with",
+        "try_from",
+        "try_into",
+        // Python / JS / Java standard forms
+        "__init__",
+        "__str__",
+        "__repr__",
+        "__new__",
+        "constructor",
+        "toString",
+        "valueOf",
+        "undefined",
+        "null",
+        "this",
+        "super",
+        "self",
+        "cls",
+        "prototype",
+        "hashCode",
+        "equals",
+        "println",
+        "print",
+    ];
+    TRIVIAL.iter().any(|t| name.eq_ignore_ascii_case(t))
+}
+
 /// The module (directory-prefix group) of a path at `depth` segments.
 pub(crate) fn module_of(path: &str, depth: usize) -> String {
     let dir_end = path.rfind('/').unwrap_or(0);
@@ -275,25 +355,34 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
     let n_comms = communities.iter().copied().max().map_or(0, |m| m + 1);
     let mut comm_size = vec![0u32; n_comms];
     let mut comm_mods: Vec<HashMap<String, u32>> = vec![HashMap::new(); n_comms];
+    // Two candidates per community: the raw degree-best, and the best whose
+    // name would make an INFORMATIVE label (see `is_trivial_name`). The label
+    // prefers the informative one; a cluster that is nothing but plumbing
+    // falls back to its raw best rather than going unnamed.
     let mut comm_hub: Vec<Option<&Node>> = vec![None; n_comms];
+    let mut comm_hub_named: Vec<Option<&Node>> = vec![None; n_comms];
+    let better = |cand: &Node, cur: Option<&&Node>, degree: &HashMap<&str, u32>| match cur {
+        None => true,
+        Some(cur) => {
+            let d = degree.get(cand.id.as_str()).copied().unwrap_or(0);
+            let cd = degree.get(cur.id.as_str()).copied().unwrap_or(0);
+            d > cd
+                || (d == cd
+                    && (cand.name.as_str(), cand.id.as_str())
+                        < (cur.name.as_str(), cur.id.as_str()))
+        }
+    };
     for (i, n) in app_nodes.iter().enumerate() {
         let c = communities[i];
         comm_size[c] += 1;
         *comm_mods[c]
             .entry(module_of(&n.file_path, mod_depth))
             .or_default() += 1;
-        let d = degree.get(n.id.as_str()).copied().unwrap_or(0);
-        let better = match comm_hub[c] {
-            None => true,
-            Some(cur) => {
-                let cd = degree.get(cur.id.as_str()).copied().unwrap_or(0);
-                d > cd
-                    || (d == cd
-                        && (n.name.as_str(), n.id.as_str()) < (cur.name.as_str(), cur.id.as_str()))
-            }
-        };
-        if better {
+        if better(n, comm_hub[c].as_ref(), &degree) {
             comm_hub[c] = Some(n);
+        }
+        if !is_trivial_name(&n.name) && better(n, comm_hub_named[c].as_ref(), &degree) {
+            comm_hub_named[c] = Some(n);
         }
     }
     let communities_json: Vec<serde_json::Value> = (0..n_comms)
@@ -306,7 +395,7 @@ pub fn build_data(nodes: &[Node], edges: &[Edge], opts: &VizOptions) -> VizData 
             serde_json::json!({
                 "id": c, "n": comm_size[c],
                 "l": mods.first().map(|(m, _)| *m).unwrap_or("(root)"),
-                "h": comm_hub[c].map(|n| n.name.as_str()).unwrap_or(""),
+                "h": comm_hub_named[c].or(comm_hub[c]).map(|n| n.name.as_str()).unwrap_or(""),
             })
         })
         .collect();
@@ -633,6 +722,67 @@ mod tests {
         assert_eq!(c_of("a"), c_of("b"));
         assert_eq!(c_of("b"), c_of("c"));
         assert_ne!(c_of("a"), c_of("d"));
+    }
+
+    #[test]
+    fn trivial_names_are_the_std_plumbing_not_the_domain() {
+        for t in [
+            "Ok",
+            "Err",
+            "ab",
+            "collect",
+            "to_string",
+            "__init__",
+            "toString",
+        ] {
+            assert!(is_trivial_name(t), "{t} is plumbing");
+        }
+        for d in ["ResolveLadder", "Node", "parse", "GraphStore", "is_match"] {
+            assert!(!is_trivial_name(d), "{d} is domain-plausible");
+        }
+    }
+
+    #[test]
+    fn cluster_labels_skip_std_plumbing_names() {
+        // Invariant, robust to however Louvain slices the fixture: a cluster
+        // that HAS an informative member is never labeled with plumbing.
+        let nodes = vec![
+            node_in("function:Ok", "Ok", NodeKind::Function, "x/outcome.rs"),
+            node_in(
+                "function:RL",
+                "ResolveLadder",
+                NodeKind::Function,
+                "x/ladder.rs",
+            ),
+            node_in("function:h1", "helper_one", NodeKind::Function, "x/h1.rs"),
+            node_in("function:h2", "helper_two", NodeKind::Function, "x/h2.rs"),
+        ];
+        let edges = vec![
+            edge("function:h1", "function:Ok"),
+            edge("function:h2", "function:Ok"),
+            edge("function:RL", "function:Ok"),
+            edge("function:h1", "function:RL"),
+            edge("function:h2", "function:RL"),
+        ];
+        let data = build_data(&nodes, &edges, &opts(2000, false));
+        let comms = data.json["communities"].as_array().unwrap();
+        let nodes_json = data.json["nodes"].as_array().unwrap();
+        assert!(!comms.is_empty());
+        for co in comms {
+            let cid = co["id"].as_i64().unwrap();
+            let members: Vec<&str> = nodes_json
+                .iter()
+                .filter(|n| n["c"] == cid)
+                .map(|n| n["n"].as_str().unwrap())
+                .collect();
+            if members.iter().any(|m| !is_trivial_name(m)) {
+                let h = co["h"].as_str().unwrap();
+                assert!(
+                    !is_trivial_name(h),
+                    "cluster {cid} labeled `{h}` despite informative members {members:?}"
+                );
+            }
+        }
     }
 
     #[test]
