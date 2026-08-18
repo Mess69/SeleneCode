@@ -194,6 +194,20 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// Export the full graph: canonical JSON (default), JSONL, GraphML, or DOT.
+    ///
+    /// Writes to stdout by default (pipe to jq, import into Gephi/yEd/Neo4j);
+    /// `--out` writes a file instead.
+    Export {
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        /// json | jsonl | graphml | dot
+        #[arg(short, long, default_value = "json")]
+        format: String,
+        /// Output file. Default: stdout.
+        #[arg(short, long)]
+        out: Option<PathBuf>,
+    },
     /// Write GRAPH_REPORT.md — hubs, clusters, cycles, orphan modules, and
     /// the questions worth asking `selene explore` first.
     Report {

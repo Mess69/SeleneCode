@@ -20,6 +20,8 @@ selene-mcp = { path = "../selene-mcp" }
 selene-embed = { workspace = true, optional = true }
 # JSON serialization for `selene viz`'s graph export (safe escaping into the HTML).
 serde_json = { workspace = true }
+# GraphML writer for `selene export` — escaping handled by the library, never by hand.
+quick-xml = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true }

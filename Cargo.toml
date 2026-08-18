@@ -46,6 +46,9 @@ axoupdater   = { version = "0.10", default-features = false, features = ["github
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"
+# XML writer with proper escaping — `selene export --format graphml` (F2) and,
+# later, the docx reader of the document-ingestion PRD (F1-B). Pure Rust (memchr).
+quick-xml    = "0.41"
 # POSIX pid liveness (`kill(pid, 0)`) and `getppid()` for the daemon lifecycle. std has
 # `process::id()` but no liveness check or parent pid. Tiny, ubiquitous, no build cost.
 libc         = "0.2"

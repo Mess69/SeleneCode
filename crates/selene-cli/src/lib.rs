@@ -9,6 +9,7 @@ pub mod analysis;
 pub mod cli;
 mod cmd;
 pub mod exit;
+mod export;
 mod viz;
 
 pub use cli::{Cli, Command};
@@ -66,6 +67,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             open,
             watch,
         } => cmd::viz(path, out, max_nodes, all_kinds, open, watch).await,
+        Command::Export { path, format, out } => cmd::export(path, format, out).await,
         Command::Report { path, out } => cmd::report(path, out).await,
 
         // -- serve / daemon / hooks --
