@@ -36,6 +36,11 @@ pub enum Error {
     #[error("json (de)serialization failed: {0}")]
     Serde(#[from] serde_json::Error),
 
+    /// A caller-supplied input refused before it reached the engine — today
+    /// only `raw_select`'s read-only guard (graph-platform PRD F6).
+    #[error("{0}")]
+    Validation(String),
+
     /// A value returned by the store did not have the shape a `GraphStore`
     /// method expected to decode — e.g. a `RecordId` that isn't a
     /// `<kind>:<key>` pair, or a query row missing a field the schema

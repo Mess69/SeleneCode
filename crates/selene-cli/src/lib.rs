@@ -38,7 +38,15 @@ pub async fn run(cli: Cli) -> ExitCode {
         Command::Status { path, json } => cmd::status(path, json).await,
 
         // -- query-class (reuse the MCP handlers) --
-        Command::Query { search, path, .. } => cmd::query(search, path).await,
+        Command::Query {
+            search, path, raw, ..
+        } => {
+            if raw {
+                cmd::raw_query(search, path).await
+            } else {
+                cmd::query(search, path).await
+            }
+        }
         Command::Explore { query, path, .. } => cmd::explore(query, path).await,
         Command::Node {
             name, path, file, ..

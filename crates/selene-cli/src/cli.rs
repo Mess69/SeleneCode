@@ -100,6 +100,10 @@ pub enum Command {
         kind: Option<String>,
         #[arg(short, long)]
         json: bool,
+        /// Run `search` as a read-only SurrealQL SELECT instead (power users).
+        /// Mutations/DDL are refused; LIMIT 1000 and a 5 s timeout are injected.
+        #[arg(long)]
+        raw: bool,
     },
     /// Explore an area: relevant symbols' source + call paths in one shot.
     Explore {

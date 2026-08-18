@@ -77,6 +77,7 @@ mod error;
 mod files;
 mod meta;
 mod nodes;
+mod raw;
 mod schema;
 mod search;
 mod semantic;

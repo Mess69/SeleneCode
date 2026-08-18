@@ -23,6 +23,39 @@ pub async fn explore(query: Vec<String>, path: Option<PathBuf>) -> Outcome {
     render(handlers::explore(Some(root), &query.join(" ")).await)
 }
 
+/// `selene query --raw` — the read-only SurrealQL passthrough (F6). CLI-only:
+/// the MCP surface keeps its curated tools. Refusals exit 1 and write nothing.
+pub async fn raw_query(search: String, path: Option<PathBuf>) -> Outcome {
+    let root = match query_root_direct(path) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    let store = match SurrealStore::open(&root.join(".selene")).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("selene query --raw: could not open the index: {e}");
+            return Outcome::Failure;
+        }
+    };
+    match store.raw_select(&search).await {
+        Ok(rows) => {
+            eprintln!("selene query --raw: {} row(s)", rows.len());
+            match serde_json::to_string_pretty(&rows) {
+                Ok(out) => println!("{out}"),
+                Err(e) => {
+                    eprintln!("selene query --raw: unserializable rows: {e}");
+                    return Outcome::Failure;
+                }
+            }
+            Outcome::Ok
+        }
+        Err(e) => {
+            eprintln!("selene query --raw: {e}");
+            Outcome::Failure
+        }
+    }
+}
+
 /// `selene insights` — the structural summary (same recipe as the MCP tool).
 pub async fn insights(path: Option<PathBuf>) -> Outcome {
     let root = match query_root_direct(path) {
