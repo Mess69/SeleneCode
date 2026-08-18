@@ -14,7 +14,7 @@ pub use export::export;
 pub use install::{install, uninstall, upgrade, version};
 pub use lifecycle::{embed, index, init, purge, status, sync, uninit, unlock};
 pub use query::{
-    affected, callees, callers, explore, files, impact, insights, node, query, raw_query,
+    affected, callees, callers, explore, files, impact, insights, memory, node, query, raw_query,
 };
 pub use report::report;
 pub use serve::{daemon, serve};

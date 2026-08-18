@@ -198,6 +198,17 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// The session-memory journal: what explore was asked before (and where
+    /// the answers started). `--clear` empties it.
+    Memory {
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        /// Filter the remembered questions by these words.
+        query: Vec<String>,
+        /// Empty the journal.
+        #[arg(long)]
+        clear: bool,
+    },
     /// Structural summary in the terminal: betweenness bottlenecks, call-graph
     /// clusters, import cycles, rare bridges, orphan modules.
     Insights {

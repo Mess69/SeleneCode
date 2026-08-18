@@ -233,6 +233,21 @@ impl SeleneMcp {
     }
 
     #[tool(
+        name = "recall",
+        description = "Past explorations of this project (session memory): what was asked \
+                       before and where the answers started. Optional query filters them."
+    )]
+    async fn recall(&self, Parameters(a): Parameters<FilesArgs>) -> CallToolResult {
+        if let Err(o) = validate::path_like("projectPath", a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
+        // `path` doubles as the filter query here (both optional free-ish text).
+        handlers::recall(self.root_for(a.project_path.as_deref()), a.path.as_deref())
+            .await
+            .to_call_result()
+    }
+
+    #[tool(
         name = "files",
         description = "The indexed files, optionally filtered by path."
     )]

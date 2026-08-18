@@ -22,7 +22,7 @@ use std::collections::BTreeSet;
 
 /// Every tool, in a stable order.
 pub const ALL_TOOLS: &[&str] = &[
-    "explore", "node", "search", "callers", "callees", "impact", "files", "insights",
+    "explore", "node", "search", "callers", "callees", "impact", "files", "insights", "recall",
 ];
 
 /// The one tool an agent sees by default.
@@ -103,11 +103,11 @@ mod tests {
     }
 
     #[test]
-    fn there_are_exactly_eight_tools() {
+    fn there_are_exactly_nine_tools() {
         assert_eq!(
             ALL_TOOLS.len(),
-            8,
-            "seven ported from the map + `insights` (2026-08-18, PRD graph-platform F3)"
+            9,
+            "seven ported from the map + `insights` (F3) + `recall` (F5), PRD graph-platform 2026-08-18"
         );
     }
 }

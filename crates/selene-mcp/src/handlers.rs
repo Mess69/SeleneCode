@@ -120,7 +120,11 @@ pub async fn explore(root: Option<PathBuf>, query: &str) -> ToolOutcome {
     let builder = ContextBuilder::new(qm);
 
     match builder.build_context(query).await {
-        Ok(text) => ToolOutcome::guidance(text),
+        Ok(text) => {
+            // Journal the exploration (F5) — best-effort, never fails the answer.
+            crate::memory::remember(&root, query, &text);
+            ToolOutcome::guidance(text)
+        }
         // The ONLY things that reach here are a store malfunction and a #527 path refusal —
         // `selene-context` returns every recoverable condition as an Ok value, on purpose.
         Err(e) => ToolOutcome::from_error(&e),
@@ -355,6 +359,15 @@ pub async fn insights(root: Option<PathBuf>) -> ToolOutcome {
     let ins = selene_graph::analysis::compute_insights(&nodes, &edges);
     let text = crate::insights::render_insights(&ins, &root.display().to_string());
     ToolOutcome::guidance(selene_context::truncate_output(&text))
+}
+
+/// **`recall`** — the session-memory journal (F5): past explorations relevant
+/// to `query`. Success-shaped on every path, including an empty journal.
+pub async fn recall(root: Option<PathBuf>, query: Option<&str>) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    ToolOutcome::guidance(crate::memory::render_recall(&root, query))
 }
 
 /// A graph error: a #527 refusal or a genuine malfunction — those, and only those, set

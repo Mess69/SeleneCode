@@ -23,6 +23,36 @@ pub async fn explore(query: Vec<String>, path: Option<PathBuf>) -> Outcome {
     render(handlers::explore(Some(root), &query.join(" ")).await)
 }
 
+/// `selene memory` — list (or clear) the session-memory journal (F5).
+pub fn memory(path: Option<PathBuf>, query: Vec<String>, clear: bool) -> Outcome {
+    let root = match query_root_direct(path) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    if clear {
+        let journal = root.join(".selene").join("memory.jsonl");
+        match std::fs::remove_file(&journal) {
+            Ok(()) => eprintln!("selene memory: journal cleared"),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("selene memory: journal already empty");
+            }
+            Err(e) => {
+                eprintln!("selene memory: could not clear: {e}");
+                return Outcome::Failure;
+            }
+        }
+        return Outcome::Ok;
+    }
+    let q = query.join(" ");
+    let filter = if q.trim().is_empty() {
+        None
+    } else {
+        Some(q.as_str())
+    };
+    println!("{}", selene_mcp::memory::render_recall(&root, filter));
+    Outcome::Ok
+}
+
 /// `selene query --raw` — the read-only SurrealQL passthrough (F6). CLI-only:
 /// the MCP surface keeps its curated tools. Refusals exit 1 and write nothing.
 pub async fn raw_query(search: String, path: Option<PathBuf>) -> Outcome {
