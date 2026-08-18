@@ -23,8 +23,6 @@ use rmcp::handler::server::tool::ToolRouter;
 use rmcp::model::{Implementation, ProtocolVersion, ServerCapabilities, ServerInfo};
 use rmcp::{ServerHandler, tool_handler};
 
-use crate::instructions::SERVER_INSTRUCTIONS;
-
 /// The MCP server.
 #[derive(Clone)]
 pub struct SeleneMcp {
@@ -33,6 +31,9 @@ pub struct SeleneMcp {
     pub root: Arc<Option<PathBuf>>,
     /// The tool router — **filtered at construction** by `SELENE_MCP_TOOLS` (Task 15).
     pub tool_router: ToolRouter<SeleneMcp>,
+    /// The visible tool set — the instructions are assembled from it, so the
+    /// gate and the guidance can never drift apart.
+    pub visible: Arc<std::collections::BTreeSet<&'static str>>,
 }
 
 #[tool_handler(router = self.tool_router)]
@@ -51,8 +52,10 @@ impl ServerHandler for SeleneMcp {
         info.server_info = me;
 
         // THE single source of agent-facing guidance. Nothing else in this workspace may
-        // duplicate it — a second copy drifts, and the drifted copy is the one the agent reads.
-        info.instructions = Some(SERVER_INSTRUCTIONS.to_string());
+        // duplicate it — a second copy drifts, and the drifted copy is the one the agent
+        // reads. Assembled from the VISIBLE tool set: unhiding `insights`/`recall` brings
+        // their DO/DON'T discipline with it, by construction.
+        info.instructions = Some(crate::instructions::instructions_for(&self.visible));
         info
     }
 }
@@ -130,6 +133,7 @@ impl SeleneMcp {
         Self {
             root: Arc::new(root),
             tool_router: router,
+            visible: Arc::new(visible),
         }
     }
 
@@ -219,9 +223,12 @@ impl SeleneMcp {
 
     #[tool(
         name = "insights",
-        description = "Structural summary of the whole graph: betweenness bottlenecks, \
-                       call-graph clusters (Louvain), module import cycles, rare bridges, \
-                       orphan modules. Use for architecture-level questions."
+        description = "The architecture map: betweenness bottlenecks (risky-to-change \
+                       symbols), call-graph clusters named by their hubs, module import \
+                       cycles, rare bridges, orphans. ONLY for architecture-scale questions \
+                       or first contact with an unknown repo. Deterministic — never call \
+                       twice unless the code changed. For anything about specific code, \
+                       use explore instead."
     )]
     async fn insights(&self, Parameters(a): Parameters<FilesArgs>) -> CallToolResult {
         if let Err(o) = validate::path_like("projectPath", a.project_path.as_deref()) {
@@ -235,7 +242,10 @@ impl SeleneMcp {
     #[tool(
         name = "recall",
         description = "Past explorations of this project (session memory): what was asked \
-                       before and where the answers started. Optional query filters them."
+                       before and which root symbols answered. Results are POINTERS, not \
+                       answers — always follow up with explore for current truth. At most \
+                       one call per session; an empty journal is normal, do not retry. \
+                       Optional path argument = filter words."
     )]
     async fn recall(&self, Parameters(a): Parameters<FilesArgs>) -> CallToolResult {
         if let Err(o) = validate::path_like("projectPath", a.project_path.as_deref()) {
