@@ -301,6 +301,20 @@ pub(crate) fn enclosing_fn(nodes: &[Node], file: &str, line: u32) -> Option<Node
         .cloned()
 }
 
+/// Declared strength of each synthesis pass (graph-platform PRD F7): how much
+/// evidence stands behind an edge this pass invents. Initial values, declared
+/// not measured — calibrate against real corpora before trusting them finely.
+/// Exact-registration bridges (a JSX element naming its component) sit high;
+/// name-pattern bridges (an event name matching a handler) sit lower.
+pub(crate) fn confidence_for(pass: &str) -> f64 {
+    match pass {
+        "jsx-render" | "react-render" => 0.8,
+        "callback" => 0.7,
+        "event-emitter" => 0.6,
+        _ => 0.7,
+    }
+}
+
 /// Build a synthesized edge. Always `Heuristic`; `synthesizedBy` is the pass name.
 pub(crate) fn synth_edge(
     source: &str,
@@ -314,6 +328,11 @@ pub(crate) fn synth_edge(
         "synthesizedBy".to_string(),
         serde_json::Value::String(pass.to_string()),
     );
+    // F7: every invented edge carries its declared strength — the agent can
+    // weigh a dynamic hop instead of taking it on faith.
+    if let Some(n) = serde_json::Number::from_f64(confidence_for(pass)) {
+        meta.insert("confidence".to_string(), serde_json::Value::Number(n));
+    }
     for (k, v) in extra {
         meta.insert((*k).to_string(), serde_json::Value::String(v.clone()));
     }

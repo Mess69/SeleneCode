@@ -334,11 +334,23 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
             };
 
             // A synthesized edge is a DYNAMIC hop — the agent cannot find it by reading, which
-            // is precisely why it is marked rather than rendered as an ordinary call.
-            let marker = if e.provenance == Some(selene_core::Provenance::Heuristic) {
-                " *(dynamic)*"
-            } else {
-                ""
+            // is precisely why it is marked rather than rendered as an ordinary call. With a
+            // declared strength (F7) the agent can also weigh it. `Embedding` (semantic doc
+            // mentions) renders *(inferred)* — the doc-ingestion PRD's §4.3 consumer audit.
+            let marker = match e.provenance {
+                Some(selene_core::Provenance::Heuristic) => {
+                    match e
+                        .metadata
+                        .as_ref()
+                        .and_then(|m| m.get("confidence"))
+                        .and_then(serde_json::Value::as_f64)
+                    {
+                        Some(c) => format!(" *(dynamic ~{c:.1})*"),
+                        None => " *(dynamic)*".to_string(),
+                    }
+                }
+                Some(selene_core::Provenance::Embedding) => " *(inferred)*".to_string(),
+                _ => String::new(),
             };
             out.push_str(&format!(
                 "- `{}` **{}** `{}`{marker}\n",
