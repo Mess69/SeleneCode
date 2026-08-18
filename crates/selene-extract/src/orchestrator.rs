@@ -839,12 +839,12 @@ fn read_input(root: &Path, rel: &str, errors: &mut Vec<ExtractionError>) -> Opti
     // parser branch only ever sees clean text, and `content_hash` hashes the
     // extracted text ("did the extractable text change" — the semantics sync
     // wants). Failure = a collected diagnostic, never a fatal.
-    let language_probe = crate::detect_language(rel, None);
-    if matches!(language_probe, crate::Language::Pdf | crate::Language::Docx) {
+    let language_probe = detect_language(rel, None);
+    if matches!(language_probe, Language::Pdf | Language::Docx) {
         match std::fs::read(&abs) {
             Ok(bytes) if (bytes.len() as u64) <= crate::docbin::MAX_DOC_BYTES => {
                 let extracted = match language_probe {
-                    crate::Language::Pdf => crate::docbin::pdf_to_text(&bytes),
+                    Language::Pdf => crate::docbin::pdf_to_text(&bytes),
                     _ => crate::docbin::docx_to_text(&bytes),
                 };
                 let (size, modified_at) = std::fs::metadata(&abs)
