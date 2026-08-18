@@ -26,7 +26,7 @@
 //! "read the file" — it says how to *ask this tool* a better question, because sending the
 //! agent to `Read` is losing the bet on purpose.
 
-use selene_core::{EdgeKind, Node};
+use selene_core::{EdgeKind, Language, Node, Provenance};
 use selene_db::GraphStore;
 use selene_graph::{QueryManager, number_lines};
 
@@ -338,7 +338,7 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
             // declared strength (F7) the agent can also weigh it. `Embedding` (semantic doc
             // mentions) renders *(inferred)* — the doc-ingestion PRD's §4.3 consumer audit.
             let marker = match e.provenance {
-                Some(selene_core::Provenance::Heuristic) => {
+                Some(Provenance::Heuristic) => {
                     match e
                         .metadata
                         .as_ref()
@@ -349,7 +349,7 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
                         None => " *(dynamic)*".to_string(),
                     }
                 }
-                Some(selene_core::Provenance::Embedding) => " *(inferred)*".to_string(),
+                Some(Provenance::Embedding) => " *(inferred)*".to_string(),
                 _ => String::new(),
             };
             out.push_str(&format!(
@@ -395,10 +395,7 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
                 // Wave B (doc PRD §4.4): a pdf/docx section has no readable
                 // source file — its extracted text lives in `docstring` and
                 // renders from there, marked as extracted.
-                if matches!(
-                    node.language,
-                    selene_core::Language::Pdf | selene_core::Language::Docx
-                ) {
+                if matches!(node.language, Language::Pdf | Language::Docx) {
                     if let Some(text) = node.docstring.as_deref().filter(|t| !t.is_empty()) {
                         let room = budget.max_chars_per_file - spent;
                         let slice = &text[..floor_boundary(text, room.min(text.len()))];
