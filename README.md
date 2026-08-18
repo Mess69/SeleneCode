@@ -89,7 +89,19 @@ selene callees dispatch              # what does this call?
 selene impact AuthMiddleware         # blast radius if this changes
 selene affected src/db/models.py     # files whose graph depends on these files
 selene report                        # write GRAPH_REPORT.md: hubs, clusters, cycles, orphans
+selene insights                      # structural summary: betweenness bottlenecks, clusters, cycles
+selene export --format graphml       # full graph to stdout: json | jsonl | graphml (Gephi/yEd) | dot
+selene diff HEAD~5                   # what changed in the GRAPH since a revision (no checkout)
+selene memory                        # what explore was asked before (session memory; --clear)
+selene query --raw "SELECT ..."      # read-only SurrealQL for power users (mutations refused)
 ```
+
+**Documents are part of the graph** (2026-08-18): markdown/txt/rst — and .docx/.pdf
+via their extracted text — index as `Document`/`Section` nodes whose code-spans,
+paths and links become `mentions` edges bound by the resolver. A rationale-shaped
+question ("why was X chosen") surfaces the documentation section that answers it,
+verbatim, zero Read — and nothing ever leaves your machine (no LLM, no API: the
+parse is deterministic, the optional semantic layer is local ONNX).
 
 Every `explore` answer ends with its measured **token economy** — e.g. *"this answer ≈ 5k tokens;
 the 75 files it distills total ≈ 237k tokens — **52× less**"* — computed from the indexed file

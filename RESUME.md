@@ -1,5 +1,19 @@
 # RESUME — reprendre SeleneCode après un redémarrage
 
+> **MISE À JOUR 2026-08-18 — la plateforme graphe (PRD `docs/specs/2026-08-18-graph-platform-design.md`) est CONSTRUITE et testée au vrai binaire** :
+> F2 `selene export` (json/jsonl/graphml/dot, canonique, byte-déterministe) · F3 betweenness
+> Brandes déterministe + `insights` (outil MCP opt-in + CLI ; analysis.rs a DÉMÉNAGÉ dans
+> selene-graph) · **F1 ingestion de documents vagues A+B** (md/txt/rst + pdf/docx extraits au
+> read-seam ; NodeKind 24, EdgeKind 13 (`mentions`), Provenance 5 (`parser`,`embedding`),
+> EXTRACTION_VERSION 3 ; canaux doc_* dans le résolveur étage 0 ; gate parité = exclusion
+> structurelle des kinds documentaires, consignée au ledger ; explore = slot d'admission
+> plafonné + réservation de root sur question de rationale — passe 14b) · F6 `query --raw`
+> (SELECT only) · F4 `selene diff <rev>` (gix =0.86.0 épinglé, zéro checkout, worktree jamais
+> touché) · F5 mémoire de session (`.selene/memory.jsonl`, outil `recall`, `selene memory`) ·
+> F7 confiance déclarée sur les arêtes synthétisées (`metadata.confidence`, rendu
+> `*(dynamic ~0.8)*`). RESTE OUVERT : spike qualité PDF sur 10 vrais PDF (Plan B lopdf
+> consigné), calibration K/cosine (G3b), seuil exact→pivots betweenness sur VS Code.
+
 > **MISE À JOUR 2026-08-10 — la couche sémantique « beat Graphify » est CONSTRUITE**
 > (plan : `docs/plans/2026-08-10-semantic-viz-and-report.md`) : détection de communautés
 > Louvain déterministe (`selene-cli/src/analysis.rs`) + bouton **Clusters** dans la viz,
