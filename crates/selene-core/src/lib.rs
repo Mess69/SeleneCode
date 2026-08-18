@@ -84,11 +84,16 @@ pub enum NodeKind {
     Export,
     Route,
     Component,
+    /// A non-code document file (markdown, txt, rst, pdf, docx) — the whole file.
+    Document,
+    /// One section of a Document (a heading's span). Carries its text (capped)
+    /// in `docstring` so FTS/embeddings see content, not just the title.
+    Section,
 }
 
 impl NodeKind {
     /// Every node kind, in declaration order.
-    pub const ALL: [NodeKind; 22] = [
+    pub const ALL: [NodeKind; 24] = [
         NodeKind::File,
         NodeKind::Module,
         NodeKind::Class,
@@ -111,6 +116,8 @@ impl NodeKind {
         NodeKind::Export,
         NodeKind::Route,
         NodeKind::Component,
+        NodeKind::Document,
+        NodeKind::Section,
     ];
 
     /// The canonical wire string (identical to the serde representation).
@@ -138,6 +145,8 @@ impl NodeKind {
             NodeKind::Export => "export",
             NodeKind::Route => "route",
             NodeKind::Component => "component",
+            NodeKind::Document => "document",
+            NodeKind::Section => "section",
         }
     }
 }
@@ -185,11 +194,14 @@ pub enum EdgeKind {
     Overrides,
     /// Decorator applied to symbol.
     Decorates,
+    /// A document section mentions a code symbol or file (doc→code). Distinct
+    /// from `References` so code flows never traverse documentation hops.
+    Mentions,
 }
 
 impl EdgeKind {
     /// Every edge kind, in declaration order.
-    pub const ALL: [EdgeKind; 12] = [
+    pub const ALL: [EdgeKind; 13] = [
         EdgeKind::Contains,
         EdgeKind::Calls,
         EdgeKind::Imports,
@@ -202,6 +214,7 @@ impl EdgeKind {
         EdgeKind::Instantiates,
         EdgeKind::Overrides,
         EdgeKind::Decorates,
+        EdgeKind::Mentions,
     ];
 
     /// The canonical wire string (identical to the serde representation).
@@ -219,6 +232,7 @@ impl EdgeKind {
             EdgeKind::Instantiates => "instantiates",
             EdgeKind::Overrides => "overrides",
             EdgeKind::Decorates => "decorates",
+            EdgeKind::Mentions => "mentions",
         }
     }
 }
@@ -253,6 +267,13 @@ pub enum Provenance {
     Scip,
     /// Synthesized by a resolver/synthesizer (dynamic dispatch).
     Heuristic,
+    /// Proven by a deterministic non-tree-sitter parse of the source (the
+    /// document parsers: pulldown-cmark, docx XML, PDF text layer). Renders as
+    /// statically proven — which it is.
+    Parser,
+    /// Inferred from embedding similarity (semantic doc→code mentions).
+    /// Renders as *(inferred)* — the documentation counterpart of `Heuristic`.
+    Embedding,
 }
 
 /// Visibility modifier on a symbol.
@@ -553,8 +574,10 @@ mod tests {
 
     #[test]
     fn kind_counts_match_the_data_model() {
-        assert_eq!(NodeKind::ALL.len(), 22);
-        assert_eq!(EdgeKind::ALL.len(), 12);
+        // 22 ported from the TS map + Document/Section (doc-ingestion PRD,
+        // 2026-08-14 §4.1); 12 ported + Mentions (§4.2).
+        assert_eq!(NodeKind::ALL.len(), 24);
+        assert_eq!(EdgeKind::ALL.len(), 13);
     }
 
     #[test]

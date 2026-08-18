@@ -26,6 +26,8 @@ fn prov_str(p: Option<Provenance>) -> &'static str {
         Some(Provenance::TreeSitter) => "tree-sitter",
         Some(Provenance::Scip) => "scip",
         Some(Provenance::Heuristic) => "heuristic",
+        Some(Provenance::Parser) => "parser",
+        Some(Provenance::Embedding) => "embedding",
         None => "",
     }
 }

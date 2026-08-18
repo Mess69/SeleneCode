@@ -35,7 +35,11 @@ use crate::NodeKind;
 ///   store written by v1 is *readable*, but it holds no route nodes, hence
 ///   "re-index recommended"). **This is Phase 3's ONLY bump**: no other task in
 ///   the phase changes extraction output shape.
-pub const EXTRACTION_VERSION: u32 = 2;
+/// - **3** — Document ingestion wave A (PRD 2026-08-14): markdown/txt/rst files
+///   now index as `Document`/`Section` nodes with `mentions` edges bound by the
+///   resolver. A v2 store is readable but holds no document nodes, hence
+///   "re-index recommended".
+pub const EXTRACTION_VERSION: u32 = 3;
 
 /// The id of a code-symbol node:
 /// `"<kind>:" + hex(sha256("{file_path}:{kind}:{name}:{line}"))[..32]`,
@@ -148,7 +152,7 @@ mod tests {
     #[test]
     fn extraction_version_is_pinned() {
         assert_eq!(
-            EXTRACTION_VERSION, 2,
+            EXTRACTION_VERSION, 3,
             "output-shape version: bump ONLY with a documented reason in the const's \
              `# History` block — a stored version below this yields 're-index \
              recommended' guidance, never an error"
