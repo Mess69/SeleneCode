@@ -221,6 +221,15 @@ async fn resolve_project(dir: &Path) -> (Vec<EdgeRow>, Vec<String>, usize) {
     // --- read the whole graph back, and key it semantically -------------------
     let mut nodes: Vec<Node> = Vec::new();
     for kind in NodeKind::ALL {
+        // STRUCTURAL EXCLUSION (doc-ingestion PRD 2026-08-14 §8.1): the gate's
+        // object is TS↔Rust RESOLUTION parity, and the TS baseline predates
+        // document ingestion — the corpus's requirements.txt files now index
+        // as Document/Section, which the baseline cannot contain. Excluding
+        // the documentary kinds here also drops their edges (the by_id
+        // endpoint filter below). Documented in deviations.toml's header.
+        if matches!(kind, NodeKind::Document | NodeKind::Section) {
+            continue;
+        }
         nodes.extend(store.get_nodes_by_kind(kind).await.expect("by kind"));
     }
     let by_id: BTreeMap<String, Node> = nodes.iter().map(|n| (n.id.clone(), n.clone())).collect();

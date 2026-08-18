@@ -41,6 +41,11 @@ pub use selene_core::Language;
 fn language_for_extension(ext: &str) -> Option<Language> {
     Some(match ext {
         ".ts" | ".mts" | ".cts" => Language::Typescript,
+        // Documents (doc-ingestion wave A): routed to the doc-parser branch,
+        // never to a grammar. `.mdx` degrades to markdown (JSX ignored).
+        ".md" | ".mdx" | ".markdown" => Language::Markdown,
+        ".txt" => Language::PlainText,
+        ".rst" => Language::Rst,
         ".tsx" => Language::Tsx,
         ".ets" => Language::Arkts,
         ".js" | ".mjs" | ".cjs" | ".xsjs" | ".xsjslib" => Language::Javascript,

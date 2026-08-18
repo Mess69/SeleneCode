@@ -65,7 +65,7 @@ use crate::imports::{resolve_jvm_import, resolve_via_import};
 use crate::matcher::chains::is_deferrable_chain;
 use crate::matcher::fnref::{match_function_ref, resolve_this_member_fn_ref};
 use crate::matcher::match_reference;
-use crate::types::ResolvedRef;
+use crate::types::{ResolvedBy, ResolvedRef};
 
 /// The reference resolver: one instance per index/sync pass.
 ///
@@ -184,6 +184,16 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     pub(crate) fn classify(&self, r: &UnresolvedRef) -> (Option<ResolvedRef>, Defer) {
         let t_pf = Instant::now();
         let mut defer = Defer::None;
+
+        // --- step 0: the document channels (doc-ingestion wave A) ------------
+        // `doc_path` / `doc_mention` / `doc_link` come only from Section nodes
+        // and resolve by their own strict rules — they must never fall through
+        // to the code ladder (a doc path is not a symbol; the built-in filter
+        // would also mangle it). Miss = ordinary drop, never an error.
+        if r.reference_kind.starts_with("doc_") {
+            return (self.resolve_doc_ref(r), Defer::None);
+        }
+
         // --- step 1: built-in / external filter ------------------------------
         if is_built_in_or_external(r, &self.ctx) {
             NS_PREFILTER.fetch_add(t_pf.elapsed().as_nanos() as u64, Ordering::Relaxed);
@@ -438,6 +448,114 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
     }
 
     // =========================================================================
+    // The document channels (doc-ingestion wave A, PRD 2026-08-14 §5.4)
+    // =========================================================================
+
+    /// Bind one `doc_*` reference. Strict by design: **unique-or-drop** — a
+    /// false doc link costs more than an absent one (PRD §3.2).
+    fn resolve_doc_ref(&self, r: &UnresolvedRef) -> Option<ResolvedRef> {
+        match r.reference_kind.as_str() {
+            // A path cited in a doc: repo-root-relative first, then relative to
+            // the citing doc's own directory. Target = the file's node when one
+            // exists (grammar files: `file:<path>`; documents: hashed Document).
+            "doc_path" => {
+                let dir = r
+                    .file_path
+                    .rfind('/')
+                    .map(|i| &r.file_path[..i])
+                    .unwrap_or("");
+                let candidates = [
+                    r.reference_name.clone(),
+                    if dir.is_empty() {
+                        r.reference_name.clone()
+                    } else {
+                        format!("{dir}/{}", r.reference_name)
+                    },
+                ];
+                for path in candidates {
+                    for id in [
+                        selene_core::file_node_id(&path),
+                        selene_core::node_id(
+                            &path,
+                            NodeKind::Document,
+                            path.rsplit('/').next().unwrap_or(&path),
+                            1,
+                        ),
+                    ] {
+                        if self.ctx.node_by_id(&id).is_some() {
+                            return Some(ResolvedRef {
+                                original: r.clone(),
+                                target_node_id: id,
+                                confidence: 0.95,
+                                resolved_by: ResolvedBy::FilePath,
+                            });
+                        }
+                    }
+                }
+                None
+            }
+            // A `code-span` naming a symbol: exact name, UNIQUE among code
+            // symbols, or nothing. (K is calibrated by the G3b corpus; wave A
+            // ships the strictest setting, K=1.)
+            "doc_mention" => {
+                let hits: Vec<_> = self
+                    .ctx
+                    .nodes_by_name(&r.reference_name)
+                    .iter()
+                    .filter(|n| {
+                        !matches!(
+                            n.kind,
+                            NodeKind::Document
+                                | NodeKind::Section
+                                | NodeKind::Import
+                                | NodeKind::Parameter
+                                | NodeKind::Variable
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                match hits.as_slice() {
+                    [only] => Some(ResolvedRef {
+                        original: r.clone(),
+                        target_node_id: only.id.clone(),
+                        confidence: 0.9,
+                        resolved_by: ResolvedBy::ExactMatch,
+                    }),
+                    _ => None,
+                }
+            }
+            // A `[[wikilink]]`: a Document by name (with or without `.md`),
+            // else the unique-symbol rule above.
+            "doc_link" => {
+                for name in [r.reference_name.clone(), format!("{}.md", r.reference_name)] {
+                    let docs: Vec<_> = self
+                        .ctx
+                        .nodes_by_name(&name)
+                        .iter()
+                        .filter(|n| n.kind == NodeKind::Document)
+                        .cloned()
+                        .collect();
+                    if let [only] = docs.as_slice() {
+                        return Some(ResolvedRef {
+                            original: r.clone(),
+                            target_node_id: only.id.clone(),
+                            confidence: 0.9,
+                            resolved_by: ResolvedBy::ExactMatch,
+                        });
+                    }
+                }
+                let mut fallback = r.clone();
+                fallback.reference_kind = "doc_mention".to_string();
+                self.resolve_doc_ref(&fallback).map(|mut hit| {
+                    hit.original = r.clone();
+                    hit
+                })
+            }
+            _ => None,
+        }
+    }
+
+    // =========================================================================
     // Edge creation
     // =========================================================================
 
@@ -496,6 +614,13 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                     metadata.insert("fnRef".into(), json!(true));
                 }
 
+                // Doc edges are proven by the deterministic doc-parser, not by
+                // tree-sitter — the wire says so (Provenance::Parser, PRD §4.3).
+                let provenance = if original_kind.starts_with("doc_") {
+                    Provenance::Parser
+                } else {
+                    Provenance::TreeSitter
+                };
                 Edge {
                     source: r.original.from_node_id.clone(),
                     target: r.target_node_id.clone(),
@@ -503,7 +628,7 @@ impl<C: ResolutionContext> ReferenceResolver<C> {
                     metadata: Some(Value::Object(metadata)),
                     line: r.original.line,
                     column: r.original.column,
-                    provenance: Some(Provenance::TreeSitter),
+                    provenance: Some(provenance),
                 }
             })
             .collect()
@@ -670,6 +795,18 @@ fn promote_kind(
     // marked by `metadata.fnRef`.
     if original_kind == "function_ref" {
         return EdgeKind::References;
+    }
+
+    // The document channels (never edge kinds themselves): a doc→doc link is a
+    // `references` edge (Graphify parity, PRD §4.2's one exception); everything
+    // a doc says about CODE is `mentions` — distinct so code flows never
+    // traverse documentation hops.
+    match original_kind {
+        "doc_link" if matches!(target_kind, Some(NodeKind::Document)) => {
+            return EdgeKind::References;
+        }
+        "doc_link" | "doc_mention" | "doc_path" => return EdgeKind::Mentions,
+        _ => {}
     }
 
     let Ok(kind) = original_kind.parse::<EdgeKind>() else {

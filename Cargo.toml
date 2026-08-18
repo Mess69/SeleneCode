@@ -46,6 +46,9 @@ axoupdater   = { version = "0.10", default-features = false, features = ["github
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"
+# CommonMark parser for the document-ingestion wave A (`Section` nodes with
+# exact line ranges via into_offset_iter). Pure Rust, no-unsafe.
+pulldown-cmark = { version = "0.13", default-features = false }
 # XML writer with proper escaping — `selene export --format graphml` (F2) and,
 # later, the docx reader of the document-ingestion PRD (F1-B). Pure Rust (memchr).
 quick-xml    = "0.41"

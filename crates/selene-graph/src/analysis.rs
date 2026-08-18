@@ -23,10 +23,17 @@ use selene_core::{Edge, EdgeKind, Node, NodeKind, Provenance};
 // ---------------------------------------------------------------------------
 
 /// Kinds dropped from analysis/first-map views: high-count, low-signal noise.
+/// `Document`/`Section` join the list (doc-ingestion PRD §6): the galaxy and
+/// the insights stay maps of the CODE; `--all-kinds` shows documents.
 pub fn is_low_signal(kind: NodeKind) -> bool {
     matches!(
         kind,
-        NodeKind::File | NodeKind::Import | NodeKind::Variable | NodeKind::Parameter
+        NodeKind::File
+            | NodeKind::Import
+            | NodeKind::Variable
+            | NodeKind::Parameter
+            | NodeKind::Document
+            | NodeKind::Section
     )
 }
 

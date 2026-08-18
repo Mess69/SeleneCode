@@ -47,6 +47,9 @@ tokio.workspace = true
 # RocksDB disk engine into every extract build.
 selene-db = { path = "../selene-db", default-features = false, features = ["kv-mem"] }
 
+# Markdown structure for Document/Section extraction (doc-ingestion wave A).
+pulldown-cmark = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true, features = ["yaml", "redactions"] }
 # Scan tests build throwaway directory trees + real `git init` repos.

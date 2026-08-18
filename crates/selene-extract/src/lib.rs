@@ -141,6 +141,7 @@
 //! on finding an older stored version, returns "re-index recommended"
 //! **guidance — never a hard error** (PRD §8.2: `isError` is reserved).
 
+mod docparse;
 mod error;
 mod fnref;
 mod generated;

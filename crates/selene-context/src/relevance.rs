@@ -689,6 +689,61 @@ pub async fn score_candidates_with_terms<S: GraphStore>(
         }
     }
 
+    // --- pass 4¾: document sections — a DEDICATED, CAPPED admission slot -------
+    // (doc-ingestion PRD §6.) Sections never compete with code in the shared
+    // pool: one kind-scoped query, at most DOC_SECTION_SLOT survivors. The
+    // weight is INTENT-GATED: on an ordinary code question sections score at
+    // half FTS_MAX (docs enrich, never crowd — the anti-Read bet is on code
+    // first); on a RATIONALE-shaped question ("why …", "where is … documented")
+    // the document IS the answer, and the slot outranks a bare name hit.
+    // Best-effort: an index with no sections (or a pre-wave-A store) skips this.
+    {
+        const DOC_SECTION_SLOT: usize = 2;
+        let ql = query.to_lowercase();
+        let rationale_intent = [
+            "why ",
+            "pourquoi",
+            "rationale",
+            "documented",
+            "decision",
+            "décision",
+            "design doc",
+            "adr",
+        ]
+        .iter()
+        .any(|m| ql.contains(m));
+        let doc_weight = if rationale_intent { 1.2 } else { 0.5 };
+        let doc_kinds = [NodeKind::Section];
+        let mut doc_hits: Vec<SearchCandidate> = Vec::new();
+        for term in &terms {
+            if let Ok(hits) = qm
+                .store()
+                .search_fts(
+                    std::slice::from_ref(term),
+                    &doc_kinds,
+                    &[],
+                    DOC_SECTION_SLOT * 2,
+                    0,
+                )
+                .await
+            {
+                doc_hits.extend(hits);
+            }
+        }
+        doc_hits.sort_by(|a, b| {
+            b.raw_score
+                .partial_cmp(&a.raw_score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.node.id.cmp(&b.node.id))
+        });
+        doc_hits.dedup_by(|a, b| a.node.id == b.node.id);
+        doc_hits.truncate(DOC_SECTION_SLOT);
+        for c in doc_hits {
+            let bonus = weights::FTS_MAX * doc_weight;
+            upsert(&mut by_id, c.node, bonus, 1, rationale_intent);
+        }
+    }
+
     // --- pass 4b: test-file dampen -------------------------------------------
     // …unless the agent is asking ABOUT tests, in which case the test files are the answer.
     let q = query.to_lowercase();
@@ -976,6 +1031,50 @@ pub async fn find_relevant_context<S: GraphStore>(
     let __t = std::time::Instant::now();
     reserve_orchestrator_roots(qm, &bridge_universe, &terms, &mut roots, opts.search_limit).await?;
     tracing::info!(target: "selene::explore", ms = __t.elapsed().as_millis(), "  gather: pass14 orchestrator");
+
+    // --- pass 14b: document reservation (doc-ingestion wave A) ----------------
+    // Pass 4¾'s weight admits sections as CANDIDATES; on a rationale-shaped
+    // question no weight makes one a ROOT past the stacked code passes — the
+    // exact lesson pass 14 already recorded ("no re-weighting can"). Same cure:
+    // the best-scored Section takes ONE root slot, behind root 1, replacing the
+    // weakest — the root budget stays fixed (pass 11 divides `max_nodes` across
+    // roots; an ADDED root thins the others, the failure pick_diverse_roots
+    // documents).
+    {
+        let ql = query.to_lowercase();
+        let rationale_intent = [
+            "why ",
+            "pourquoi",
+            "rationale",
+            "documented",
+            "decision",
+            "décision",
+            "design doc",
+            "adr",
+        ]
+        .iter()
+        .any(|m| ql.contains(m));
+        if rationale_intent
+            && !roots.is_empty()
+            && !roots.iter().any(|r| r.node.kind == NodeKind::Section)
+            && let Some(best_doc) = pool
+                .iter()
+                .filter(|c| c.node.kind == NodeKind::Section)
+                .max_by(|a, b| {
+                    a.score
+                        .partial_cmp(&b.score)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                        .then_with(|| b.node.id.cmp(&a.node.id))
+                })
+        {
+            let slot = roots.len().saturating_sub(1).max(1).min(roots.len() - 1);
+            if roots.len() == 1 {
+                roots.push(best_doc.clone());
+            } else {
+                roots[slot] = best_doc.clone();
+            }
+        }
+    }
 
     if roots.is_empty() {
         // NOT an error. "Nothing relevant" is an answer, and the caller renders guidance.

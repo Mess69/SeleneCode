@@ -26,6 +26,13 @@ pub fn extract_from_source(file_path: &str, source: &str, language: Language) ->
     let started = std::time::Instant::now();
     let mut result = ExtractionResult::default();
 
+    // Documents (md/txt/rst): the doc-parser branch — Document/Section nodes,
+    // outward pointers as unresolved refs. A branch BESIDE the walker, never
+    // inside it (doc-ingestion PRD §5.3).
+    if crate::docparse::is_document(language) {
+        return crate::docparse::extract_document(file_path, source, language);
+    }
+
     // File-level-only languages: indexed as files, no symbol extraction.
     if is_file_level_only(language) {
         result.duration_ms = started.elapsed().as_millis() as u64;

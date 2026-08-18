@@ -15,6 +15,14 @@
 #   edge    = the exact edge key, as the gate prints it
 #   reason  = why this is correct-by-design
 #
+# STRUCTURAL EXCLUSION (2026-08-18, doc-ingestion PRD 2026-08-14 §8.1): the gate
+# skips NodeKind::Document/Section (and, via its endpoint filter, their edges).
+# The corpus's five requirements.txt files index as documents since wave A; the
+# TS baseline predates document ingestion and can never contain them. This is a
+# kind-level exclusion in the gate itself, not a per-edge entry, because the
+# divergence is definitional (a whole subsystem TS lacks), not a resolution
+# difference — per-edge entries would grow with every doc line and gate nothing.
+#
 # ⚠ TWO THINGS DELIBERATELY *NOT* IN THIS FILE
 #
 # 1. The `jsx-render` heuristic edge. RESOLVED — and NOT by adding an entry here.
