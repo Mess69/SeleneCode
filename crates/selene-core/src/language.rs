@@ -74,6 +74,12 @@ pub enum Language {
     Properties,
     Terraform,
     Nix,
+    /// Markdown documents (doc-ingestion wave A — file yields Document/Section nodes).
+    Markdown,
+    /// Plain-text documents.
+    PlainText,
+    /// reStructuredText documents.
+    Rst,
     Unknown,
 }
 
@@ -121,6 +127,9 @@ pub const ALL_LANGUAGES: &[Language] = &[
     Language::Properties,
     Language::Terraform,
     Language::Nix,
+    Language::Markdown,
+    Language::PlainText,
+    Language::Rst,
     Language::Unknown,
 ];
 
@@ -168,6 +177,9 @@ impl Language {
             Language::Properties => "properties",
             Language::Terraform => "terraform",
             Language::Nix => "nix",
+            Language::Markdown => "markdown",
+            Language::PlainText => "plaintext",
+            Language::Rst => "rst",
             Language::Unknown => "unknown",
         }
     }
@@ -222,6 +234,9 @@ impl Language {
             "properties" => Language::Properties,
             "terraform" => Language::Terraform,
             "nix" => Language::Nix,
+            "markdown" => Language::Markdown,
+            "plaintext" => Language::PlainText,
+            "rst" => Language::Rst,
             "unknown" => Language::Unknown,
             _ => return None,
         })
