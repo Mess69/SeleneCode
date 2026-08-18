@@ -46,6 +46,10 @@ axoupdater   = { version = "0.10", default-features = false, features = ["github
 thiserror    = "2"
 anyhow       = "1"
 sha2         = "0.10"
+# Read-only git access for `selene diff <rev>` (graph-platform PRD F4): tree at
+# an arbitrary revision + blob contents, no checkout, pure Rust (zlib-rs, no C).
+# Pinned EXACT — pre-1.0, 49 breaking releases; confined to cmd/diff.rs.
+gix = { version = "=0.86.0", default-features = false, features = ["revision", "sha1"] }
 # CommonMark parser for the document-ingestion wave A (`Section` nodes with
 # exact line ranges via into_offset_iter). Pure Rust, no-unsafe.
 pulldown-cmark = { version = "0.13", default-features = false }

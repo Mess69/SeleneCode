@@ -24,6 +24,10 @@ selene-embed = { workspace = true, optional = true }
 serde_json = { workspace = true }
 # GraphML writer for `selene export` — escaping handled by the library, never by hand.
 quick-xml = { workspace = true }
+# `selene diff <rev>` — read the tree at a revision without checkout (F4).
+gix = { workspace = true }
+# The rev-state corpus is materialized under a temp dir (never the worktree).
+tempfile = { workspace = true }
 clap = { workspace = true, features = ["derive"] }
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true }

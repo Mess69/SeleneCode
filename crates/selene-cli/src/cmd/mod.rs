@@ -2,6 +2,7 @@
 //! surface runs, so the CLI and the agent see the same graph the same way; only the exit-code
 //! mapping (the CLI's `$?` contract) differs from MCP's `isError`.
 
+mod diff;
 mod export;
 mod install;
 mod lifecycle;
@@ -10,6 +11,7 @@ mod report;
 mod serve;
 mod viz;
 
+pub use diff::diff;
 pub use export::export;
 pub use install::{install, uninstall, upgrade, version};
 pub use lifecycle::{embed, index, init, purge, status, sync, uninit, unlock};

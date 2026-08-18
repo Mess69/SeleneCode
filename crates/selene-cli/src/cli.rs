@@ -198,6 +198,17 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// What changed in the code GRAPH between a git revision and the worktree:
+    /// added/removed symbols and edges. Reads the revision without checkout;
+    /// the worktree is never modified.
+    Diff {
+        /// A git revision (HEAD~3, a tag, a sha…).
+        rev: String,
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+        #[arg(short, long)]
+        json: bool,
+    },
     /// The session-memory journal: what explore was asked before (and where
     /// the answers started). `--clear` empties it.
     Memory {
