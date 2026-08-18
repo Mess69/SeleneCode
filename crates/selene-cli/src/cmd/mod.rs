@@ -13,7 +13,7 @@ mod viz;
 pub use export::export;
 pub use install::{install, uninstall, upgrade, version};
 pub use lifecycle::{embed, index, init, purge, status, sync, uninit, unlock};
-pub use query::{affected, callees, callers, explore, files, impact, node, query};
+pub use query::{affected, callees, callers, explore, files, impact, insights, node, query};
 pub use report::report;
 pub use serve::{daemon, serve};
 pub use viz::viz;

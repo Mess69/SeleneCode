@@ -218,6 +218,21 @@ impl SeleneMcp {
     }
 
     #[tool(
+        name = "insights",
+        description = "Structural summary of the whole graph: betweenness bottlenecks, \
+                       call-graph clusters (Louvain), module import cycles, rare bridges, \
+                       orphan modules. Use for architecture-level questions."
+    )]
+    async fn insights(&self, Parameters(a): Parameters<FilesArgs>) -> CallToolResult {
+        if let Err(o) = validate::path_like("projectPath", a.project_path.as_deref()) {
+            return o.to_call_result();
+        }
+        handlers::insights(self.root_for(a.project_path.as_deref()))
+            .await
+            .to_call_result()
+    }
+
+    #[tool(
         name = "files",
         description = "The indexed files, optionally filtered by path."
     )]

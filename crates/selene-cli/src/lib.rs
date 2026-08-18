@@ -5,7 +5,9 @@
 //! wire. Query-class commands reuse `selene_mcp::handlers`, so the CLI and the agent see the same
 //! graph identically — only the exit-code mapping differs (see [`exit`]).
 
-pub mod analysis;
+/// Re-export: the analysis algorithms live in `selene-graph` (shared with MCP);
+/// the viz/report call sites keep their `crate::analysis::` paths.
+pub use selene_graph::analysis;
 pub mod cli;
 mod cmd;
 pub mod exit;
@@ -67,6 +69,7 @@ pub async fn run(cli: Cli) -> ExitCode {
             open,
             watch,
         } => cmd::viz(path, out, max_nodes, all_kinds, open, watch).await,
+        Command::Insights { path } => cmd::insights(path).await,
         Command::Export { path, format, out } => cmd::export(path, format, out).await,
         Command::Report { path, out } => cmd::report(path, out).await,
 

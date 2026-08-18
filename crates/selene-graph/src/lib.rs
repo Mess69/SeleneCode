@@ -47,6 +47,12 @@
 //!   `isError` early and an agent abandons the tool for the session.
 
 mod adjacency;
+/// Whole-graph analysis (Louvain, Tarjan SCC, betweenness) — in-RAM by design.
+/// The SurrealQL-max decision covers *traversal at query time*; plain-code
+/// analytics over the full graph is the same species as the resolver's
+/// in-memory symbol table. Moved here from `selene-cli` (2026-08-18) so the
+/// MCP surface and the CLI share one implementation.
+pub mod analysis;
 mod error;
 mod query;
 mod source;

@@ -12,6 +12,8 @@ axoupdater.workspace = true
 selene-core = { workspace = true }
 selene-db = { path = "../selene-db", default-features = false, features = ["kv-rocksdb"] }
 selene-extract = { path = "../selene-extract" }
+# The shared graph-analysis algorithms (Louvain/Tarjan/betweenness) for viz+report.
+selene-graph = { workspace = true }
 selene-resolve = { path = "../selene-resolve" }
 selene-sync = { path = "../selene-sync" }
 selene-installer = { path = "../selene-installer" }

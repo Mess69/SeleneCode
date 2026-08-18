@@ -15,7 +15,13 @@
 
 use std::collections::{HashMap, HashSet};
 
-use selene_core::{Edge, EdgeKind, Node, NodeKind};
+#[cfg(test)]
+use selene_core::NodeKind;
+use selene_core::{Edge, EdgeKind, Node};
+// The graph-shaping helpers live in selene-graph::analysis (shared with MCP).
+use selene_graph::analysis::{
+    auto_mod_depth, is_low_signal, is_noise_path, is_trivial_name, module_of,
+};
 
 /// Options controlling the export (mirrors the `viz` subcommand flags).
 pub struct VizOptions {
@@ -37,186 +43,6 @@ pub struct VizDoc {
     pub total_nodes: usize,
     pub shown_edges: usize,
     pub total_edges: usize,
-}
-
-/// Kinds dropped from the default view: high-count, low-signal structural noise.
-/// A file, an import, a local variable, or a parameter rarely carries the *flow*
-/// a galaxy is meant to show, and there are a lot of them. `--all-kinds` keeps them.
-pub(crate) fn is_low_signal(kind: NodeKind) -> bool {
-    matches!(
-        kind,
-        NodeKind::File | NodeKind::Import | NodeKind::Variable | NodeKind::Parameter
-    )
-}
-
-/// Build the self-contained HTML page from the full graph.
-///
-/// Selection strategy: degree is counted over **all** edges (so a hub stays a hub
-/// even if some of its neighbors get dropped), kinds are filtered, the survivors
-/// are sorted by degree (desc; name then id break ties, so the output is
-/// deterministic) and truncated to `max_nodes`. Links are kept only when *both*
-/// endpoints survived, self-loops dropped, and each `(source, target, kind)`
-/// de-duplicated.
-/// Is this path test/vendored/generated noise — code a first map should not
-/// show? (The consensus default across dependency-cruiser/madge/NDepend/
-/// typescript-graph: third-party and test scaffolding are excluded up front,
-/// with the hidden count surfaced so the map is trusted.) Segment and
-/// filename checks, no regex needed.
-pub(crate) fn is_noise_path(path: &str) -> bool {
-    const NOISE_DIRS: [&str; 22] = [
-        "node_modules",
-        "vendor",
-        "third_party",
-        "dist",
-        "build",
-        "target",
-        "generated",
-        "__generated__",
-        "__tests__",
-        "tests",
-        "test",
-        "spec",
-        "specs",
-        "__mocks__",
-        "mocks",
-        "fixtures",
-        "fixture",
-        "e2e",
-        "examples",
-        "example",
-        "docs",
-        "doc",
-    ];
-    let file = path.rsplit('/').next().unwrap_or(path);
-    if path
-        .split('/')
-        .take(path.split('/').count().saturating_sub(1))
-        .any(|seg| NOISE_DIRS.contains(&seg))
-    {
-        return true;
-    }
-    for pat in [
-        ".test.",
-        ".spec.",
-        ".mock.",
-        ".stories.",
-        "_test.",
-        "_spec.",
-    ] {
-        if file.contains(pat) {
-            return true;
-        }
-    }
-    file.ends_with(".d.ts") || file.ends_with(".min.js")
-}
-
-/// The deepest directory-prefix depth (1–4) that still lands at a readable
-/// module count (≤ 36) — shared by the viz map and `selene report`.
-pub(crate) fn auto_mod_depth(app_nodes: &[&Node]) -> usize {
-    let mut mod_depth = 1usize;
-    for d in (1..=4).rev() {
-        let count = app_nodes
-            .iter()
-            .map(|n| module_of(&n.file_path, d))
-            .collect::<HashSet<_>>()
-            .len();
-        if count <= 36 {
-            mod_depth = d;
-            break;
-        }
-    }
-    mod_depth
-}
-
-/// Names that make a useless cluster label: language plumbing every codebase
-/// contains (std prelude, ubiquitous method names, dunder/constructor forms)
-/// plus anything under 3 chars. Deliberately narrow — "Node" or "parse" may be
-/// plumbing in one repo and THE domain type in another, so only identifiers
-/// that are standard in the *language* are listed, never domain-plausible
-/// words. Used to pick the hub LABEL only; ranking stays degree-based, and a
-/// cluster that is nothing but plumbing falls back to its raw best.
-pub(crate) fn is_trivial_name(name: &str) -> bool {
-    if name.chars().count() < 3 {
-        return true;
-    }
-    const TRIVIAL: &[&str] = &[
-        // Rust prelude + ubiquitous std types/methods
-        "Err",
-        "Some",
-        "None",
-        "Self",
-        "Result",
-        "Option",
-        "Vec",
-        "String",
-        "Box",
-        "HashMap",
-        "HashSet",
-        "BTreeMap",
-        "usize",
-        "bool",
-        "new",
-        "clone",
-        "from",
-        "into",
-        "as_str",
-        "as_ref",
-        "to_string",
-        "collect",
-        "iter",
-        "next",
-        "unwrap",
-        "expect",
-        "default",
-        "Default",
-        "fmt",
-        "Debug",
-        "Display",
-        "Drop",
-        "len",
-        "is_empty",
-        "get",
-        "set",
-        "push",
-        "insert",
-        "main",
-        "init",
-        "drop",
-        "with",
-        "try_from",
-        "try_into",
-        // Python / JS / Java standard forms
-        "__init__",
-        "__str__",
-        "__repr__",
-        "__new__",
-        "constructor",
-        "toString",
-        "valueOf",
-        "undefined",
-        "null",
-        "this",
-        "super",
-        "self",
-        "cls",
-        "prototype",
-        "hashCode",
-        "equals",
-        "println",
-        "print",
-    ];
-    TRIVIAL.iter().any(|t| name.eq_ignore_ascii_case(t))
-}
-
-/// The module (directory-prefix group) of a path at `depth` segments.
-pub(crate) fn module_of(path: &str, depth: usize) -> String {
-    let dir_end = path.rfind('/').unwrap_or(0);
-    let dir = &path[..dir_end];
-    if dir.is_empty() {
-        return "(root)".to_string();
-    }
-    let segs: Vec<&str> = dir.split('/').collect();
-    segs[..depth.min(segs.len())].join("/")
 }
 
 /// The transformed graph data (the page's `DATA` object) plus the counts —

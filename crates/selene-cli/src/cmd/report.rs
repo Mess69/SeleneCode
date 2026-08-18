@@ -15,7 +15,7 @@ use selene_db::SurrealStore;
 
 use crate::analysis::{detect_communities, strongly_connected_components};
 use crate::exit::Outcome;
-use crate::viz::{auto_mod_depth, is_low_signal, is_noise_path, module_of};
+use selene_graph::analysis::{auto_mod_depth, is_low_signal, is_noise_path, module_of};
 
 use super::query_root_direct;
 
@@ -209,7 +209,9 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
         if hub_better(n, comm_hub[c].as_ref()) {
             comm_hub[c] = Some(n);
         }
-        if !crate::viz::is_trivial_name(&n.name) && hub_better(n, comm_hub_named[c].as_ref()) {
+        if !selene_graph::analysis::is_trivial_name(&n.name)
+            && hub_better(n, comm_hub_named[c].as_ref())
+        {
             comm_hub_named[c] = Some(n);
         }
     }
@@ -318,7 +320,7 @@ pub(crate) fn render_report(nodes: &[Node], edges: &[Edge], root_label: &str) ->
     // "how does Ok work" is not a question — prefer the first informative name.
     if let Some(n) = by_in
         .iter()
-        .find(|n| !crate::viz::is_trivial_name(&n.name))
+        .find(|n| !selene_graph::analysis::is_trivial_name(&n.name))
         .or_else(|| by_in.first())
     {
         out.push_str(&format!(

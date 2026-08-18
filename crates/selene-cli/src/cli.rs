@@ -194,6 +194,12 @@ pub enum Command {
         #[arg(long)]
         watch: bool,
     },
+    /// Structural summary in the terminal: betweenness bottlenecks, call-graph
+    /// clusters, import cycles, rare bridges, orphan modules.
+    Insights {
+        #[arg(short, long)]
+        path: Option<PathBuf>,
+    },
     /// Export the full graph: canonical JSON (default), JSONL, GraphML, or DOT.
     ///
     /// Writes to stdout by default (pipe to jq, import into Gephi/yEd/Neo4j);

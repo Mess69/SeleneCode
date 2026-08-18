@@ -334,6 +334,29 @@ pub async fn files(root: Option<PathBuf>, filter: Option<&str>) -> ToolOutcome {
     ToolOutcome::guidance(out)
 }
 
+/// **`insights`** — the structural summary: betweenness bottlenecks, Louvain
+/// clusters, import cycles, rare bridges, orphan modules. One deterministic
+/// recipe shared with `selene insights`/viz/report ([`selene_graph::analysis`]).
+pub async fn insights(root: Option<PathBuf>) -> ToolOutcome {
+    let Some(root) = root else {
+        return no_project();
+    };
+    let qm = match open(&root).await {
+        Ok(qm) => qm,
+        Err(outcome) => return outcome,
+    };
+    let (nodes, edges) = match (qm.store().all_nodes().await, qm.store().all_edges().await) {
+        (Ok(n), Ok(e)) => (n, e),
+        (Err(e), _) | (_, Err(e)) => return ToolOutcome::failed(format!("{e}")),
+    };
+    if nodes.is_empty() {
+        return ToolOutcome::guidance(NOT_INDEXED);
+    }
+    let ins = selene_graph::analysis::compute_insights(&nodes, &edges);
+    let text = crate::insights::render_insights(&ins, &root.display().to_string());
+    ToolOutcome::guidance(selene_context::truncate_output(&text))
+}
+
 /// A graph error: a #527 refusal or a genuine malfunction — those, and only those, set
 /// `isError`.
 fn graph_outcome(e: &GraphError) -> ToolOutcome {

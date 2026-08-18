@@ -23,6 +23,15 @@ pub async fn explore(query: Vec<String>, path: Option<PathBuf>) -> Outcome {
     render(handlers::explore(Some(root), &query.join(" ")).await)
 }
 
+/// `selene insights` — the structural summary (same recipe as the MCP tool).
+pub async fn insights(path: Option<PathBuf>) -> Outcome {
+    let root = match query_root_direct(path) {
+        Ok(r) => r,
+        Err(o) => return o,
+    };
+    render(handlers::insights(Some(root)).await)
+}
+
 pub async fn node(name: Option<String>, path: Option<PathBuf>, file: Option<String>) -> Outcome {
     let root = match query_root_direct(path) {
         Ok(r) => r,
