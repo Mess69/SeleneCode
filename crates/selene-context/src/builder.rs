@@ -392,6 +392,29 @@ Changing `{}` reaches **{}** symbols across **{}** files: {}
                 if spent >= budget.max_chars_per_file {
                     break;
                 }
+                // Wave B (doc PRD §4.4): a pdf/docx section has no readable
+                // source file — its extracted text lives in `docstring` and
+                // renders from there, marked as extracted.
+                if matches!(
+                    node.language,
+                    selene_core::Language::Pdf | selene_core::Language::Docx
+                ) {
+                    if let Some(text) = node.docstring.as_deref().filter(|t| !t.is_empty()) {
+                        let room = budget.max_chars_per_file - spent;
+                        let slice = &text[..floor_boundary(text, room.min(text.len()))];
+                        out.push_str(&format!(
+                            "```
+{slice}
+```
+*— extracted from {}*
+
+",
+                            node.language.as_str().to_uppercase()
+                        ));
+                        spent += slice.len();
+                    }
+                    continue;
+                }
                 let Some(code) = self.qm.code_of(node)? else {
                     continue; // the file is gone — a fact, not an error
                 };

@@ -80,6 +80,10 @@ pub enum Language {
     PlainText,
     /// reStructuredText documents.
     Rst,
+    /// PDF documents (wave B: extracted text layer).
+    Pdf,
+    /// Word documents (wave B: word/document.xml text).
+    Docx,
     Unknown,
 }
 
@@ -130,6 +134,8 @@ pub const ALL_LANGUAGES: &[Language] = &[
     Language::Markdown,
     Language::PlainText,
     Language::Rst,
+    Language::Pdf,
+    Language::Docx,
     Language::Unknown,
 ];
 
@@ -180,6 +186,8 @@ impl Language {
             Language::Markdown => "markdown",
             Language::PlainText => "plaintext",
             Language::Rst => "rst",
+            Language::Pdf => "pdf",
+            Language::Docx => "docx",
             Language::Unknown => "unknown",
         }
     }
@@ -237,6 +245,8 @@ impl Language {
             "markdown" => Language::Markdown,
             "plaintext" => Language::PlainText,
             "rst" => Language::Rst,
+            "pdf" => Language::Pdf,
+            "docx" => Language::Docx,
             "unknown" => Language::Unknown,
             _ => return None,
         })

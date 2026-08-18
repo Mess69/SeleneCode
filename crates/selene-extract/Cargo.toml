@@ -49,6 +49,11 @@ selene-db = { path = "../selene-db", default-features = false, features = ["kv-m
 
 # Markdown structure for Document/Section extraction (doc-ingestion wave A).
 pulldown-cmark = { workspace = true }
+# Wave B: docx (zip+XML) and pdf (text layer, panic-isolated) readers.
+zip = { workspace = true }
+quick-xml = { workspace = true }
+pdf-extract = { workspace = true }
+lopdf = { workspace = true }
 
 [dev-dependencies]
 insta = { workspace = true, features = ["yaml", "redactions"] }

@@ -835,6 +835,70 @@ fn read_input(root: &Path, rel: &str, errors: &mut Vec<ExtractionError>) -> Opti
         });
         return None;
     }
+    // Wave B: binary document formats extract their text AT THE READ — the
+    // parser branch only ever sees clean text, and `content_hash` hashes the
+    // extracted text ("did the extractable text change" — the semantics sync
+    // wants). Failure = a collected diagnostic, never a fatal.
+    let language_probe = crate::detect_language(rel, None);
+    if matches!(language_probe, crate::Language::Pdf | crate::Language::Docx) {
+        match std::fs::read(&abs) {
+            Ok(bytes) if (bytes.len() as u64) <= crate::docbin::MAX_DOC_BYTES => {
+                let extracted = match language_probe {
+                    crate::Language::Pdf => crate::docbin::pdf_to_text(&bytes),
+                    _ => crate::docbin::docx_to_text(&bytes),
+                };
+                let (size, modified_at) = std::fs::metadata(&abs)
+                    .map(|m| {
+                        let ts = m
+                            .modified()
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0);
+                        (m.len(), ts)
+                    })
+                    .unwrap_or((bytes.len() as u64, 0));
+                match extracted {
+                    Ok(text) => {
+                        return Some(ParseInput {
+                            rel: rel.to_string(),
+                            content: text,
+                            language: language_probe,
+                            size,
+                            modified_at,
+                        });
+                    }
+                    Err(msg) => {
+                        errors.push(ExtractionError {
+                            message: format!("{rel}: {msg}"),
+                            severity: Severity::Warning,
+                            code: ErrorCode::ReadError,
+                            file_path: Some(rel.to_string()),
+                        });
+                        return None;
+                    }
+                }
+            }
+            Ok(_) => {
+                errors.push(ExtractionError {
+                    message: format!("{rel}: document exceeds the 20 MiB cap (read skipped)"),
+                    severity: Severity::Warning,
+                    code: ErrorCode::ReadError,
+                    file_path: Some(rel.to_string()),
+                });
+                return None;
+            }
+            Err(e) => {
+                errors.push(ExtractionError {
+                    message: format!("{rel}: {e}"),
+                    severity: Severity::Warning,
+                    code: ErrorCode::ReadError,
+                    file_path: Some(rel.to_string()),
+                });
+                return None;
+            }
+        }
+    }
     let content = match std::fs::read_to_string(&abs) {
         Ok(c) => c,
         Err(e) => {

@@ -93,6 +93,32 @@ pub async fn sync_project_with_store(root: &Path, store: SurrealStore) -> Result
             continue;
         }
         // Expensive tier: read + hash, and only a DIFFERENT hash is a real change.
+        // Wave B binary documents: hash the EXTRACTED text (the same content the
+        // orchestrator will index) so change detection matches indexing.
+        if matches!(
+            selene_extract::detect_language(rel, None),
+            selene_extract::Language::Pdf | selene_extract::Language::Docx
+        ) {
+            let extracted = std::fs::read(&abs).ok().and_then(|bytes| {
+                selene_extract::doc_bytes_to_text(
+                    &bytes,
+                    selene_extract::detect_language(rel, None),
+                )
+            });
+            match extracted {
+                Some(text) => {
+                    let h = hash_content(&text);
+                    if known == Some(&h) {
+                        unchanged += 1;
+                    } else {
+                        changed.push(rel.clone());
+                    }
+                }
+                None if known.is_some() => changed.push(rel.clone()),
+                None => {}
+            }
+            continue;
+        }
         match std::fs::read_to_string(&abs) {
             Ok(text) => {
                 let h = hash_content(&text);

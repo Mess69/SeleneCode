@@ -46,6 +46,8 @@ fn language_for_extension(ext: &str) -> Option<Language> {
         ".md" | ".mdx" | ".markdown" => Language::Markdown,
         ".txt" => Language::PlainText,
         ".rst" => Language::Rst,
+        ".pdf" => Language::Pdf,
+        ".docx" => Language::Docx,
         ".tsx" => Language::Tsx,
         ".ets" => Language::Arkts,
         ".js" | ".mjs" | ".cjs" | ".xsjs" | ".xsjslib" => Language::Javascript,

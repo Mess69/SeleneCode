@@ -141,6 +141,7 @@
 //! on finding an older stored version, returns "re-index recommended"
 //! **guidance — never a hard error** (PRD §8.2: `isError` is reserved).
 
+mod docbin;
 mod docparse;
 mod error;
 mod fnref;
@@ -160,6 +161,20 @@ pub use helpers::{
     clean_comment_markers, get_child_by_field, get_node_text, get_preceding_docstring,
 };
 pub use language::{Language, detect_language, is_file_level_only, is_source_file};
+
+/// Wave B: bytes → extracted text for the binary document formats — the shared
+/// door `selene-sync`'s change classifier reads through so its hash matches
+/// what the orchestrator indexes. `None` = unextractable (a change, if known).
+pub fn doc_bytes_to_text(bytes: &[u8], language: Language) -> Option<String> {
+    if bytes.len() as u64 > docbin::MAX_DOC_BYTES {
+        return None;
+    }
+    match language {
+        Language::Pdf => docbin::pdf_to_text(bytes).ok(),
+        Language::Docx => docbin::docx_to_text(bytes).ok(),
+        _ => None,
+    }
+}
 pub use orchestrator::{IndexProgress, IndexResult, Indexer, MAX_NESTING_DEPTH, Phase, ProgressFn};
 pub use rules::{
     ClassKind, ImportInfo, LanguageRules, MethodClass, NodeTypeTables, VariableInfo, rules_for,

@@ -53,6 +53,13 @@ gix = { version = "=0.86.0", default-features = false, features = ["revision", "
 # CommonMark parser for the document-ingestion wave A (`Section` nodes with
 # exact line ranges via into_offset_iter). Pure Rust, no-unsafe.
 pulldown-cmark = { version = "0.13", default-features = false }
+# Wave B document extraction (graph-platform PRD F1-B): docx = zip archive of
+# XML (deterministic, hand-parsed); pdf text layer via pdf-extract, isolated in
+# a thread + catch_unwind (documented panic record on malformed input, its
+# issue #141), with lopdf's extract_text as the recorded Plan B.
+zip          = { version = "5", default-features = false, features = ["deflate"] }
+pdf-extract  = "0.12"
+lopdf        = "0.44"
 # XML writer with proper escaping — `selene export --format graphml` (F2) and,
 # later, the docx reader of the document-ingestion PRD (F1-B). Pure Rust (memchr).
 quick-xml    = "0.41"

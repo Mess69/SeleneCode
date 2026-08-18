@@ -21,7 +21,7 @@ use crate::{ExtractionResult, Language};
 pub fn is_document(language: Language) -> bool {
     matches!(
         language,
-        Language::Markdown | Language::PlainText | Language::Rst
+        Language::Markdown | Language::PlainText | Language::Rst | Language::Pdf | Language::Docx
     )
 }
 
@@ -54,7 +54,9 @@ pub fn extract_document(file_path: &str, source: &str, language: Language) -> Ex
     ));
 
     let sections = match language {
-        Language::Markdown => md_sections(source),
+        // Docx arrives as markdown-ish text (docbin renders Heading styles as
+        // `# ` lines) — the wave-A markdown sectionizer applies as-is.
+        Language::Markdown | Language::Docx => md_sections(source),
         Language::Rst => rst_sections(source),
         // A plain-text file is one section named after the file.
         _ => vec![RawSection {
