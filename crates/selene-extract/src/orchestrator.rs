@@ -852,7 +852,7 @@ fn read_input(root: &Path, rel: &str, errors: &mut Vec<ExtractionError>) -> Opti
                         let ts = m
                             .modified()
                             .ok()
-                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
                             .map(|d| d.as_millis() as i64)
                             .unwrap_or(0);
                         (m.len(), ts)

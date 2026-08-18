@@ -36,7 +36,7 @@ fn cap_text(mut s: String) -> String {
         s.truncate(cut);
     }
     // Normalize away NULs and lone CRs the graph never wants to store.
-    s.replace('\u{0}', "").replace('\r', "")
+    s.replace(['\u{0}', '\r'], "")
 }
 
 /// PDF bytes → text. `Err` is a *message* for `FileRecord.errors` — callers
