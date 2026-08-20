@@ -332,7 +332,10 @@ their metadata.
 
 ## Licensing
 
-Intended: **MIT OR Apache-2.0** (permissive / OSI). SurrealDB (BSL 1.1 — free to embed) sits behind
-the `GraphStore` trait; the previously-planned permissive fallback backend was dropped when the
-SurrealQL-max decision was ratified. `vendor/surrealdb` retains SurrealDB's own license (see
-`vendor/surrealdb/LICENSE`).
+**Source-available under [PolyForm Noncommercial 1.0.0](LICENSE)** (2026-08-20; supersedes the
+earlier MIT/Apache intent). The code is open to read, study, modify and share — **any
+noncommercial use is permitted** (personal projects, research, education, nonprofits,
+government). **Commercial use requires a separate license** from the maintainer.
+
+SurrealDB (BSL 1.1 — free to embed) sits behind the `GraphStore` trait; `vendor/surrealdb`
+retains SurrealDB's own license (see `vendor/surrealdb/LICENSE`).
